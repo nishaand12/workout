@@ -1,0 +1,892 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>TeamBuildr - Workout Tracker</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23ef4444'><path d='M20.57 14.86L22 13.43 20.57 12 17 15.57 8.43 7 12 3.43 10.57 2 9.14 3.43 7.71 2 5.57 4.14 4.14 2.71 2.71 4.14l1.43 1.43L2 7.71l1.43 1.43L2 10.57 3.43 12 7 8.43 15.57 17 12 20.57 13.43 22l1.43-1.43L16.29 22l2.14-2.14 1.43 1.43 1.43-1.43-1.43-1.43L22 16.29z'/></svg>">
+</head>
+<body>
+
+  <!-- Student Preview Banner (When coach is previewing as athlete) -->
+  <div id="studentPreviewBanner" class="student-preview-banner" style="display: none;">
+    <span>👁️ <strong>Coach Preview Mode:</strong> Viewing workout tracker as <span id="previewAthleteName" style="text-decoration: underline;">Alex Rivera</span></span>
+    <button class="btn-exit-preview" onclick="exitStudentPreview()">✕ Exit Preview & Return to Coach</button>
+  </div>
+
+  <!-- Top Navigation Header -->
+  <header class="top-nav">
+    <div class="nav-container">
+      <div class="logo-area" onclick="handleLogoClick()">
+        <div class="logo-shield">⚡</div>
+        <div class="brand-text">TeamBuildr</div>
+        <div class="brand-tag">STRENGTH</div>
+      </div>
+
+      <nav class="nav-tabs" id="mainNavTabs">
+        <!-- Injected dynamically in app.js based on role (Coach vs Student) -->
+      </nav>
+
+      <div class="nav-right" id="navUserArea">
+        <!-- User avatar badge and switch profile button injected in app.js -->
+      </div>
+    </div>
+  </header>
+
+  <!-- Floating Active Rest Timer Pill -->
+  <div id="activeTimerWidget" class="active-timer-widget" style="display: none;" onclick="openRestTimerModal()"></div>
+
+  <!-- Main Content Wrapper -->
+  <main class="main-content">
+
+    <!-- COACH VIEW 1: COMPLIANCE & ACTIVITY DASHBOARD -->
+    <section id="view-coach-dashboard" class="view-section" style="display: none;">
+      <!-- Date Bar for Coach Dashboard -->
+      <div class="day-nav-bar" style="margin-bottom: 24px;">
+        <div class="day-nav-controls">
+          <button class="day-nav-btn" onclick="navigateCoachDashboardDate(-1)" title="Previous Day">‹ Prev</button>
+          <button class="day-nav-btn day-today-btn" onclick="jumpCoachDashboardToday()">Today</button>
+          <button class="day-nav-btn" onclick="navigateCoachDashboardDate(1)" title="Next Day">Next ›</button>
+        </div>
+        <div class="day-nav-date-display" onclick="openCoachNativeDatePicker()" title="Click to change date">
+          <span class="day-nav-date-text" id="coachDashboardDateText">Today</span>
+          <span class="day-today-badge" id="coachDashboardTodayBadge">TODAY</span>
+          <input type="date" id="coachDashboardDatePicker" class="day-hidden-date-picker" onchange="onCoachDashboardDatePickerChanged(this.value)">
+        </div>
+        <div class="workout-btn-actions">
+          <button class="calendar-btn-nav" style="background: #ff6600; color: white; border: none; padding: 9px 16px; font-weight: 700; border-radius: 8px; cursor: pointer;" onclick="document.querySelector('.nav-tab-btn[data-tab=\'assignments\']').click()">
+            + Assign Workout
+          </button>
+        </div>
+      </div>
+
+      <!-- KPI Metrics Cards -->
+      <div class="coach-kpi-grid">
+        <div class="coach-kpi-card">
+          <span class="kpi-title">Athletes Programmed</span>
+          <span class="kpi-value" id="kpiTotalAthletes">0</span>
+          <span class="kpi-sub">Total assigned today</span>
+        </div>
+        <div class="coach-kpi-card" style="border-left: 4px solid #10b981;">
+          <span class="kpi-title">Workouts Completed</span>
+          <span class="kpi-value" id="kpiCompletedAthletes" style="color: #34d399;">0</span>
+          <span class="kpi-sub">Finished full session</span>
+        </div>
+        <div class="coach-kpi-card" style="border-left: 4px solid #f59e0b;">
+          <span class="kpi-title">In Progress</span>
+          <span class="kpi-value" id="kpiInProgressAthletes" style="color: #fbbf24;">0</span>
+          <span class="kpi-sub">Actively logging lifts</span>
+        </div>
+        <div class="coach-kpi-card">
+          <span class="kpi-title">Today's Compliance</span>
+          <span class="kpi-value" id="kpiComplianceRate">0%</span>
+          <div class="compliance-progress-bar">
+            <div id="kpiComplianceBarFill" class="compliance-progress-fill" style="width: 0%;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Live Athlete Compliance Feed / Table -->
+      <div class="form-card" style="margin-bottom: 24px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; border-bottom: 1px solid #334155; padding-bottom: 14px;">
+          <div>
+            <h3 style="font-size: 18px; font-weight: 800; color: #ffffff;">Athlete Training Activity</h3>
+            <p style="font-size: 13px; color: #94a3b8; margin-top: 4px;">Live tracking of athlete attendance, session completion, and logged weights</p>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <select id="coachComplianceFilter" class="form-input" style="padding: 6px 12px; font-size: 12px; width: auto;" onchange="renderCoachDashboardView()">
+              <option value="all">All Athletes</option>
+              <option value="completed">Completed Only</option>
+              <option value="in_progress">In Progress</option>
+              <option value="not_started">Not Started</option>
+            </select>
+          </div>
+        </div>
+
+        <div id="coachAthleteActivityList">
+          <!-- Rendered in JS -->
+        </div>
+      </div>
+    </section>
+
+    <!-- COACH VIEW 2: ROSTER & GROUPS MANAGER -->
+    <section id="view-roster" class="view-section" style="display: none;">
+      <div class="view-header" style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: flex-start;">
+        <div>
+          <h2>Roster & Training Groups</h2>
+          <p>Organize athletes into training cohorts (e.g. Varsity, Speed Track) and manage client rosters</p>
+        </div>
+        <div style="display: flex; gap: 10px;">
+          <button class="btn-primary" style="background: #3b82f6;" onclick="openCreateGroupModal()">+ New Training Group</button>
+          <button class="btn-primary" style="background: #ff6600;" onclick="openCreateUserModal()">+ Add Athlete</button>
+        </div>
+      </div>
+
+      <div class="roster-two-col">
+        <!-- Left Column: Training Groups -->
+        <div class="form-card">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+            <h3 style="font-size: 16px; font-weight: 800; color: #ffffff;">Training Groups / Cohorts</h3>
+            <span id="rosterGroupCountBadge" style="font-size: 12px; color: #94a3b8; font-weight: 700;">0 groups</span>
+          </div>
+          <div id="rosterGroupsList">
+            <!-- Rendered in JS -->
+          </div>
+        </div>
+
+        <!-- Right Column: Athletes Directory -->
+        <div class="form-card">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+            <h3 style="font-size: 16px; font-weight: 800; color: #ffffff;">Athletes Directory</h3>
+            <span id="rosterAthleteCountBadge" style="font-size: 12px; color: #94a3b8; font-weight: 700;">0 athletes</span>
+          </div>
+          <div id="rosterAthletesList">
+            <!-- Rendered in JS -->
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- COACH VIEW 3: PROGRAM & WORKOUT ASSIGNMENT -->
+    <section id="view-assignments" class="view-section" style="display: none;">
+      <div class="view-header" style="margin-bottom: 24px;">
+        <h2>Program & Workout Assignment</h2>
+        <p>Assign training sessions to entire groups or individual clients for specific calendar dates</p>
+      </div>
+
+      <div class="form-card" style="margin-bottom: 24px;">
+        <h3 style="font-size: 16px; font-weight: 800; color: #ffffff; margin-bottom: 16px;">Assign a Workout</h3>
+        
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px;">
+          <div class="form-group">
+            <label class="form-label">1. Select Workout</label>
+            <select id="assignWorkoutSelect" class="form-input"></select>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">2. Target Audience</label>
+            <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+              <button type="button" id="btnAssignTypeGroup" class="planner-subnav-btn active" style="flex: 1; padding: 6px; font-size: 12px;" onclick="setAssignTargetType('group')">Training Group</button>
+              <button type="button" id="btnAssignTypeUser" class="planner-subnav-btn" style="flex: 1; padding: 6px; font-size: 12px;" onclick="setAssignTargetType('user')">1-on-1 Athlete</button>
+            </div>
+            <select id="assignTargetSelect" class="form-input"></select>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">3. Scheduled Date</label>
+            <input type="date" id="assignCalendarDate" class="form-input">
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">4. Coach Notes (Optional)</label>
+            <input type="text" id="assignNotesInput" class="form-input" placeholder="e.g. Focus on tempo and depth">
+          </div>
+        </div>
+
+        <div style="margin-top: 18px; display: flex; justify-content: flex-end;">
+          <button class="btn-primary" style="background: #ff6600; padding: 12px 24px; font-weight: 800;" onclick="submitCreateAssignment()">
+            🚀 Assign Workout
+          </button>
+        </div>
+      </div>
+
+      <!-- Active Assignments Table -->
+      <div class="form-card">
+        <h3 style="font-size: 16px; font-weight: 800; color: #ffffff; margin-bottom: 16px;">Scheduled Program Assignments</h3>
+        <div id="assignmentsTableContainer" style="overflow-x: auto;">
+          <!-- Rendered in JS -->
+        </div>
+      </div>
+    </section>
+
+    <!-- VIEW: WORKOUTS TRACKER (STUDENT & COACH TRACKER) -->
+    <section id="view-workouts" class="view-section">
+      <!-- Day Navigation Bar (Back 1 Day, Forward 1 Day, Jump to Today) -->
+      <div class="day-nav-bar">
+        <div class="day-nav-controls">
+          <button class="day-nav-btn" id="btnPrevDay" onclick="navigateDay(-1)" title="Previous Day">
+            ‹ Prev
+          </button>
+          <button class="day-nav-btn day-today-btn" id="btnJumpToday" onclick="jumpDayToToday()">
+            Today
+          </button>
+          <button class="day-nav-btn" id="btnNextDay" onclick="navigateDay(1)" title="Next Day">
+            Next ›
+          </button>
+        </div>
+
+        <div class="day-nav-date-display" onclick="openDayNativeDatePicker()" title="Click to choose a date">
+          <span class="day-nav-date-text" id="dayNavDateText">Today</span>
+          <span class="day-today-badge" id="dayTodayBadge">TODAY</span>
+          <input type="date" id="dayDatePicker" class="day-hidden-date-picker" onchange="onDayDatePickerChanged(this.value)">
+        </div>
+
+        <div class="workout-btn-actions">
+          <button id="btnWorkoutBriefing" class="btn-video-brief" style="display: none;">
+            <span>▶</span> Watch Briefing
+          </button>
+          <button id="btnEditCurrentWorkout" class="calendar-btn-nav" style="background: #334155; color: white; border: none; padding: 9px 14px; font-weight: 700; border-radius: 8px; cursor: pointer; display: none;" onclick="jumpToEditCurrentWorkout()">
+            <span>✏️</span> Edit Workout
+          </button>
+        </div>
+      </div>
+
+      <!-- Multiple Workouts on Date Switcher Tabs (Only if multiple workouts exist on this day) -->
+      <div id="dayMultipleWorkoutsBar" class="day-multiple-workouts-bar" style="display: none;"></div>
+
+      <!-- Stats Ribbon -->
+      <div id="dayStatsRibbon" class="stats-ribbon">
+        <div class="stat-item">
+          <span class="stat-label">Exercises Done</span>
+          <span class="stat-val" id="statExercises">0 / 0</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Total Tonnage</span>
+          <span class="stat-val" id="statTonnage">0 lbs</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Sets Completed</span>
+          <span class="stat-val" id="statSets">0 / 0</span>
+        </div>
+      </div>
+
+      <!-- Workout Overview Timeline Card (Screenshot 2 Replica) -->
+      <div id="dayWorkoutContent" class="timeline-card">
+        <div class="timeline-title-row">
+          <h2 class="timeline-title" id="timelineHeaderTitle">Day 1 - Week 1</h2>
+          <div class="timeline-subtitle" id="timelineHeaderProgram">Oct 2026 • Session</div>
+        </div>
+
+        <!-- Connected vertical timeline -->
+        <div class="exercise-timeline" id="timelineExercisesList">
+          <!-- Dynamically populated rows matching Screenshot 2 -->
+        </div>
+      </div>
+
+      <!-- Rest Day / No Workout View (Shown if no workouts on this date) -->
+      <div id="dayRestDayCard" class="day-rest-card" style="display: none;">
+        <div style="font-size: 44px; margin-bottom: 12px;">🧘</div>
+        <h3 style="font-size: 20px; font-weight: 800; color: #ffffff; margin-bottom: 6px;">Rest & Recovery Day</h3>
+        <p style="font-size: 14px; color: #94a3b8; margin-bottom: 20px;">
+          No workouts scheduled for <span id="dayRestDateLabel" style="color: #38bdf8; font-weight: 700;">Sunday, Oct 18, 2026</span>. Take time to recover and hydrate!
+        </p>
+        <button class="btn-primary" style="display: inline-block; padding: 10px 20px; font-size: 13.5px;" onclick="scheduleWorkoutForCurrentDate()">
+          + Schedule Workout on this Day
+        </button>
+      </div>
+    </section>
+
+    <!-- VIEW: CALENDAR VIEW -->
+    <section id="view-calendar" class="view-section" style="display: none;">
+      <div class="calendar-card">
+        <div class="calendar-header-bar">
+          <div class="calendar-month-title">
+            <span id="calendarMonthTitle">October 2026</span>
+          </div>
+          <div class="calendar-nav-group">
+            <button class="calendar-btn-nav" id="btnPrevMonth">‹ Previous</button>
+            <button class="calendar-btn-today" id="btnToday">Today</button>
+            <button class="calendar-btn-nav" id="btnNextMonth">Next ›</button>
+            <select id="calendarProgramSelect" class="calendar-btn-nav" style="background:#fff;" onchange="jumpCalendarToProgram(this.value)">
+              <option value="">Jump to Program...</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="width: 100%; overflow-x: auto;">
+          <div style="min-width: 560px;">
+            <!-- 7-day headers -->
+            <div class="calendar-grid" style="margin-bottom: 6px;">
+              <div class="calendar-day-header">Mon</div>
+              <div class="calendar-day-header">Tue</div>
+              <div class="calendar-day-header">Wed</div>
+              <div class="calendar-day-header">Thu</div>
+              <div class="calendar-day-header">Fri</div>
+              <div class="calendar-day-header">Sat</div>
+              <div class="calendar-day-header">Sun</div>
+            </div>
+
+            <!-- Dynamic Days Grid -->
+            <div class="calendar-grid" id="calendarDaysGrid"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- VIEW: WORKOUT PLANNER (CONTAINING 3 SUB-TABS WITHIN THIS PAGE) -->
+    <section id="view-planner" class="view-section" style="display: none;">
+      <!-- Page Subtabs Header -->
+      <div class="planner-subnav-bar">
+        <button class="planner-subnav-btn active" data-subtab="builder" onclick="switchPlannerSubtab('builder')">
+          ⚡ Build Workout
+        </button>
+        <button class="planner-subnav-btn" data-subtab="weekplanner" onclick="switchPlannerSubtab('weekplanner')">
+          📅 Week Planner
+        </button>
+        <button class="planner-subnav-btn" data-subtab="editworkout" onclick="switchPlannerSubtab('editworkout')">
+          ✏️ Edit Workout
+        </button>
+      </div>
+
+      <!-- SUBTAB 1: BUILD WORKOUT -->
+      <div id="planner-subtab-builder" class="planner-subtab-panel">
+        <div class="timeline-card" style="margin-bottom: 24px;">
+          <h2 style="font-size: 20px; font-weight: 800; margin-bottom: 16px;">Build Single Workout</h2>
+          <div class="grid-2">
+            <div class="form-group">
+              <label class="form-label">Workout Title</label>
+              <input type="text" id="builderTitle" class="form-input" placeholder="e.g. Saturday - Full Body Power">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Program / Phase Name</label>
+              <input type="text" id="builderProgram" class="form-input" placeholder="e.g. Current Training (Oct 2026)">
+            </div>
+          </div>
+          <div class="grid-2">
+            <div class="form-group">
+              <label class="form-label">Day of Week</label>
+              <select id="builderDayOfWeek" class="form-select">
+                <option value="Monday">Monday</option>
+                <option value="Tuesday">Tuesday</option>
+                <option value="Wednesday">Wednesday</option>
+                <option value="Thursday">Thursday</option>
+                <option value="Friday">Friday</option>
+                <option value="Saturday">Saturday</option>
+                <option value="Sunday">Sunday</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Calendar Date (Optional)</label>
+              <input type="date" id="builderCalendarDate" class="form-input">
+            </div>
+          </div>
+          <div class="grid-2">
+            <div class="form-group">
+              <label class="form-label">Week Number</label>
+              <input type="number" id="builderWeekNum" class="form-input" value="1">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Workout Explainer Video Link (YouTube)</label>
+              <input type="url" id="builderVideoUrl" class="form-input" placeholder="https://www.youtube.com/watch?v=...">
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Workout Description / Coaching Notes</label>
+            <textarea id="builderDesc" class="form-textarea" placeholder="Overall notes, warm-up pacing, recovery goals..."></textarea>
+          </div>
+        </div>
+
+        <div class="timeline-card" style="margin-bottom: 30px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+            <h3 style="font-size: 18px; font-weight: 800;">Workout Exercises & Supersets</h3>
+            <button class="btn-secondary" style="padding: 8px 14px; font-size: 13px;" onclick="addExerciseToBuilder()">
+              + Add Exercise
+            </button>
+          </div>
+
+          <div id="builderExerciseList"></div>
+
+          <div style="margin-top: 20px;">
+            <button class="btn-primary" style="width: 100%; padding: 14px; font-size: 16px;" onclick="saveCustomWorkout()">
+              Save & Launch Workout
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- SUBTAB 2: WEEK PLANNER & BULK COPY -->
+      <div id="planner-subtab-weekplanner" class="planner-subtab-panel" style="display: none;">
+        <!-- Week Planner Top Control Bar -->
+        <div class="timeline-card" style="margin-bottom: 20px; padding: 16px 20px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+            <div style="display: flex; align-items: center; gap: 10px; flex: 1; min-width: 250px;">
+              <label class="form-label" style="margin: 0; white-space: nowrap;">Selected Week:</label>
+              <select id="weekPlannerSourceSelect" class="form-select" style="background:#0f172a; flex: 1;" onchange="onWeekPlannerSourceChanged()"></select>
+            </div>
+            <div style="display: flex; gap: 8px;">
+              <button class="btn-primary" style="padding: 9px 14px; font-size: 13px;" onclick="toggleBulkCopySection()">
+                ⚡ Bulk Copy Week
+              </button>
+              <button class="btn-secondary" style="padding: 9px 14px; font-size: 13px;" onclick="openSaveProgramModal()">
+                💾 Save As Program
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Collapsible Bulk Copy Banner -->
+        <div id="bulkCopyPanel" class="copy-week-banner" style="display: none;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+            <h3 style="font-size: 17px; font-weight: 800; color: #ffffff;">
+              ⚡ Copy Selected Week into Future Periods
+            </h3>
+            <button style="background: transparent; border: none; color: #94a3b8; font-size: 18px; cursor: pointer;" onclick="toggleBulkCopySection()">✕</button>
+          </div>
+          <p style="font-size: 13px; color: #94a3b8; margin-bottom: 16px;">
+            Duplicate all workouts in this week across future weeks with automatic date scheduling and progressive overload.
+          </p>
+          <div class="grid-2">
+            <div class="form-group">
+              <label class="form-label">Target Program Name</label>
+              <input type="text" id="copyTargetProgram" class="form-input" placeholder="e.g. Current Training (Oct 2026)">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Target Week Start Date (Monday)</label>
+              <input type="date" id="copyTargetStartDate" class="form-input" value="2026-10-19">
+            </div>
+          </div>
+          <div class="grid-2">
+            <div class="form-group">
+              <label class="form-label">Target Week Number</label>
+              <input type="number" id="copyTargetWeekNum" class="form-input" value="2">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Number of Future Weeks to Create</label>
+              <select id="copyRepeatWeeks" class="form-select">
+                <option value="1">1 Week (e.g. Week 2)</option>
+                <option value="2">2 Weeks (e.g. Weeks 2 & 3)</option>
+                <option value="3">3 Weeks (e.g. Weeks 2, 3, 4)</option>
+                <option value="4">4 Weeks (Full 4-Week Block)</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Weight Progression per Week (lbs)</label>
+            <input type="number" step="2.5" id="copyProgressionLbs" class="form-input" value="5" placeholder="e.g. 5 lbs or 0">
+          </div>
+          <button class="btn-primary" style="padding: 12px 20px; font-size: 15px; margin-top: 6px;" onclick="executeCopyWeek()">
+            Duplicate & Copy Week(s)
+          </button>
+        </div>
+
+        <!-- Weekly 7-Day Layout (Monday through Sunday) -->
+        <div class="timeline-card">
+          <div style="margin-bottom: 16px;">
+            <h3 style="font-size: 20px; font-weight: 800;" id="weekPlannerActiveTitle">Week Overview</h3>
+            <div style="font-size: 13px; color: #64748b;" id="weekPlannerActiveSubtitle">Schedule workouts on any day (Monday – Sunday)</div>
+          </div>
+
+          <div class="week-planner-grid" id="weekPlannerDaysGrid"></div>
+        </div>
+      </div>
+
+      <!-- SUBTAB 3: EDIT EXISTING WORKOUT -->
+      <div id="planner-subtab-editworkout" class="planner-subtab-panel" style="display: none;">
+        <div class="timeline-card" style="margin-bottom: 24px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 10px;">
+            <h2 style="font-size: 20px; font-weight: 800;">Edit Existing Workout</h2>
+            <div style="display: flex; align-items: center; gap: 8px; flex: 1; max-width: 350px;">
+              <select id="editWorkoutSelector" class="form-select" onchange="loadWorkoutIntoEditor(parseInt(this.value))"></select>
+            </div>
+          </div>
+
+          <div class="grid-2">
+            <div class="form-group">
+              <label class="form-label">Workout Title</label>
+              <input type="text" id="editTitle" class="form-input">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Program Name</label>
+              <input type="text" id="editProgram" class="form-input">
+            </div>
+          </div>
+
+          <div class="grid-2">
+            <div class="form-group">
+              <label class="form-label">Day of Week</label>
+              <select id="editDayOfWeek" class="form-select">
+                <option value="Monday">Monday</option>
+                <option value="Tuesday">Tuesday</option>
+                <option value="Wednesday">Wednesday</option>
+                <option value="Thursday">Thursday</option>
+                <option value="Friday">Friday</option>
+                <option value="Saturday">Saturday</option>
+                <option value="Sunday">Sunday</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Calendar Date</label>
+              <input type="date" id="editCalendarDate" class="form-input">
+            </div>
+          </div>
+
+          <div class="grid-2">
+            <div class="form-group">
+              <label class="form-label">Week Number</label>
+              <input type="number" id="editWeekNum" class="form-input">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Explainer Video URL (YouTube)</label>
+              <input type="url" id="editVideoUrl" class="form-input">
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Workout Description / Coaching Cues</label>
+            <textarea id="editDesc" class="form-textarea"></textarea>
+          </div>
+        </div>
+
+        <!-- Exercise Details Editor -->
+        <div class="timeline-card" style="margin-bottom: 30px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+            <h3 style="font-size: 18px; font-weight: 800;">Exercise Details & Supersets</h3>
+            <button class="btn-secondary" style="padding: 8px 14px; font-size: 13px;" onclick="addExerciseToEditor()">
+              + Add Exercise
+            </button>
+          </div>
+
+          <div id="editorExerciseList"></div>
+
+          <div style="display: flex; gap: 12px; margin-top: 24px; flex-wrap: wrap;">
+            <button class="btn-primary" style="flex: 2; padding: 14px; font-size: 16px;" onclick="saveWorkoutEdits()">
+              💾 Save Changes
+            </button>
+            <button class="btn-secondary" style="flex: 1; padding: 14px; font-size: 16px;" onclick="trackCurrentlyEditedWorkout()">
+              ▶ Track Workout
+            </button>
+            <button style="background: transparent; border: 1px solid #ef4444; color: #ef4444; border-radius: 8px; padding: 14px 18px; font-weight: 700; cursor: pointer;" onclick="deleteCurrentlyEditedWorkout()">
+              🗑️ Delete
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- VIEW 3: EXERCISES LIBRARY -->
+    <section id="view-exercises" class="view-section" style="display: none;">
+      <div style="display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; align-items: center;">
+        <input type="text" id="exerciseSearchInput" class="form-input" style="flex: 1; min-width: 200px;" placeholder="Search exercises by name..." oninput="renderExercisesView()">
+        <button class="btn-primary" onclick="createNewExercisePrompt()">+ Add Exercise</button>
+      </div>
+
+      <!-- Category Filter Pills -->
+      <div style="display: flex; gap: 8px; overflow-x: auto; margin-bottom: 16px; padding-bottom: 4px;">
+        <button class="nav-tab-btn active category-filter-btn" data-category="All" onclick="filterCategory(this)">All</button>
+        <button class="nav-tab-btn category-filter-btn" data-category="Lower Body" onclick="filterCategory(this)">Lower Body</button>
+        <button class="nav-tab-btn category-filter-btn" data-category="Upper Body" onclick="filterCategory(this)">Upper Body</button>
+        <button class="nav-tab-btn category-filter-btn" data-category="Mobility" onclick="filterCategory(this)">Mobility</button>
+        <button class="nav-tab-btn category-filter-btn" data-category="Core & Trunk" onclick="filterCategory(this)">Core</button>
+        <button class="nav-tab-btn category-filter-btn" data-category="Plyometrics" onclick="filterCategory(this)">Plyometrics</button>
+        <button class="nav-tab-btn category-filter-btn" data-category="Breathwork" onclick="filterCategory(this)">Breathwork</button>
+      </div>
+
+      <div id="exercisesCatalogList"></div>
+    </section>
+
+    <!-- VIEW 4: MAXES / PR -->
+    <section id="view-records" class="view-section" style="display: none;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h2 style="font-size: 20px; font-weight: 800;">Personal Records (Maxes)</h2>
+        <button class="btn-primary" onclick="addRecordPrompt()">+ Log PR</button>
+      </div>
+      <div id="recordsListContainer"></div>
+    </section>
+
+  </main>
+
+  <!-- ACTIVE EXERCISE CARD CAROUSEL MODAL (SCREENSHOT 1 REPLICA) -->
+  <div id="exerciseCardBackdrop" class="card-modal-backdrop">
+    <div class="exercise-active-card">
+      
+      <!-- Video Preview Header with Play Button -->
+      <div id="cardVideoHeader" class="card-video-header">
+        <div class="card-video-play">▶</div>
+        <div id="cardExTitle" class="card-video-title">Exercise Title</div>
+        <div style="position: absolute; top: 12px; left: 14px;">
+          <div id="cardSupersetBadge" class="badge-letter-sub" style="position: static; width: 28px; height: 28px; font-size: 14px; border: 2px solid #ffffff; box-shadow: 0 2px 6px rgba(0,0,0,0.5);">A</div>
+        </div>
+      </div>
+
+      <!-- Card Content Area -->
+      <div class="card-body-content">
+        
+        <!-- Action Buttons Row: OPT OUT | JOURNAL | MEDIA -->
+        <div class="card-actions-row">
+          <button id="cardBtnOptOut" class="btn-card-action" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.3);">
+            <span>🚫</span> Opt Out
+          </button>
+          <button id="cardBtnJournal" class="btn-card-action" style="color: #10b981; border-color: rgba(16, 185, 129, 0.3);">
+            <span>📝</span> Journal
+          </button>
+          <button id="cardBtnMedia" class="btn-card-action" style="color: #0ea5e9; border-color: rgba(14, 165, 233, 0.3);">
+            <span>📷</span> Media
+          </button>
+        </div>
+
+        <!-- Coaching Cues Box -->
+        <div id="cardCuesBox" class="card-cues-box"></div>
+
+        <!-- Set Table -->
+        <table class="set-table">
+          <thead>
+            <tr>
+              <th style="width: 45px;">SET</th>
+              <th>WEIGHT</th>
+              <th id="cardRepHeader">REPS (EA.)</th>
+              <th style="width: 60px;">DONE</th>
+            </tr>
+          </thead>
+          <tbody id="cardSetTableBody">
+            <!-- Dynamically populated sets -->
+          </tbody>
+        </table>
+
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Bottom Floating Action Bar (Screenshot 1 Replica) -->
+  <div id="bottomFloatingBar" class="bottom-floating-bar" style="display: none;">
+    <button id="btnInfoModal" class="floating-bar-btn" title="Exercise Info">ⓘ</button>
+    <button id="btnPrevExercise" class="floating-bar-btn" title="Previous Exercise">‹</button>
+    <button id="btnCloseCard" class="floating-bar-btn close-btn" title="Close Card">✕</button>
+    <button id="btnNextExercise" class="floating-bar-btn" title="Next Exercise">›</button>
+    <button id="btnTimerModal" class="floating-bar-btn" title="Rest Timer">⏱</button>
+  </div>
+
+  <!-- Video Player Modal -->
+  <div id="videoPlayerModal" class="modal-overlay">
+    <div class="modal-content-box">
+      <button class="modal-close-icon" onclick="closeVideoModal()">✕</button>
+      <h3 id="videoModalTitle" style="font-size: 18px; font-weight: 800; margin-bottom: 12px;">Movement Video</h3>
+      <div class="video-responsive-container">
+        <iframe id="videoModalIframe" src="" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+      </div>
+      <div style="margin-top: 14px; text-align: right;">
+        <a id="videoDirectLink" href="#" target="_blank" rel="noopener noreferrer" class="btn-secondary" style="text-decoration: none; display: inline-block;">
+          Open in YouTube ↗
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Add Workout to Day -->
+  <div id="addWorkoutToDayModal" class="modal-overlay">
+    <div class="modal-content-box" style="max-width: 480px;">
+      <button class="modal-close-icon" onclick="closeAddWorkoutModal()">✕</button>
+      <h3 style="font-size: 18px; font-weight: 800; margin-bottom: 6px;">Add Workout to <span id="addModalDayName" style="color: #ef4444;">Day</span></h3>
+      <p style="font-size: 13px; color: #94a3b8; margin-bottom: 16px;">
+        Choose an existing workout to assign to this day. You can also duplicate it as an independent copy.
+      </p>
+
+      <div class="form-group">
+        <label class="form-label">Select Workout</label>
+        <select id="addModalWorkoutSelect" class="form-select"></select>
+      </div>
+
+      <div class="form-group" style="margin-top: 14px;">
+        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 14px; color: #cbd5e1;">
+          <input type="checkbox" id="addModalDuplicateCheckbox" checked style="width: 16px; height: 16px; accent-color: #ef4444;">
+          <span>Duplicate as new copy (recommended)</span>
+        </label>
+      </div>
+
+      <div style="display: flex; gap: 10px; margin-top: 20px;">
+        <button class="btn-primary" style="flex: 1; padding: 12px;" onclick="submitAddWorkoutToDay()">
+          + Add Workout
+        </button>
+        <button class="btn-secondary" style="padding: 12px 18px;" onclick="closeAddWorkoutModal()">
+          Cancel
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Save Weekly Program Template -->
+  <div id="saveProgramModal" class="modal-overlay">
+    <div class="modal-content-box" style="max-width: 480px;">
+      <button class="modal-close-icon" onclick="closeSaveProgramModal()">✕</button>
+      <h3 style="font-size: 18px; font-weight: 800; margin-bottom: 6px;">Save as Weekly Program</h3>
+      <p style="font-size: 13px; color: #94a3b8; margin-bottom: 16px;">
+        Save all workouts from the currently selected week as a reusable master program template.
+      </p>
+
+      <div class="form-group">
+        <label class="form-label">Source Week</label>
+        <div id="saveProgramSourceText" style="padding: 10px 14px; background: #0f172a; border-radius: 8px; border: 1px solid #334155; font-size: 14px; color: #94a3b8;">
+          Loading...
+        </div>
+      </div>
+
+      <div class="form-group" style="margin-top: 14px;">
+        <label class="form-label">New Program Name</label>
+        <input type="text" id="saveProgramNameInput" class="form-input" placeholder="e.g. 5-Day Hypertrophy Template">
+      </div>
+
+      <div style="display: flex; gap: 10px; margin-top: 20px;">
+        <button class="btn-primary" style="flex: 1; padding: 12px;" onclick="submitSaveProgramTemplate()">
+          💾 Save Program
+        </button>
+        <button class="btn-secondary" style="padding: 12px 18px;" onclick="closeSaveProgramModal()">
+          Cancel
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Mock Login / Sign-In Screen Overlay -->
+  <div id="view-login" class="login-overlay" style="display: none;">
+    <div class="login-card">
+      <div class="login-header">
+        <div class="logo-shield" style="font-size: 32px; width: 64px; height: 64px; margin: 0 auto 12px auto; display: flex; align-items: center; justify-content: center; background: #ff6600; border-radius: 16px; color: white;">⚡</div>
+        <h1>TeamBuildr Strength</h1>
+        <p>Select a profile to authenticate into the platform</p>
+      </div>
+
+      <div class="login-section">
+        <h3>Strength & Conditioning Coaches</h3>
+        <div class="profile-cards-grid" id="loginCoachList">
+          <!-- Rendered in JS -->
+        </div>
+      </div>
+
+      <div class="login-section" style="margin-top: 24px;">
+        <h3>Athletes & Clients</h3>
+        <div class="profile-cards-grid" id="loginStudentList">
+          <!-- Rendered in JS -->
+        </div>
+      </div>
+
+      <div class="login-footer" style="margin-top: 24px; display: flex; justify-content: space-between; align-items: center; border-top: 1px solid #334155; padding-top: 18px;">
+        <span style="font-size: 12px; color: #64748b;">Tailnet Live Session • Role-Separated</span>
+        <button class="btn-secondary" style="font-size: 13px; padding: 8px 14px;" onclick="openCreateUserModal()">+ Add New User Profile</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: View Athlete Completed Sets Inspection -->
+  <div id="athleteSetsModal" class="modal-overlay">
+    <div class="modal-content-box" style="max-width: 640px;">
+      <button class="modal-close-icon" onclick="closeAthleteSetsModal()">✕</button>
+      <div style="display: flex; align-items: center; gap: 14px; margin-bottom: 16px; border-bottom: 1px solid #334155; padding-bottom: 14px;">
+        <div id="modalAthleteAvatar" class="profile-avatar" style="width: 48px; height: 48px; font-size: 18px;"></div>
+        <div>
+          <h3 id="modalAthleteName" style="font-size: 18px; font-weight: 800; color: #ffffff; margin: 0;"></h3>
+          <p id="modalAthleteSubtitle" style="font-size: 13px; color: #94a3b8; margin: 2px 0 0 0;"></p>
+        </div>
+      </div>
+
+      <div id="modalAthleteSetsContent" style="max-height: 450px; overflow-y: auto;">
+        <!-- Rendered in JS -->
+      </div>
+
+      <div style="margin-top: 20px; display: flex; justify-content: flex-end;">
+        <button class="btn-secondary" onclick="closeAthleteSetsModal()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Create User (Coach or Athlete) -->
+  <div id="createUserModal" class="modal-overlay">
+    <div class="modal-content-box" style="max-width: 480px;">
+      <button class="modal-close-icon" onclick="closeCreateUserModal()">✕</button>
+      <h3 style="font-size: 18px; font-weight: 800; margin-bottom: 6px;">Add New User Profile</h3>
+      <p style="font-size: 13px; color: #94a3b8; margin-bottom: 16px;">Create a coach or student athlete profile</p>
+
+      <div class="form-group">
+        <label class="form-label">Full Name</label>
+        <input type="text" id="newUserName" class="form-input" placeholder="e.g. Jordan Smith">
+      </div>
+
+      <div class="form-group" style="margin-top: 12px;">
+        <label class="form-label">Email Address</label>
+        <input type="email" id="newUserEmail" class="form-input" placeholder="e.g. jordan.smith@example.com">
+      </div>
+
+      <div class="form-group" style="margin-top: 12px;">
+        <label class="form-label">Role</label>
+        <select id="newUserRole" class="form-input" onchange="onNewUserRoleChanged(this.value)">
+          <option value="student">Student / Athlete</option>
+          <option value="coach">Strength & Conditioning Coach</option>
+        </select>
+      </div>
+
+      <div class="form-group" style="margin-top: 12px;">
+        <label class="form-label">Sport / Title / Position</label>
+        <input type="text" id="newUserTitle" class="form-input" placeholder="e.g. Varsity WR, Marathoner, Assistant Coach">
+      </div>
+
+      <div id="newUserGroupSection" class="form-group" style="margin-top: 12px;">
+        <label class="form-label">Assign to Initial Training Group</label>
+        <select id="newUserGroupSelect" class="form-input">
+          <option value="">(None - Unassigned)</option>
+        </select>
+      </div>
+
+      <div style="display: flex; gap: 10px; margin-top: 20px;">
+        <button class="btn-primary" style="flex: 1; padding: 12px; background: #ff6600;" onclick="submitCreateUser()">
+          Create Profile
+        </button>
+        <button class="btn-secondary" style="padding: 12px 18px;" onclick="closeCreateUserModal()">
+          Cancel
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Create Training Group -->
+  <div id="createGroupModal" class="modal-overlay">
+    <div class="modal-content-box" style="max-width: 440px;">
+      <button class="modal-close-icon" onclick="closeCreateGroupModal()">✕</button>
+      <h3 style="font-size: 18px; font-weight: 800; margin-bottom: 6px;">New Training Group</h3>
+      <p style="font-size: 13px; color: #94a3b8; margin-bottom: 16px;">Create a team roster or training cohort</p>
+
+      <div class="form-group">
+        <label class="form-label">Group Name</label>
+        <input type="text" id="newGroupName" class="form-input" placeholder="e.g. Varsity Football, Off-Season Lifters">
+      </div>
+
+      <div class="form-group" style="margin-top: 12px;">
+        <label class="form-label">Description</label>
+        <input type="text" id="newGroupDesc" class="form-input" placeholder="e.g. Mon/Wed/Fri power development">
+      </div>
+
+      <div class="form-group" style="margin-top: 12px;">
+        <label class="form-label">Accent Color</label>
+        <div style="display: flex; gap: 10px; align-items: center;">
+          <input type="color" id="newGroupColor" value="#3b82f6" style="width: 44px; height: 38px; border: none; border-radius: 6px; cursor: pointer; background: transparent;">
+          <span style="font-size: 13px; color: #94a3b8;">Pick team color badge</span>
+        </div>
+      </div>
+
+      <div style="display: flex; gap: 10px; margin-top: 20px;">
+        <button class="btn-primary" style="flex: 1; padding: 12px;" onclick="submitCreateGroup()">
+          Create Group
+        </button>
+        <button class="btn-secondary" style="padding: 12px 18px;" onclick="closeCreateGroupModal()">
+          Cancel
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Manage Athlete Group Memberships -->
+  <div id="assignAthleteGroupModal" class="modal-overlay">
+    <div class="modal-content-box" style="max-width: 440px;">
+      <button class="modal-close-icon" onclick="closeAssignAthleteGroupModal()">✕</button>
+      <h3 style="font-size: 18px; font-weight: 800; margin-bottom: 6px;">Manage Groups</h3>
+      <p id="manageAthleteGroupSubtitle" style="font-size: 13px; color: #94a3b8; margin-bottom: 16px;"></p>
+
+      <div id="athleteGroupChecklist" style="margin-bottom: 20px;">
+        <!-- Checkboxes of groups -->
+      </div>
+
+      <div style="display: flex; justify-content: flex-end;">
+        <button class="btn-secondary" onclick="closeAssignAthleteGroupModal()">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/app.js"></script>
+  <script>
+    function filterCategory(btn) {
+      document.querySelectorAll('.category-filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderExercisesView();
+    }
+  </script>
+</body>
+</html>
