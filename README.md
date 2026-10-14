@@ -1,6 +1,6 @@
-# TeamBuildr Workout & Strength Coach Platform
+# wourkout
 
-A lightweight, mobile-first strength & conditioning platform inspired by **TeamBuildr**. Engineered with **FastAPI**, **SQLAlchemy**, and modern touch-friendly web technology, accessible locally across your **Tailnet** and architected for seamless 1-click deployment to **Google Cloud Run** and **Google Cloud SQL** (PostgreSQL) or **Supabase**.
+A workout-programming app for athletic trainers and personal trainers. Create a workout, assign it to one client, group clients into teams, and bulk-apply a program to a team. Built with **FastAPI**, **SQLAlchemy**, and a touch-friendly web UI. Runs locally and can deploy to **Google Cloud Run** with **Cloud SQL** or **Supabase**.
 
 ---
 
@@ -60,7 +60,7 @@ The platform was built from the ground up for zero-friction transition between l
                   │                                               │
                   │  ┌───────────────┐     ┌───────────────────┐  │
 Tailscale / Web ──┼─>│ FastAPI API   │<───>│ Responsive HTML5  │  │
-                  │  │ (REST Routes) │     │ (TeamBuildr UI)   │  │
+                  │  │ (REST Routes) │     │ (wourkout UI)     │  │
                   │  └───────┬───────┘     └───────────────────┘  │
                   └──────────┼────────────────────────────────────┘
                              │

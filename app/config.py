@@ -1,7 +1,7 @@
 import os
 
 class Settings:
-    PROJECT_NAME: str = "TeamBuildr Replica"
+    PROJECT_NAME: str = "wourkout"
     PORT: int = int(os.getenv("PORT", 8000))
     HOST: str = os.getenv("HOST", "0.0.0.0")
     DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./workout.db")
