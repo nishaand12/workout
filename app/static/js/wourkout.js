@@ -341,6 +341,8 @@ const state = {
   actingAthlete: null,
   serverUsers: {},
   athleteAssignments: [],
+  athleteWorkouts: {},
+  athleteOpenDate: null,
   openWorkout: null,
   openSession: null
 };
@@ -369,6 +371,10 @@ function toast(msg) {
   state.toast = msg;
   clearTimeout(toast._t);
   toast._t = setTimeout(() => { state.toast = ""; render(); }, 2200);
+}
+function dismissToast() {
+  state.toast = "";
+  clearTimeout(toast._t);
 }
 function selectedItems(date) {
   return ensureDay(date).items.filter((it) => it.selected);
@@ -433,13 +439,14 @@ function closeFloats() {
   state.teamFilter = false;
 }
 function render() {
-  const light = state.view !== "build";
+  const light = state.view !== "build" && state.view !== "mine";
   const root = document.getElementById("app");
   root.className = light ? "light" : "";
   const active = document.activeElement;
   const focusId = active && active.dataset ? active.dataset.focus : null;
   const sel = active && active.selectionStart;
-  root.innerHTML = nav() + '<div class="shell">' + body() + rightRail() + "</div>" + (state.toast ? `<div class="toast">${esc(state.toast)}</div>` : "") + modalHtml() + fabHtml();
+  const toastHtml = state.toast && state.role !== "athlete" ? `<div class="toast">${esc(state.toast)}</div>` : "";
+  root.innerHTML = nav() + '<div class="shell">' + body() + rightRail() + "</div>" + toastHtml + modalHtml() + fabHtml();
   if (focusId) {
     const el = root.querySelector(`[data-focus="${focusId}"]`);
     if (el) {
@@ -1037,17 +1044,24 @@ function backToCoach() {
 }
 async function openAsAthlete(localId) {
   const person = ATHLETES.find((a) => a.id === localId) || athlete();
+  dismissToast();
   state.navMenu = null;
   state.actingAthlete = person.id;
   state.role = "athlete";
   state.view = "mine";
   state.openWorkout = null;
+  state.openSession = null;
+  state.athleteOpenDate = null;
   state.athleteAssignments = [];
   render();
   try {
     const user = await ensureUser(person, "student");
     state.serverUserId = user.id;
     state.athleteAssignments = await api("GET", "/api/assignments?user_id=" + user.id);
+    state.athleteWorkouts = {};
+    for (const row of state.athleteAssignments) {
+      state.athleteWorkouts[row.scheduled_date] = await api("GET", "/api/workouts/" + row.workout_id);
+    }
     render();
   } catch (err) {
     toast("Could not load this athlete");
@@ -1071,30 +1085,99 @@ async function logAthleteSet(weId, setNumber, field, value) {
   state.openSession.set_logs = logs.filter((l) => !(l.workout_exercise_id === weId && l.set_number === setNumber)).concat([saved]);
   render();
 }
+function savedDay(date) {
+  const day = (state.calendars[state.actingAthlete] || {})[date];
+  if (day && day.savedFor === state.actingAthlete && (day.items || []).length) {
+    return { title: day.title, weekLabel: day.weekLabel, items: day.items, workoutId: day.savedWorkoutId };
+  }
+  const workout = (state.athleteWorkouts || {})[date];
+  if (!workout) return null;
+  return {
+    title: workout.title,
+    weekLabel: weekName(date),
+    workoutId: workout.id,
+    items: (workout.exercises || []).map((we) => ({
+      name: (we.exercise && we.exercise.name) || "Exercise",
+      letter: we.superset_group || "",
+      type: "lift",
+      sets: we.prescribed_sets || 1,
+      reps: [we.target_reps || "1"],
+      loads: [],
+      note: we.notes || ""
+    }))
+  };
+}
+function athleteDayCol(date) {
+  const day = savedDay(date);
+  const open = state.athleteOpenDate === date ? "focus" : "";
+  const items = day ? day.items.map((it) => {
+    const color = LETTER_COLOR[it.letter] || "#888";
+    const letter = it.letter ? `<span class="letter" style="background:${color}">${esc(it.letter)}</span>` : `<span class="letter" style="background:#444;color:#fff">–</span>`;
+    return `<div class="ex">${letter}<div class="ex-main"><div class="ex-name">${esc(it.name)}</div><div class="ex-sub">${esc(scriptLine(it))}</div></div></div>`;
+  }).join("") : "";
+  return `<div class="day read ${open}" data-day="${date}" onclick="openAthleteDay('${date}')">
+    <div class="day-top"><span>${fmtDay(date)}</span></div>
+    <div class="week-label">${esc((day && day.weekLabel) || weekName(date))}</div>
+    <div class="day-title ${day ? "" : "placeholder"}">${day ? esc(day.title || "Workout") : "Rest"}</div>
+    <div>${items}</div>
+  </div>`;
+}
 function mineView() {
   const person = ATHLETES.find((a) => a.id === state.actingAthlete) || athlete();
-  const rows = state.athleteAssignments || [];
-  const workout = state.openWorkout;
-  const detail = workout ? `<div class="panel" style="margin-top:12px">
-      <button class="comment" onclick="state.openWorkout=null;render()">← All saved days</button>
-      <h2>${esc(workout.title)}</h2>
-      <p class="hint">${esc(workout.calendar_date || workout.scheduled_date || "")} · ${esc(person.name)}</p>
-      ${workout.exercises.map((we) => athleteExercise(we)).join("") || "<p>No exercises on this routine.</p>"}
-    </div>` : "";
-  return `<section class="stage light-page">
-    <div class="athlete-banner">
-      <span>Athlete · ${esc(person.name)}. Only routines saved for this athlete.</span>
-      <button class="ghost" onclick="backToCoach()">Back to coach</button>
+  const weeks = state.viewMode === "week" ? 1 : 4;
+  let weeksHtml = "";
+  for (let w = 0; w < weeks; w++) {
+    const start = addDays(state.weekStart, w * 7);
+    let cols = "";
+    for (let i = 0; i < 7; i++) cols += athleteDayCol(addDays(start, i));
+    weeksHtml += `<div class="week">${cols}</div>`;
+  }
+  return `<section class="stage">
+    <div class="subhead">
+      <div>
+        <div class="crumbs">Athlete calendar · days your trainer saved</div>
+        <div class="athlete-name">${esc(person.name)}</div>
+      </div>
+      <div class="sub-actions">
+        <button class="ghost" onclick="backToCoach()">Back to coach</button>
+        <div class="seg">
+          <button onclick="shiftWeek(-1)">‹</button>
+          <button class="today-pill" onclick="jumpToday()">Today</button>
+          <button onclick="shiftWeek(1)">›</button>
+        </div>
+      </div>
     </div>
-    <h1 style="margin-top:16px">My workout</h1>
-    ${rows.length ? `<div class="grid-cards">${rows.map((a) => `<article class="card">
-        <div class="hint">${esc(a.scheduled_date)}</div>
-        <strong>${esc(a.workout_title || "Workout")}</strong>
-        <p class="hint">${esc(a.notes || "")}</p>
-        <button class="switch" onclick="openAthleteWorkout(${a.workout_id})">Open routine</button>
-      </article>`).join("")}</div>` : `<div class="empty"><div><div class="book">▦</div><div>Nothing saved for ${esc(person.name)} yet. A coach saves it from Build.</div></div></div>`}
-    ${detail}
+    <div class="cal-scroll">${weeksHtml}</div>
+    ${athleteOpenPanel()}
   </section>`;
+}
+async function openAthleteDay(date) {
+  const day = savedDay(date);
+  if (!day) return;
+  dismissToast();
+  state.athleteOpenDate = date;
+  render();
+  if (day.workoutId) {
+    try { await openAthleteWorkout(day.workoutId); }
+    catch (err) { console.error(err); }
+  }
+}
+function athleteOpenPanel() {
+  if (!state.athleteOpenDate) return "";
+  const day = savedDay(state.athleteOpenDate);
+  if (!day) return "";
+  const body = state.openWorkout && state.openWorkout.id === day.workoutId
+    ? state.openWorkout.exercises.map((we) => athleteExercise(we)).join("")
+    : day.items.map((it) => `<div class="ex-name" style="margin:8px 0">${esc(it.letter || "")} ${esc(it.name)}<div class="ex-sub">${esc(scriptLine(it))}</div></div>`).join("");
+  return `<div class="editor" onclick="event.stopPropagation()">
+    <div class="editor-h">
+      <span class="name">${esc(day.title || "Workout")}</span>
+      <span class="grow"></span>
+      <button class="iconbtn" onclick="state.athleteOpenDate=null;state.openWorkout=null;render()">✕</button>
+    </div>
+    <div class="hint" style="margin:4px 0 8px">${fmtLong(state.athleteOpenDate)}</div>
+    ${body || "<p>No exercises on this day.</p>"}
+  </div>`;
 }
 function athleteExercise(we) {
   const sets = we.prescribed_sets || 1;
@@ -1863,6 +1946,7 @@ window.saveFocused = saveFocused;
 window.openAsAthlete = openAsAthlete;
 window.backToCoach = backToCoach;
 window.openAthleteWorkout = openAthleteWorkout;
+window.openAthleteDay = openAthleteDay;
 window.logAthleteSet = logAthleteSet;
 window.shareDay = shareDay;
 window.clearTitle = clearTitle;

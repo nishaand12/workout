@@ -100,6 +100,8 @@ button { cursor: pointer; }
   display: flex; flex-direction: column; position: relative; padding: 8px;
 }
 .day.focus { outline: 1px solid #3d6fd6; }
+.day.read { cursor: pointer; }
+.day.read .day-title { display: block; }
 .day.drop { outline: 2px dashed #3d6fd6; }
 .day-top { display: flex; justify-content: space-between; align-items: center; color: #d7d7d7; font-size: 12px; font-weight: 700; letter-spacing: .04em; }
 .day-top .tools { display: flex; gap: 2px; }
