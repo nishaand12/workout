@@ -226,6 +226,10 @@ class GroupUpdate(BaseModel):
     color: Optional[str] = None
     coach_id: Optional[int] = None
 
+class GroupBrief(GroupBase):
+    id: int
+    model_config = ConfigDict(from_attributes=True)
+
 class GroupResponse(GroupBase):
     id: int
     created_at: datetime
@@ -236,7 +240,7 @@ class GroupResponse(GroupBase):
 class UserResponse(UserBase):
     id: int
     created_at: datetime
-    groups: List[GroupBase] = []
+    groups: List[GroupBrief] = []
     model_config = ConfigDict(from_attributes=True)
 
 class WorkoutAssignmentCreate(BaseModel):

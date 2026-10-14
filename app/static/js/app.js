@@ -481,9 +481,9 @@ async function renderDailyWorkoutView() {
   
   let dayWorkouts = [];
   if (activeStudent && state.assignments && state.assignments.length > 0) {
-    const studentGroupIds = (activeStudent.groups || []).map(g => g.id);
+    const studentGroupIds = (activeStudent.groups || []).map(g => Number(g.id)).filter(id => !isNaN(id));
     const assignedIds = state.assignments
-      .filter(a => a.scheduled_date === state.selectedDate && (a.user_id === activeStudent.id || (a.group_id && studentGroupIds.includes(a.group_id))))
+      .filter(a => a.scheduled_date === state.selectedDate && (Number(a.user_id) === Number(activeStudent.id) || (a.group_id && studentGroupIds.includes(Number(a.group_id)))))
       .map(a => a.workout_id);
     dayWorkouts = state.workouts.filter(w => assignedIds.includes(w.id));
   } else {
@@ -2563,7 +2563,7 @@ function renderRosterCohortsList() {
 
   state.groups.forEach(g => {
     const card = document.createElement("div");
-    card.className = `cohort-card-dropzone ${state.rosterSelectedCohortId === g.id ? 'active' : ''}`;
+    card.className = `cohort-card-dropzone ${Number(state.rosterSelectedCohortId) === Number(g.id) ? 'active' : ''}`;
     card.dataset.groupId = g.id;
 
     // Drag and drop listeners
@@ -2605,7 +2605,11 @@ function renderRosterAthletesTable() {
 
   // Filter by cohort if selected
   if (state.rosterSelectedCohortId !== null) {
-    students = students.filter(s => (s.groups || []).some(g => g.id === state.rosterSelectedCohortId));
+    const selGroup = state.groups.find(g => Number(g.id) === Number(state.rosterSelectedCohortId));
+    students = students.filter(s => (s.groups || []).some(g =>
+      (g.id && Number(g.id) === Number(state.rosterSelectedCohortId)) ||
+      (selGroup && g.name && g.name.toLowerCase().trim() === selGroup.name.toLowerCase().trim())
+    ));
   }
 
   // Filter by status if selected
@@ -2760,7 +2764,11 @@ function filterRosterByStatus(status) {
 function toggleSelectAllAthletes(checked) {
   let students = state.users.filter(u => u.role === "student");
   if (state.rosterSelectedCohortId !== null) {
-    students = students.filter(s => (s.groups || []).some(g => g.id === state.rosterSelectedCohortId));
+    const selGroup = state.groups.find(g => Number(g.id) === Number(state.rosterSelectedCohortId));
+    students = students.filter(s => (s.groups || []).some(g =>
+      (g.id && Number(g.id) === Number(state.rosterSelectedCohortId)) ||
+      (selGroup && g.name && g.name.toLowerCase().trim() === selGroup.name.toLowerCase().trim())
+    ));
   }
   if (state.rosterStatusFilter && state.rosterStatusFilter !== "all") {
     students = students.filter(s => (s.status_badge || "Active") === state.rosterStatusFilter);
@@ -3035,7 +3043,7 @@ async function openAssignAthleteGroupModal(userId) {
   const studentGroupIds = (student.groups || []).map(g => g.id);
 
   state.groups.forEach(g => {
-    const isChecked = studentGroupIds.includes(g.id);
+    const isChecked = (student.groups || []).some(sg => (sg.id && Number(sg.id) === Number(g.id)) || (sg.name && sg.name.toLowerCase().trim() === g.name.toLowerCase().trim()));
     const row = document.createElement("label");
     row.style.cssText = "display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; background: var(--amp-linen); border: 1px solid var(--amp-hairline); border-radius: var(--amp-radius-card); margin-bottom: 8px; cursor: pointer;";
     row.innerHTML = `
