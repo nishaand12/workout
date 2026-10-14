@@ -39,7 +39,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
-    description="TeamBuildr Prototype Replica for Tailscale and Google Cloud Run",
+    description="wourkout coach calendar, workout entry, and team tools",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -365,4 +365,4 @@ def serve_index():
     index_file = os.path.join(static_path, "index.html")
     if os.path.exists(index_file):
         return FileResponse(index_file)
-    return {"message": "TeamBuildr Prototype Replica Backend Running"}
+    return {"message": "wourkout"}
