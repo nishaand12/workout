@@ -251,6 +251,14 @@ class WorkoutAssignmentCreate(BaseModel):
     scheduled_date: str  # YYYY-MM-DD
     notes: Optional[str] = ""
 
+class ProgramAssignmentCreate(BaseModel):
+    program_name: str
+    week_number: Optional[int] = None
+    assigned_by_coach_id: Optional[int] = None
+    group_id: Optional[int] = None
+    user_id: Optional[int] = None
+    notes: Optional[str] = ""
+
 class WorkoutAssignmentResponse(BaseModel):
     id: int
     workout_id: int

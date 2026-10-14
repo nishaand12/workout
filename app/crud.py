@@ -173,7 +173,7 @@ def seed_database_if_empty(db: Session):
 
         # Seed PRs
         pr_seeds = [
-            ("Back Squat", 217.0, 8, "Recorded from TeamBuildr card"),
+            ("Back Squat", 217.0, 8, "Recorded from wourkout card"),
             ("Reverse Lunge", 213.0, 4, "Barbell Reverse Lunge PR"),
             ("RDL", 180.0, 8, "Romanian Deadlift PR"),
             ("Kickstand RDL", 80.0, 8, "Kickstand Dumbbell RDL"),
@@ -193,7 +193,7 @@ def seed_database_if_empty(db: Session):
         print("Initialized Day 1 active session and PR records!")
 
 # Exercise Queries
-def get_exercises(db: Session, skip: int = 0, limit: int = 200, category: Optional[str] = None, search: Optional[str] = None):
+def get_exercises(db: Session, skip: int = 0, limit: int = 1000, category: Optional[str] = None, search: Optional[str] = None):
     query = db.query(Exercise)
     if category and category != "All":
         query = query.filter(Exercise.category == category)
@@ -227,7 +227,7 @@ def update_exercise(db: Session, exercise_id: int, exercise_in: ExerciseUpdate):
     return ex
 
 # Workout Queries
-def get_workouts(db: Session, skip: int = 0, limit: int = 100, program: Optional[str] = None):
+def get_workouts(db: Session, skip: int = 0, limit: int = 500, program: Optional[str] = None):
     query = db.query(Workout)
     if program and program != "All":
         query = query.filter(Workout.program_name == program)
@@ -660,15 +660,20 @@ def get_calendar_workouts(db: Session, start_date: str, end_date: str, user_id: 
     if user and user.role == "student" and has_assignments:
         # Student view: strictly show workouts assigned to them or their groups
         u_group_ids = [g.id for g in user.groups]
+        who = [WorkoutAssignment.user_id == user.id]
+        if u_group_ids:
+            who.append(WorkoutAssignment.group_id.in_(u_group_ids))
         assign_query = db.query(WorkoutAssignment).filter(
             WorkoutAssignment.scheduled_date >= start_date,
             WorkoutAssignment.scheduled_date <= end_date,
-            or_(
-                WorkoutAssignment.user_id == user.id,
-                WorkoutAssignment.group_id.in_(u_group_ids) if u_group_ids else False
-            )
+            or_(*who)
         ).order_by(WorkoutAssignment.scheduled_date.asc())
         assignments = assign_query.all()
+        moved_off = rescheduled_away_dates(db, user.id)
+        assignments = [
+            a for a in assignments
+            if not (a.group_id and not a.user_id and a.scheduled_date in moved_off)
+        ]
 
         calendar_map = {}
         for a in assignments:
@@ -894,12 +899,44 @@ def get_assignments(db: Session, date: Optional[str] = None, user_id: Optional[i
     for a in assignments:
         a.workout_title = a.workout.title if a.workout else ""
         if a.group:
-            a.target_name = f"Group: {a.group.name}"
+            a.target_name = f"Team: {a.group.name}"
         elif a.user:
-            a.target_name = f"Athlete: {a.user.name}"
+            a.target_name = f"Client: {a.user.name}"
         else:
             a.target_name = "All"
     return assignments
+
+def rescheduled_away_dates(db: Session, user_id: int) -> set:
+    """Dates a client was individually moved off a team assignment."""
+    rows = db.query(WorkoutAssignment).filter(
+        WorkoutAssignment.user_id == user_id,
+        WorkoutAssignment.notes.like("Rescheduled from %")
+    ).all()
+    dates = set()
+    prefix = "Rescheduled from "
+    for row in rows:
+        note = row.notes or ""
+        if note.startswith(prefix):
+            dates.add(note[len(prefix):][:10])
+    return dates
+
+def assignment_for_student_on_date(db: Session, student: User, date_str: str):
+    """Personal assignment wins. Team assignment is skipped if this client was moved off that date."""
+    direct = db.query(WorkoutAssignment).filter(
+        WorkoutAssignment.user_id == student.id,
+        WorkoutAssignment.scheduled_date == date_str
+    ).order_by(desc(WorkoutAssignment.id)).first()
+    if direct:
+        return direct
+    if date_str in rescheduled_away_dates(db, student.id):
+        return None
+    group_ids = [g.id for g in student.groups]
+    if not group_ids:
+        return None
+    return db.query(WorkoutAssignment).filter(
+        WorkoutAssignment.group_id.in_(group_ids),
+        WorkoutAssignment.scheduled_date == date_str
+    ).order_by(desc(WorkoutAssignment.id)).first()
 
 def create_assignment(db: Session, assign_in: WorkoutAssignmentCreate):
     assign = WorkoutAssignment(
@@ -915,12 +952,74 @@ def create_assignment(db: Session, assign_in: WorkoutAssignmentCreate):
     db.refresh(assign)
     assign.workout_title = assign.workout.title if assign.workout else ""
     if assign.group:
-        assign.target_name = f"Group: {assign.group.name}"
+        assign.target_name = f"Team: {assign.group.name}"
     elif assign.user:
-        assign.target_name = f"Athlete: {assign.user.name}"
+        assign.target_name = f"Client: {assign.user.name}"
     else:
         assign.target_name = "All"
     return assign
+
+def assign_program(db: Session, req) -> dict:
+    """Bulk-apply every dated workout in a program to one client or one team."""
+    query = db.query(Workout).filter(Workout.program_name == req.program_name)
+    if req.week_number:
+        query = query.filter(Workout.week_number == req.week_number)
+    workouts = query.order_by(Workout.calendar_date.asc(), Workout.id.asc()).all()
+    dated = [w for w in workouts if w.calendar_date]
+    created = []
+    skipped_existing = 0
+    note = (req.notes or "").strip() or f"Program: {req.program_name}"
+    for workout in dated:
+        existing = db.query(WorkoutAssignment).filter(
+            WorkoutAssignment.workout_id == workout.id,
+            WorkoutAssignment.scheduled_date == workout.calendar_date
+        )
+        if req.group_id:
+            existing = existing.filter(WorkoutAssignment.group_id == req.group_id)
+        else:
+            existing = existing.filter(WorkoutAssignment.user_id == req.user_id)
+        if existing.first():
+            skipped_existing += 1
+            continue
+        created.append(create_assignment(db, WorkoutAssignmentCreate(
+            workout_id=workout.id,
+            assigned_by_coach_id=req.assigned_by_coach_id,
+            group_id=req.group_id,
+            user_id=req.user_id,
+            scheduled_date=workout.calendar_date,
+            notes=note
+        )))
+    return {
+        "created": created,
+        "dated_count": len(dated),
+        "skipped_existing": skipped_existing
+    }
+
+def scrub_visible_brand(db: Session):
+    """Rewrite leftover product-name strings in text athletes and trainers can see."""
+    changed = False
+
+    def rewrite(value):
+        nonlocal changed
+        if not value:
+            return value
+        updated = re.sub(r"teambuildr", "wourkout", value, flags=re.IGNORECASE)
+        if updated != value:
+            changed = True
+        return updated
+
+    for exercise in db.query(Exercise).all():
+        exercise.default_notes = rewrite(exercise.default_notes)
+    for workout in db.query(Workout).all():
+        workout.description = rewrite(workout.description)
+        workout.title = rewrite(workout.title)
+        workout.program_name = rewrite(workout.program_name)
+    for record in db.query(PersonalRecord).all():
+        record.notes = rewrite(record.notes)
+    for assignment in db.query(WorkoutAssignment).all():
+        assignment.notes = rewrite(assignment.notes)
+    if changed:
+        db.commit()
 
 def delete_assignment(db: Session, assignment_id: int):
     assign = db.query(WorkoutAssignment).filter(WorkoutAssignment.id == assignment_id).first()
@@ -940,22 +1039,8 @@ def get_coach_compliance_report(db: Session, date_str: str):
     not_started_count = 0
 
     for s in students:
-        s_group_ids = [g.id for g in s.groups]
-        # Find assignment for this date
-        assignment = db.query(WorkoutAssignment).filter(
-            WorkoutAssignment.scheduled_date == date_str,
-            or_(
-                WorkoutAssignment.user_id == s.id,
-                WorkoutAssignment.group_id.in_(s_group_ids) if s_group_ids else False
-            )
-        ).first()
-
-        workout = None
-        if assignment:
-            workout = assignment.workout
-        else:
-            workout = db.query(Workout).filter(Workout.calendar_date == date_str).first()
-
+        assignment = assignment_for_student_on_date(db, s, date_str)
+        workout = assignment.workout if assignment else None
         if not workout:
             continue
 

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>TeamBuildr - Workout Tracker</title>
+  <title>wourkout</title>
   <link rel="stylesheet" href="/static/css/app.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23ef4444'><path d='M20.57 14.86L22 13.43 20.57 12 17 15.57 8.43 7 12 3.43 10.57 2 9.14 3.43 7.71 2 5.57 4.14 4.14 2.71 2.71 4.14l1.43 1.43L2 7.71l1.43 1.43L2 10.57 3.43 12 7 8.43 15.57 17 12 20.57 13.43 22l1.43-1.43L16.29 22l2.14-2.14 1.43 1.43 1.43-1.43-1.43-1.43L22 16.29z'/></svg>">
 </head>
@@ -20,8 +20,8 @@
     <div class="nav-container">
       <div class="logo-area" onclick="handleLogoClick()">
         <div class="logo-shield">⚡</div>
-        <div class="brand-text">TeamBuildr</div>
-        <div class="brand-tag">STRENGTH</div>
+        <div class="brand-text">wourkout</div>
+        <div class="brand-tag">TRAIN</div>
       </div>
 
       <nav class="nav-tabs" id="mainNavTabs">
@@ -45,8 +45,8 @@
       <!-- Editorial Header with Amp Date Stepper -->
       <div class="editorial-header">
         <div class="editorial-title-group">
-          <h1 class="editorial-title">Coach Pulse & Compliance</h1>
-          <p class="editorial-subtitle">Live athlete floor activity, set progression, and triage monitoring</p>
+          <h1 class="editorial-title">Today</h1>
+          <p class="editorial-subtitle">Who is training, who still needs to start, and what to assign next</p>
         </div>
         
         <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
@@ -60,11 +60,14 @@
             <button class="amp-date-stepper-btn" onclick="navigateCoachDashboardDate(1)" title="Next Day">›</button>
           </div>
 
-          <button class="amp-btn-secondary amp-btn-sm" onclick="jumpCoachDashboardToday()">Jump Today</button>
-          <button class="amp-btn-primary amp-btn-sm" onclick="document.querySelector('.nav-tab-btn[data-tab=\'assignments\']').click()">
-            + Assign Program
-          </button>
+          <button class="amp-btn-secondary amp-btn-sm" onclick="jumpCoachDashboardToday()">Today</button>
         </div>
+      </div>
+
+      <div class="job-strip">
+        <button class="primary" onclick="switchTab('planner')">Create a workout</button>
+        <button onclick="beginAssign('user')">Assign to one client</button>
+        <button onclick="beginAssign('group')">Assign to a team</button>
       </div>
 
       <!-- Triage Attention Banner (Shown if athletes need attention) -->
@@ -80,7 +83,7 @@
       <div class="kpi-grid">
         <div class="kpi-card">
           <div class="kpi-card-header">
-            <span class="kpi-card-label">Athletes Programmed</span>
+            <span class="kpi-card-label">Clients programmed</span>
             <span class="kpi-card-badge">Total</span>
           </div>
           <div class="kpi-card-value" id="kpiTotalAthletes">0</div>
@@ -121,7 +124,7 @@
       <div class="amp-surface-card">
         <div class="amp-card-toolbar">
           <div class="amp-card-title">
-            <span>Live Athlete Compliance</span>
+            <span>Who trained</span>
             <span id="complianceTotalCounter" style="font-size: 11px; background: var(--amp-linen); padding: 2px 8px; border-radius: var(--amp-radius-pill-sm); color: var(--amp-slate);">0 Total</span>
           </div>
 
@@ -144,12 +147,12 @@
     <section id="view-roster" class="view-section" style="display: none;">
       <div class="editorial-header">
         <div class="editorial-title-group">
-          <h1 class="editorial-title">Roster & Training Cohorts</h1>
-          <p class="editorial-subtitle">Organize athletes into training cohorts, monitor status, and manage client profiles</p>
+          <h1 class="editorial-title">Clients & teams</h1>
+          <p class="editorial-subtitle">Add a client, group clients into a team, then bulk-assign a program</p>
         </div>
         <div style="display: flex; gap: 10px;">
-          <button class="amp-btn-secondary amp-btn-sm" onclick="openCreateGroupModal()">+ New Training Cohort</button>
-          <button class="amp-btn-primary amp-btn-sm" onclick="openCreateUserModal()">+ Add Athlete</button>
+          <button class="amp-btn-secondary amp-btn-sm" onclick="openCreateGroupModal()">+ New team</button>
+          <button class="amp-btn-primary amp-btn-sm" onclick="openCreateUserModal()">+ Add client</button>
         </div>
       </div>
 
@@ -158,10 +161,10 @@
         <aside class="cohorts-sidebar-panel">
           <div class="cohorts-panel-header">
             <div>
-              <h3 class="cohorts-panel-title">Training Cohorts</h3>
-              <span id="rosterGroupCountBadge" style="font-size: 11.5px; color: var(--amp-slate);">0 Cohorts</span>
+              <h3 class="cohorts-panel-title">Teams</h3>
+              <span id="rosterGroupCountBadge" style="font-size: 11.5px; color: var(--amp-slate);">0 teams</span>
             </div>
-            <button class="amp-date-stepper-btn" style="width: 28px; height: 28px; font-size: 16px;" onclick="openCreateGroupModal()" title="Add Cohort">+</button>
+            <button class="amp-date-stepper-btn" style="width: 28px; height: 28px; font-size: 16px;" onclick="openCreateGroupModal()" title="Add team">+</button>
           </div>
           
           <div id="rosterGroupsList">
@@ -173,7 +176,7 @@
         <main class="athletes-directory-panel">
           <div class="directory-toolbar">
             <div style="display: flex; align-items: center; gap: 12px; flex: 1;">
-              <input type="text" id="rosterAthleteSearch" class="amp-search-input" placeholder="Search athletes by name or position..." oninput="onSearchAthletes(this.value)">
+              <input type="text" id="rosterAthleteSearch" class="amp-search-input" placeholder="Search clients by name or position..." oninput="onSearchAthletes(this.value)">
               <div class="amp-filter-pills" id="rosterStatusFilterPills">
                 <button class="amp-filter-pill active" data-status="all" onclick="filterRosterByStatus('all')">All</button>
                 <button class="amp-filter-pill" data-status="Active" onclick="filterRosterByStatus('Active')">Active</button>
@@ -189,8 +192,8 @@
               <thead>
                 <tr>
                   <th style="width: 44px; text-align: center;"><input type="checkbox" id="selectAllAthletesCheckbox" onchange="toggleSelectAllAthletes(this.checked)"></th>
-                  <th>ATHLETE</th>
-                  <th>CURRENT COHORT</th>
+                  <th>CLIENT</th>
+                  <th>TEAM</th>
                   <th>STATUS</th>
                   <th style="text-align: right;">QUICK ACTIONS</th>
                 </tr>
@@ -211,7 +214,7 @@
         </div>
         <div style="display: flex; align-items: center; gap: 10px;">
           <select id="batchGroupSelect" class="amp-batch-select">
-            <option value="">Move to Cohort...</option>
+            <option value="">Move to team...</option>
           </select>
           <button class="amp-btn-primary amp-btn-sm" onclick="applyBatchGroupAssignment()">Apply</button>
           <button class="amp-batch-close-btn" onclick="clearBatchAthleteSelection()" title="Dismiss">✕</button>
@@ -223,8 +226,8 @@
     <section id="view-assignments" class="view-section" style="display: none;">
       <div class="editorial-header">
         <div class="editorial-title-group">
-          <h1 class="editorial-title">Program & Workout Assignment</h1>
-          <p class="editorial-subtitle">Schedule workouts to entire cohorts or assign personalized sessions to individual athletes</p>
+          <h1 class="editorial-title">Assign a workout</h1>
+          <p class="editorial-subtitle">Give one workout or a whole program to a single client, or to everyone on a team</p>
         </div>
       </div>
 
@@ -232,13 +235,24 @@
       <div class="assignment-form-card">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px;">
           <div>
-            <span class="form-label">ASSIGNMENT SCOPE</span>
+            <span class="form-label">WHO GETS IT</span>
             <div class="segmented-toggle-row" style="margin-top: 6px; margin-bottom: 0;">
-              <button type="button" id="btnAssignTypeGroup" class="segmented-btn active" onclick="setAssignTargetType('group')">
-                👥 Training Cohort
-              </button>
               <button type="button" id="btnAssignTypeUser" class="segmented-btn" onclick="setAssignTargetType('user')">
-                👤 1-on-1 Athlete (Personalized)
+                One client
+              </button>
+              <button type="button" id="btnAssignTypeGroup" class="segmented-btn active" onclick="setAssignTargetType('group')">
+                Whole team
+              </button>
+            </div>
+          </div>
+          <div>
+            <span class="form-label">WHAT TO ASSIGN</span>
+            <div class="segmented-toggle-row" style="margin-top: 6px; margin-bottom: 0;">
+              <button type="button" id="btnAssignWhatWorkout" class="segmented-btn active" onclick="setAssignWhat('workout')">
+                One workout
+              </button>
+              <button type="button" id="btnAssignWhatProgram" class="segmented-btn" onclick="setAssignWhat('program')">
+                Whole program
               </button>
             </div>
           </div>
@@ -253,24 +267,32 @@
 
         <div class="form-grid-three">
           <div class="form-field-group">
-            <label class="form-label">1. Select Target <span id="assignTargetTypeLabel">Cohort</span></label>
+            <label class="form-label">1. <span id="assignTargetTypeLabel">Team</span></label>
             <select id="assignTargetSelect" class="amp-select"></select>
           </div>
 
-          <div class="form-field-group">
-            <label class="form-label">2. Select Workout</label>
+          <div class="form-field-group" id="assignWorkoutField">
+            <label class="form-label">2. Workout</label>
             <select id="assignWorkoutSelect" class="amp-select" onchange="onAssignWorkoutChanged(this.value)"></select>
           </div>
 
-          <div class="form-field-group">
-            <label class="form-label">3. Scheduled Date</label>
+          <div class="form-field-group" id="assignProgramField" style="display: none;">
+            <label class="form-label">2. Program</label>
+            <select id="assignProgramSelect" class="amp-select" onchange="onAssignProgramChanged()"></select>
+            <select id="assignProgramWeek" class="amp-select" style="margin-top: 8px;">
+              <option value="">All weeks</option>
+            </select>
+          </div>
+
+          <div class="form-field-group" id="assignDateField">
+            <label class="form-label">3. Date</label>
             <input type="date" id="assignCalendarDate" class="amp-input-text">
           </div>
         </div>
 
         <div class="form-field-group" style="margin-bottom: 20px;">
-          <label class="form-label">4. Coaching Cues / Session Notes (Optional)</label>
-          <input type="text" id="assignNotesInput" class="amp-input-text" placeholder="e.g. Focus on bar speed and acceleration; reduce volume if soreness > 3/5">
+          <label class="form-label">Notes (optional)</label>
+          <input type="text" id="assignNotesInput" class="amp-input-text" placeholder="e.g. Ease the load if soreness is high">
         </div>
 
         <!-- Workout Preview Card -->
@@ -282,8 +304,8 @@
         </div>
 
         <div style="display: flex; justify-content: flex-end; gap: 12px;">
-          <button class="amp-btn-primary" onclick="submitCreateAssignment()">
-            Schedule Assignment →
+          <button class="amp-btn-primary" id="assignSubmitBtn" onclick="submitCreateAssignment()">
+            Assign
           </button>
         </div>
       </div>
@@ -292,11 +314,16 @@
       <div class="amp-surface-card">
         <div class="amp-card-toolbar">
           <div class="amp-card-title">
-            <span>Scheduled Program Assignments</span>
+            <span>Scheduled assignments</span>
             <span id="assignmentsCountBadge" style="font-size: 11px; background: var(--amp-linen); padding: 2px 8px; border-radius: var(--amp-radius-pill-sm); color: var(--amp-slate);">0 Scheduled</span>
           </div>
-          <div style="display: flex; gap: 8px;">
-            <input type="text" id="assignmentsFilterInput" class="amp-search-input" style="width: 220px;" placeholder="Filter assignments..." oninput="renderAssignmentsTable()">
+          <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+            <div class="amp-filter-pills" id="assignmentListFilterPills">
+              <button class="amp-filter-pill active" data-scope="all" onclick="setAssignmentListFilter('all')">All</button>
+              <button class="amp-filter-pill" data-scope="team" onclick="setAssignmentListFilter('team')">Teams</button>
+              <button class="amp-filter-pill" data-scope="client" onclick="setAssignmentListFilter('client')">Clients</button>
+            </div>
+            <input type="text" id="assignmentsFilterInput" class="amp-search-input" style="width: 220px;" placeholder="Filter by name, date, or notes..." oninput="renderAssignmentsTable()">
           </div>
         </div>
         <div id="assignmentsTableContainer" style="overflow-x: auto;">
@@ -376,8 +403,8 @@
         <p style="font-size: 14px; color: #94a3b8; margin-bottom: 20px;">
           No workouts scheduled for <span id="dayRestDateLabel" style="color: #38bdf8; font-weight: 700;">Sunday, Oct 18, 2026</span>. Take time to recover and hydrate!
         </p>
-        <button class="btn-primary" style="display: inline-block; padding: 10px 20px; font-size: 13.5px;" onclick="scheduleWorkoutForCurrentDate()">
-          + Schedule Workout on this Day
+        <button id="dayScheduleBtn" class="btn-primary" style="display: inline-block; padding: 10px 20px; font-size: 13.5px;" onclick="scheduleWorkoutForCurrentDate()">
+          + Create a workout for this day
         </button>
       </div>
     </section>
@@ -424,20 +451,21 @@
       <!-- Page Subtabs Header -->
       <div class="planner-subnav-bar">
         <button class="planner-subnav-btn active" data-subtab="builder" onclick="switchPlannerSubtab('builder')">
-          ⚡ Build Workout
+          Create
         </button>
         <button class="planner-subnav-btn" data-subtab="weekplanner" onclick="switchPlannerSubtab('weekplanner')">
-          📅 Week Planner
+          Week
         </button>
         <button class="planner-subnav-btn" data-subtab="editworkout" onclick="switchPlannerSubtab('editworkout')">
-          ✏️ Edit Workout
+          Edit
         </button>
       </div>
 
       <!-- SUBTAB 1: BUILD WORKOUT -->
       <div id="planner-subtab-builder" class="planner-subtab-panel">
         <div class="timeline-card" style="margin-bottom: 24px;">
-          <h2 style="font-size: 20px; font-weight: 800; margin-bottom: 16px;">Build Single Workout</h2>
+          <h2 style="font-size: 20px; font-weight: 800; margin-bottom: 8px;">Create a workout</h2>
+          <p id="builderStatus" style="display: none; color: #86efac; font-size: 13px; margin-bottom: 12px;"></p>
           <div class="grid-2">
             <div class="form-group">
               <label class="form-label">Workout Title</label>
@@ -494,7 +522,7 @@
 
           <div style="margin-top: 20px;">
             <button class="btn-primary" style="width: 100%; padding: 14px; font-size: 16px;" onclick="saveCustomWorkout()">
-              Save & Launch Workout
+              Save workout
             </button>
           </div>
         </div>
@@ -668,13 +696,14 @@
 
       <!-- Category Filter Pills -->
       <div style="display: flex; gap: 8px; overflow-x: auto; margin-bottom: 16px; padding-bottom: 4px;">
-        <button class="nav-tab-btn active category-filter-btn" data-category="All" onclick="filterCategory(this)">All</button>
-        <button class="nav-tab-btn category-filter-btn" data-category="Lower Body" onclick="filterCategory(this)">Lower Body</button>
-        <button class="nav-tab-btn category-filter-btn" data-category="Upper Body" onclick="filterCategory(this)">Upper Body</button>
-        <button class="nav-tab-btn category-filter-btn" data-category="Mobility" onclick="filterCategory(this)">Mobility</button>
-        <button class="nav-tab-btn category-filter-btn" data-category="Core & Trunk" onclick="filterCategory(this)">Core</button>
-        <button class="nav-tab-btn category-filter-btn" data-category="Plyometrics" onclick="filterCategory(this)">Plyometrics</button>
-        <button class="nav-tab-btn category-filter-btn" data-category="Breathwork" onclick="filterCategory(this)">Breathwork</button>
+        <button class="category-filter-btn active" data-category="All" onclick="filterCategory(this)">All</button>
+        <button class="category-filter-btn" data-category="Lower Body" onclick="filterCategory(this)">Lower Body</button>
+        <button class="category-filter-btn" data-category="Upper Body" onclick="filterCategory(this)">Upper Body</button>
+        <button class="category-filter-btn" data-category="Strength" onclick="filterCategory(this)">Strength</button>
+        <button class="category-filter-btn" data-category="Mobility" onclick="filterCategory(this)">Mobility</button>
+        <button class="category-filter-btn" data-category="Core & Trunk" onclick="filterCategory(this)">Core</button>
+        <button class="category-filter-btn" data-category="Plyometrics" onclick="filterCategory(this)">Plyometrics</button>
+        <button class="category-filter-btn" data-category="Breathwork" onclick="filterCategory(this)">Breathwork</button>
       </div>
 
       <div id="exercisesCatalogList"></div>
@@ -839,8 +868,8 @@
         <div style="display: flex; align-items: center; gap: 12px;">
           <div class="logo-shield" style="font-size: 20px; width: 38px; height: 38px; display: flex; align-items: center; justify-content: center; background: var(--amp-orange); border-radius: 8px; color: white;">⚡</div>
           <div>
-            <h3 class="modal-title">Sign In / Switch Profile</h3>
-            <p style="font-size: 12px; color: var(--amp-slate); margin-top: 2px;">Select an authenticated profile to enter the platform</p>
+            <h3 class="modal-title">Sign in to wourkout</h3>
+            <p style="font-size: 12px; color: var(--amp-slate); margin-top: 2px;">Pick a trainer or client profile</p>
           </div>
         </div>
       </div>
@@ -964,7 +993,7 @@
         </div>
 
         <div id="newUserGroupSection" class="form-field-group">
-          <label class="form-label">Assign to Initial Training Cohort</label>
+          <label class="form-label">Starting team</label>
           <select id="newUserGroupSelect" class="amp-select">
             <option value="">(None - Unassigned)</option>
           </select>
@@ -983,15 +1012,15 @@
     <div class="modal-dialog-content" style="max-width: 460px;">
       <div class="modal-header">
         <div>
-          <h3 class="modal-title">New Training Cohort</h3>
-          <p style="font-size: 12.5px; color: var(--amp-slate); margin-top: 2px;">Create a team roster or training cohort</p>
+          <h3 class="modal-title">New team</h3>
+          <p style="font-size: 12.5px; color: var(--amp-slate); margin-top: 2px;">Group clients so you can assign one program to all of them</p>
         </div>
         <button class="amp-drawer-close" onclick="closeCreateGroupModal()">✕</button>
       </div>
 
       <div class="modal-body">
         <div class="form-field-group" style="margin-bottom: 14px;">
-          <label class="form-label">Cohort Name</label>
+          <label class="form-label">Team name</label>
           <input type="text" id="newGroupName" class="amp-input-text" placeholder="e.g. Varsity Football, Off-Season Lifters">
         </div>
 
@@ -1001,7 +1030,7 @@
         </div>
 
         <div class="form-field-group">
-          <label class="form-label">Cohort Accent Color</label>
+          <label class="form-label">Team color</label>
           <div style="display: flex; gap: 12px; align-items: center; margin-top: 6px;">
             <input type="color" id="newGroupColor" value="#ff6105" style="width: 44px; height: 38px; border: 1px solid var(--amp-hairline); border-radius: var(--amp-radius-badge); cursor: pointer; background: transparent; padding: 2px;">
             <span style="font-size: 12.5px; color: var(--amp-slate);">Badge indicator color</span>
@@ -1011,7 +1040,7 @@
 
       <div class="modal-footer">
         <button class="amp-btn-secondary amp-btn-sm" onclick="closeCreateGroupModal()">Cancel</button>
-        <button class="amp-btn-primary amp-btn-sm" onclick="submitCreateGroup()">Create Cohort →</button>
+        <button class="amp-btn-primary amp-btn-sm" onclick="submitCreateGroup()">Create team</button>
       </div>
     </div>
   </div>
@@ -1021,7 +1050,7 @@
     <div class="modal-dialog-content" style="max-width: 460px;">
       <div class="modal-header">
         <div>
-          <h3 class="modal-title">Manage Cohorts</h3>
+          <h3 class="modal-title">Teams</h3>
           <p id="manageAthleteGroupSubtitle" style="font-size: 12.5px; color: var(--amp-slate); margin-top: 2px;"></p>
         </div>
         <button class="amp-drawer-close" onclick="closeAssignAthleteGroupModal()">✕</button>

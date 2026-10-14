@@ -1,6 +1,6 @@
 /* =========================================================
-   TEAMBUILDR x AMP DESIGN SYSTEM
-   High-contrast athletic palette with Amp Orange accents (#ff6105)
+   wourkout
+   High-contrast athletic palette with orange accents (#ff6105)
    Style: https://styles.refero.design/style/261a4ad3-e835-4f7a-beb7-72187f84d462
    ========================================================= */
 
@@ -26,7 +26,7 @@
   --amp-surface: #151c28;
   --amp-surface-hover: #1e293b;
 
-  /* TeamBuildr Foundation Tokens (Dark Theme Canvas) */
+  /* Foundation tokens (dark canvas) */
   --tb-bg: #0c1017;
   --tb-surface: #151c28;
   --tb-card: #ffffff;
@@ -150,10 +150,10 @@ body {
 }
 
 .brand-text {
-  font-size: 15px;
+  font-size: 18px;
   font-weight: 800;
-  letter-spacing: 1px;
-  text-transform: uppercase;
+  letter-spacing: -0.03em;
+  text-transform: none;
   color: #ffffff;
 }
 
@@ -199,6 +199,19 @@ body {
   background: var(--amp-orange);
   color: #ffffff;
   box-shadow: var(--amp-shadow-glow);
+}
+
+.nav-tab-btn.nav-tab-quiet {
+  color: #64748b;
+  font-weight: 600;
+}
+
+.nav-tab-divider {
+  width: 1px;
+  height: 18px;
+  background: #242f42;
+  margin: 0 4px;
+  flex-shrink: 0;
 }
 
 .nav-right {
@@ -792,6 +805,62 @@ tr.is-dragging {
 
 .visible {
   display: block !important;
+}
+
+.amp-batch-action-bar.visible {
+  display: flex !important;
+}
+
+.modal-overlay.open,
+.card-modal-backdrop.open {
+  display: flex !important;
+}
+
+.app-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%) translateY(12px);
+  background: #151c28;
+  color: #ffffff;
+  border: 1px solid var(--amp-orange);
+  border-radius: 12px;
+  padding: 12px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  z-index: 2200;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  max-width: min(520px, 92vw);
+}
+
+.app-toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.job-strip {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: -8px 0 18px;
+}
+
+.job-strip button {
+  background: #151c28;
+  color: #ffffff;
+  border: 1px solid #242f42;
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-weight: 700;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.job-strip button.primary {
+  background: var(--amp-orange);
+  border-color: var(--amp-orange);
 }
 
 .sets-tabular-cell {
