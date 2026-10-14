@@ -336,7 +336,13 @@ const state = {
   teamFilter: false,
   compose: false,
   startedAt: null,
-  requestNote: ""
+  requestNote: "",
+  role: "coach",
+  actingAthlete: null,
+  serverUsers: {},
+  athleteAssignments: [],
+  openWorkout: null,
+  openSession: null
 };
 
 function cal() {
@@ -459,7 +465,7 @@ function nav() {
     <button class="req" onclick="openRequest(event)">REQUEST PROGRAM</button>
     <button class="iconbtn" title="Help" onclick="toggleNav('help', event)">?</button>
     <button class="iconbtn" title="Notifications" onclick="toggleNav('bell', event)">🔔</button>
-    <button class="avatar" title="Account" onclick="toggleNav('account', event)">E</button>
+    <button class="avatar" title="Account" onclick="toggleNav('account', event)">${state.role === "athlete" ? esc((ATHLETES.find((a) => a.id === state.actingAthlete) || { name: "A" }).name[0]) : "C"}</button>
   </header>`;
 }
 function menuFor(id) {
@@ -479,7 +485,14 @@ function menuFor(id) {
   }
   if (id === "help") return `<div class="menu" style="top:40px;right:0"><div class="help">Shift+Enter new exercise<br>Shift+I additional info<br>Ctrl/Cmd+P add property<br>Ctrl/Cmd+C copy selection<br>Ctrl/Cmd+V paste on hovered day<br>Ctrl/Cmd+Z undo</div></div>`;
   if (id === "bell") return `<div class="menu" style="top:40px;right:0"><div class="help">Eric completed Volleyball Games<br>Leah logged Push Up · 4:40</div></div>`;
-  if (id === "account") return `<div class="menu" style="top:40px;right:0"><div class="help">Signed in as Eric<br>wourkout coach</div><button onclick="go('users')">Manage users</button></div>`;
+  if (id === "account") {
+    const who = state.role === "athlete" ? (ATHLETES.find((a) => a.id === state.actingAthlete) || {}).name : "Coach";
+    return `<div class="menu" style="top:40px;right:0;max-height:70vh;overflow:auto">
+      <div class="help">Signed in as ${esc(who)}</div>
+      <button onclick="backToCoach()">Coach calendar</button>
+      ${ATHLETES.map((a) => `<button onclick="openAsAthlete('${a.id}')">${esc(a.name)}</button>`).join("")}
+    </div>`;
+  }
   return "";
 }
 function go(view, ev) {
@@ -536,7 +549,8 @@ function leftRail() {
 
 function body() {
   switch (state.view) {
-    case "build": return buildView();
+    case "build": return state.role === "athlete" ? mineView() : buildView();
+    case "mine": return mineView();
     case "entry": return entryView();
     case "feed": return feedView();
     case "users": return usersView();
@@ -576,6 +590,8 @@ function buildView() {
           <select class="athlete-name" onchange="switchAthlete(this.value)">${ATHLETES.map((a) => `<option value="${a.id}" ${a.id === state.athleteId ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select>
         </div>
         <div class="sub-actions">
+          <button class="ghost" onclick="saveFocused()">Save for athlete</button>
+          <button class="ghost" onclick="openAsAthlete(state.athleteId)">Open as athlete</button>
           <button class="ghost" onclick="undo()">↺ UNDO</button>
           <div class="seg">
             <button onclick="shiftWeek(-1)">‹</button>
@@ -622,6 +638,7 @@ function dayCol(date) {
     </div>
     <div class="week-label">${esc(day.weekLabel || "")}</div>
     <input class="day-title ${day.title ? "" : "placeholder"}" data-focus="title-${date}" value="${esc(day.title)}" placeholder="Add Workout Name" onchange="renameDay('${date}', this.value)">
+    ${day.savedWorkoutId ? `<div class="saved-pill">Saved for ${esc((ATHLETES.find((a) => a.id === day.savedFor) || {}).name || "athlete")}</div>` : ""}
     <div class="row" style="margin-top:0">
       <input type="checkbox" title="Select all" ${sel.length && sel.length === day.items.length ? "checked" : ""} onclick="toggleAll('${date}', this.checked);event.stopPropagation()">
       ${header}
@@ -905,7 +922,196 @@ function colorMenu(date) {
   return `<div class="pop" style="right:8px;top:28px;width:160px"><div class="row">${colors.map((c) => `<button onclick="setColor('${date}','${c}')" style="width:22px;height:22px;border-radius:50%;border:0;background:${c}"></button>`).join("")}</div></div>`;
 }
 function setColor(date, c) { snapshot(); ensureDay(date).color = c; state.colorMenu = null; render(); }
-function saveDay(date) { state.dayMenu = null; toast("Workout saved"); noteHist("Saved " + fmtDay(date)); render(); }
+function saveFocused() { saveDay(state.focusDay || "2026-10-15"); }
+function saveDay(date) {
+  state.dayMenu = null;
+  publishDay(date);
+}
+
+async function api(method, url, body) {
+  const res = await fetch(url, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined
+  });
+  if (!res.ok) throw new Error((await res.text()) || String(res.status));
+  return res.json();
+}
+async function ensureUser(person, role) {
+  if (state.serverUsers[person.id]) return state.serverUsers[person.id];
+  const users = await api("GET", "/api/users");
+  const email = (person.email || (person.id + "@wourkout.app")).toLowerCase();
+  let found = users.find((u) => (u.email || "").toLowerCase() === email) || users.find((u) => u.name === person.name && u.role === role);
+  if (!found) {
+    found = await api("POST", "/api/users", {
+      name: person.name,
+      email,
+      role,
+      title: role === "coach" ? "Coach" : "Athlete"
+    });
+  }
+  state.serverUsers[person.id] = found;
+  return found;
+}
+async function ensureExercise(name) {
+  const list = await api("GET", "/api/exercises?search=" + encodeURIComponent(name));
+  const exact = list.find((e) => e.name.toLowerCase() === name.toLowerCase());
+  if (exact) return exact;
+  try {
+    return await api("POST", "/api/exercises", { name, category: "Strength" });
+  } catch (err) {
+    const again = await api("GET", "/api/exercises?search=" + encodeURIComponent(name));
+    const hit = again.find((e) => e.name.toLowerCase() === name.toLowerCase());
+    if (hit) return hit;
+    throw err;
+  }
+}
+async function publishDay(date) {
+  const day = ensureDay(date);
+  const person = athlete();
+  if (!day.items.length) { toast("Add an exercise before saving"); return; }
+  try {
+    toast("Saving for " + person.name + "…");
+    const coach = await ensureUser({ id: "coach", name: "wourkout Coach", email: "coach@wourkout.app" }, "coach");
+    const user = await ensureUser(person, "student");
+    const exercises = [];
+    for (const it of day.items) {
+      if (!it.name || it.type === "break") continue;
+      const ex = await ensureExercise(it.name);
+      exercises.push({
+        exercise_id: ex.id,
+        superset_group: it.letter || "A",
+        order_index: exercises.length,
+        prescription_text: scriptLine(it),
+        prescribed_sets: it.sets || 1,
+        target_reps: String((it.reps && it.reps[0]) || "1"),
+        target_weight: String((it.loads && it.loads[0]) || ""),
+        rest_seconds: parseInt(it.rests && it.rests[0], 10) || 0,
+        notes: it.note || it.detail || ""
+      });
+    }
+    const payload = {
+      title: day.title || ("Workout " + fmtDay(date)),
+      program_name: "wourkout " + person.name,
+      calendar_date: date,
+      scheduled_date: date,
+      day_of_week: new Date(date + "T12:00:00").toLocaleDateString("en-US", { weekday: "long" }),
+      week_number: 5,
+      description: day.weekLabel || "",
+      exercises
+    };
+    const existing = await api("GET", "/api/assignments?user_id=" + user.id + "&date=" + date);
+    let workout;
+    if (existing.length) {
+      workout = await api("PUT", "/api/workouts/" + existing[0].workout_id, payload);
+      day.assignmentId = existing[0].id;
+    } else {
+      workout = await api("POST", "/api/workouts", payload);
+      const assignment = await api("POST", "/api/assignments", {
+        workout_id: workout.id,
+        assigned_by_coach_id: coach.id,
+        user_id: user.id,
+        scheduled_date: date,
+        notes: "Saved from Build"
+      });
+      day.assignmentId = assignment.id;
+    }
+    day.savedWorkoutId = workout.id;
+    day.savedFor = person.id;
+    noteHist("Saved " + fmtDay(date) + " for " + person.name);
+    toast("Saved for " + person.name);
+    render();
+  } catch (err) {
+    toast("Save failed");
+    console.error(err);
+  }
+}
+function backToCoach() {
+  state.role = "coach";
+  state.actingAthlete = null;
+  state.view = "build";
+  state.openWorkout = null;
+  state.openSession = null;
+  state.navMenu = null;
+  render();
+}
+async function openAsAthlete(localId) {
+  const person = ATHLETES.find((a) => a.id === localId) || athlete();
+  state.navMenu = null;
+  state.actingAthlete = person.id;
+  state.role = "athlete";
+  state.view = "mine";
+  state.openWorkout = null;
+  state.athleteAssignments = [];
+  render();
+  try {
+    const user = await ensureUser(person, "student");
+    state.serverUserId = user.id;
+    state.athleteAssignments = await api("GET", "/api/assignments?user_id=" + user.id);
+    render();
+  } catch (err) {
+    toast("Could not load this athlete");
+    console.error(err);
+  }
+}
+async function openAthleteWorkout(workoutId) {
+  const workout = await api("GET", "/api/workouts/" + workoutId);
+  const session = await api("GET", "/api/sessions/active/" + workoutId + "?user_id=" + state.serverUserId);
+  state.openWorkout = workout;
+  state.openSession = session;
+  render();
+}
+async function logAthleteSet(weId, setNumber, field, value) {
+  const logs = state.openSession.set_logs || [];
+  const current = logs.find((l) => l.workout_exercise_id === weId && l.set_number === setNumber) || { weight: 0, reps: 0, completed: false };
+  if (field === "weight") current.weight = value;
+  if (field === "reps") current.reps = value;
+  if (field === "completed") current.completed = value;
+  const saved = await api("POST", "/api/sessions/" + state.openSession.id + "/sets?workout_exercise_id=" + weId + "&set_number=" + setNumber + "&weight=" + (parseFloat(current.weight) || 0) + "&reps=" + (parseFloat(current.reps) || 0) + "&completed=" + (current.completed ? "true" : "false"));
+  state.openSession.set_logs = logs.filter((l) => !(l.workout_exercise_id === weId && l.set_number === setNumber)).concat([saved]);
+  render();
+}
+function mineView() {
+  const person = ATHLETES.find((a) => a.id === state.actingAthlete) || athlete();
+  const rows = state.athleteAssignments || [];
+  const workout = state.openWorkout;
+  const detail = workout ? `<div class="panel" style="margin-top:12px">
+      <button class="comment" onclick="state.openWorkout=null;render()">← All saved days</button>
+      <h2>${esc(workout.title)}</h2>
+      <p class="hint">${esc(workout.calendar_date || workout.scheduled_date || "")} · ${esc(person.name)}</p>
+      ${workout.exercises.map((we) => athleteExercise(we)).join("") || "<p>No exercises on this routine.</p>"}
+    </div>` : "";
+  return `<section class="stage light-page">
+    <div class="athlete-banner">
+      <span>Athlete · ${esc(person.name)}. Only routines saved for this athlete.</span>
+      <button class="ghost" onclick="backToCoach()">Back to coach</button>
+    </div>
+    <h1 style="margin-top:16px">My workout</h1>
+    ${rows.length ? `<div class="grid-cards">${rows.map((a) => `<article class="card">
+        <div class="hint">${esc(a.scheduled_date)}</div>
+        <strong>${esc(a.workout_title || "Workout")}</strong>
+        <p class="hint">${esc(a.notes || "")}</p>
+        <button class="switch" onclick="openAthleteWorkout(${a.workout_id})">Open routine</button>
+      </article>`).join("")}</div>` : `<div class="empty"><div><div class="book">▦</div><div>Nothing saved for ${esc(person.name)} yet. A coach saves it from Build.</div></div></div>`}
+    ${detail}
+  </section>`;
+}
+function athleteExercise(we) {
+  const sets = we.prescribed_sets || 1;
+  const rows = Array.from({ length: sets }, (_, i) => {
+    const n = i + 1;
+    const log = ((state.openSession && state.openSession.set_logs) || []).find((l) => l.workout_exercise_id === we.id && l.set_number === n) || {};
+    return `<tr><td>${n}</td>
+      <td><input value="${esc(log.weight ?? we.target_weight ?? "")}" onchange="logAthleteSet(${we.id}, ${n}, 'weight', this.value)"></td>
+      <td><input value="${esc(log.reps ?? we.target_reps ?? "")}" onchange="logAthleteSet(${we.id}, ${n}, 'reps', this.value)"></td>
+      <td><input type="checkbox" ${log.completed ? "checked" : ""} onchange="logAthleteSet(${we.id}, ${n}, 'completed', this.checked)"></td></tr>`;
+  }).join("");
+  return `<div style="margin:12px 0">
+    <strong>${esc(we.superset_group || "")} ${esc(we.exercise.name)}</strong>
+    <div class="hint">${esc(we.prescription_text || "")} ${we.notes ? "· " + esc(we.notes) : ""}</div>
+    <table class="sets"><tr><th>Set</th><th>Kg</th><th>Reps</th><th>Done</th></tr>${rows}</table>
+  </div>`;
+}
 function shareDay(date) { state.dayMenu = null; state.modal = { type: "share", date }; render(); }
 function clearTitle(date) { snapshot(); ensureDay(date).title = ""; state.dayMenu = null; render(); }
 function resetOrder(date) {
@@ -1653,6 +1859,11 @@ window.openRecur = openRecur;
 window.setRecur = setRecur;
 window.setColor = setColor;
 window.saveDay = saveDay;
+window.saveFocused = saveFocused;
+window.openAsAthlete = openAsAthlete;
+window.backToCoach = backToCoach;
+window.openAthleteWorkout = openAthleteWorkout;
+window.logAthleteSet = logAthleteSet;
 window.shareDay = shareDay;
 window.clearTitle = clearTitle;
 window.resetOrder = resetOrder;

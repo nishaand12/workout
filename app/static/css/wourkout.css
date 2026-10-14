@@ -225,8 +225,15 @@ button { cursor: pointer; }
 .sets { width: 100%; border-collapse: collapse; font-size: 13px; }
 .sets th { color: #999; font-weight: 500; font-size: 11px; text-align: left; }
 .sets td { padding: 4px 2px; }
-.sets input { width: 64px; background: #111; border: 1px solid #444; border-radius: 4px; padding: 4px; }
+.sets input { width: 64px; background: #111; border: 1px solid #444; border-radius: 4px; padding: 4px; color: #eee; }
+.light-page .sets input, .light-page .sets td { background: #fff; color: #222; border-color: #ccc; }
 
+.saved-pill { color: #8ee0a8; font-size: 11px; margin: -2px 0 6px; }
+.athlete-banner {
+  background: #14301f; color: #e7ffef; border-radius: 8px; padding: 10px 12px;
+  display: flex; justify-content: space-between; gap: 12px; align-items: center;
+}
+.athlete-banner .ghost { color: white; border-color: #3d6b4e; }
 .toast {
   position: fixed; top: 60px; right: 64px; background: #137a3a; color: white; padding: 10px 14px;
   border-radius: 8px; z-index: 70; font-size: 13px; box-shadow: var(--shadow);

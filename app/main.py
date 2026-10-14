@@ -18,10 +18,10 @@ from app.schemas import (
     SetLogResponse, SetLogBase,
     PersonalRecordResponse, PersonalRecordCreate,
     CopyWeekRequest, RescheduleWorkoutRequest, CalendarDayResponse,
-    AddWorkoutToDayRequest, SaveProgramTemplateRequest,
+    AddWorkoutToDayRequest,     SaveProgramTemplateRequest,
     UserResponse, UserCreate, UserUpdate,
     GroupResponse, GroupCreate, GroupUpdate,
-    WorkoutAssignmentResponse, WorkoutAssignmentCreate,
+    WorkoutAssignmentResponse, WorkoutAssignmentCreate, ProgramAssignmentCreate,
     CoachComplianceReport
 )
 from app import crud
@@ -33,6 +33,7 @@ async def lifespan(app: FastAPI):
     db = SessionLocal()
     try:
         crud.seed_database_if_empty(db)
+        crud.scrub_visible_brand(db)
     finally:
         db.close()
     yield
@@ -315,7 +316,23 @@ def list_assignments(
 
 @app.post("/api/assignments", response_model=WorkoutAssignmentResponse, status_code=status.HTTP_201_CREATED)
 def create_assignment(assign_in: WorkoutAssignmentCreate, db: Session = Depends(get_db)):
+    if bool(assign_in.group_id) == bool(assign_in.user_id):
+        raise HTTPException(status_code=400, detail="Choose either one client or one team")
     return crud.create_assignment(db, assign_in)
+
+@app.post("/api/assignments/program", response_model=List[WorkoutAssignmentResponse], status_code=status.HTTP_201_CREATED)
+def assign_program(req: ProgramAssignmentCreate, db: Session = Depends(get_db)):
+    if bool(req.group_id) == bool(req.user_id):
+        raise HTTPException(status_code=400, detail="Choose either one client or one team")
+    result = crud.assign_program(db, req)
+    if result["dated_count"] == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="That program has no calendar dates yet. Set a date on each workout, or assign a single workout."
+        )
+    if not result["created"]:
+        raise HTTPException(status_code=400, detail="That program is already assigned to this client or team.")
+    return result["created"]
 
 @app.delete("/api/assignments/{assignment_id}")
 def delete_assignment(assignment_id: int, db: Session = Depends(get_db)):

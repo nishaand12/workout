@@ -11,7 +11,7 @@ function getTodayIso() {
   return formatLocalIso(new Date());
 }
 
-// TeamBuildr Replica - Frontend Engine
+// wourkout frontend
 let state = {
   workouts: [],
   exercises: [],
@@ -25,6 +25,10 @@ let state = {
   previewStudent: null,
   coachDashboardDate: getTodayIso(),
   assignTargetType: "group",
+  assignWhat: "workout",
+  assignmentListFilter: "all",
+  calendarProgramFilter: "",
+  pendingAssignWorkoutId: null,
   currentWorkoutId: null,
   currentWorkout: null,
   currentSession: null,
@@ -53,7 +57,49 @@ let state = {
 
 function escapeQuote(str) {
   if (!str) return "";
-  return String(str).replace(/'/g, "\\'").replace(/"/g, '&quot;');
+  return String(str).replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, "&quot;").replace(/\n/g, " ");
+}
+
+function escapeHtml(str) {
+  return String(str ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function isCoach() {
+  return !!(state.currentUser && state.currentUser.role === "coach" && !state.isStudentPreview);
+}
+
+function showToast(message) {
+  let el = document.getElementById("appToast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "appToast";
+    el.className = "app-toast";
+    document.body.appendChild(el);
+  }
+  el.textContent = message;
+  el.classList.add("show");
+  clearTimeout(showToast._timer);
+  showToast._timer = setTimeout(() => el.classList.remove("show"), 3400);
+}
+
+function goToTab(target) {
+  const btn = document.querySelector(`#mainNavTabs .nav-tab-btn[data-tab="${target}"]`);
+  if (btn) {
+    btn.click();
+    return;
+  }
+  switchTab(target);
+}
+
+function beginAssign(type, workoutId) {
+  if (workoutId) state.pendingAssignWorkoutId = workoutId;
+  state.assignTargetType = type || state.assignTargetType || "user";
+  state.assignWhat = "workout";
+  switchTab("assignments");
 }
 
 // Superset Badge Color Map
@@ -87,8 +133,12 @@ function getEmbedUrl(url) {
   if (shortMatch) return `https://www.youtube.com/embed/${shortMatch[1]}?autoplay=1`;
   
   if (url.includes("search_query=")) {
-    const q = new URL(url).searchParams.get("search_query");
-    return `https://www.youtube.com/embed?listType=search&list=${encodeURIComponent(q || "")}`;
+    try {
+      const q = new URL(url).searchParams.get("search_query");
+      return `https://www.youtube.com/embed?listType=search&list=${encodeURIComponent(q || "")}`;
+    } catch (e) {
+      return url;
+    }
   }
   
   return url;
@@ -138,7 +188,7 @@ function handleLogoClick() {
 
 function switchTab(target) {
   state.activeTab = target;
-  document.querySelectorAll(".nav-tab-btn").forEach(t => {
+  document.querySelectorAll("#mainNavTabs .nav-tab-btn").forEach(t => {
     t.classList.toggle("active", t.dataset.tab === target);
   });
 
@@ -179,12 +229,13 @@ function updateNavForRole() {
 
   if (isCoach) {
     navTabs.innerHTML = `
-      <button class="nav-tab-btn active" data-tab="coach-dashboard">Dashboard</button>
-      <button class="nav-tab-btn" data-tab="roster">Roster & Cohorts</button>
-      <button class="nav-tab-btn" data-tab="assignments">Assign Program</button>
-      <button class="nav-tab-btn" data-tab="planner">Workout Planner</button>
-      <button class="nav-tab-btn" data-tab="calendar">Calendar</button>
-      <button class="nav-tab-btn" data-tab="exercises">Exercises</button>
+      <button class="nav-tab-btn active" data-tab="coach-dashboard">Home</button>
+      <button class="nav-tab-btn" data-tab="roster">Clients</button>
+      <button class="nav-tab-btn" data-tab="planner">Build</button>
+      <button class="nav-tab-btn" data-tab="assignments">Assign</button>
+      <span class="nav-tab-divider"></span>
+      <button class="nav-tab-btn nav-tab-quiet" data-tab="calendar">Calendar</button>
+      <button class="nav-tab-btn nav-tab-quiet" data-tab="exercises">Exercises</button>
     `;
   } else {
     navTabs.innerHTML = `
@@ -436,8 +487,22 @@ function openDayNativeDatePicker() {
   }
 }
 
+function studentSeesAssignment(assignment, student) {
+  if (!assignment || !student || assignment.scheduled_date !== state.selectedDate) return false;
+  if (Number(assignment.user_id) === Number(student.id)) return true;
+  const groupIds = (student.groups || []).map(g => Number(g.id)).filter(id => !isNaN(id));
+  if (!(assignment.group_id && groupIds.includes(Number(assignment.group_id)))) return false;
+  const movedOff = (state.assignments || []).some(other =>
+    Number(other.user_id) === Number(student.id) &&
+    typeof other.notes === "string" &&
+    other.notes.startsWith(`Rescheduled from ${assignment.scheduled_date}`)
+  );
+  return !movedOff;
+}
+
 function scheduleWorkoutForCurrentDate() {
-  document.querySelector('.nav-tab-btn[data-tab="planner"]').click();
+  if (!isCoach()) return;
+  goToTab("planner");
   switchPlannerSubtab("builder");
   const dateInput = document.getElementById("builderCalendarDate");
   if (dateInput) dateInput.value = state.selectedDate;
@@ -481,12 +546,11 @@ async function renderDailyWorkoutView() {
   
   let dayWorkouts = [];
   if (activeStudent && state.assignments && state.assignments.length > 0) {
-    const studentGroupIds = (activeStudent.groups || []).map(g => Number(g.id)).filter(id => !isNaN(id));
     const assignedIds = state.assignments
-      .filter(a => a.scheduled_date === state.selectedDate && (Number(a.user_id) === Number(activeStudent.id) || (a.group_id && studentGroupIds.includes(Number(a.group_id)))))
+      .filter(a => studentSeesAssignment(a, activeStudent))
       .map(a => a.workout_id);
     dayWorkouts = state.workouts.filter(w => assignedIds.includes(w.id));
-  } else {
+  } else if (!activeStudent) {
     dayWorkouts = state.workouts.filter(w => w.calendar_date === state.selectedDate);
   }
 
@@ -509,6 +573,8 @@ async function renderDailyWorkoutView() {
       const restLabel = document.getElementById("dayRestDateLabel");
       if (restLabel) restLabel.textContent = formattedDate;
     }
+    const scheduleBtn = document.getElementById("dayScheduleBtn");
+    if (scheduleBtn) scheduleBtn.style.display = isCoach() ? "inline-block" : "none";
     state.currentWorkout = null;
     state.currentWorkoutId = null;
     state.currentSession = null;
@@ -557,26 +623,28 @@ async function renderDailyWorkoutView() {
 }
 
 // Fetch all initial data
+async function refreshData() {
+  const [workoutsRes, exercisesRes, programsRes, usersRes, groupsRes, assignmentsRes] = await Promise.all([
+    fetch("/api/workouts"),
+    fetch("/api/exercises"),
+    fetch("/api/programs"),
+    fetch("/api/users"),
+    fetch("/api/groups"),
+    fetch("/api/assignments")
+  ]);
+  state.workouts = await workoutsRes.json();
+  state.exercises = await exercisesRes.json();
+  state.programs = await programsRes.json();
+  state.users = await usersRes.json();
+  state.groups = await groupsRes.json();
+  state.assignments = await assignmentsRes.json();
+  populateCalendarProgramJump();
+  populateEditWorkoutSelector();
+}
+
 async function loadInitialData() {
   try {
-    const [workoutsRes, exercisesRes, programsRes, usersRes, groupsRes, assignmentsRes] = await Promise.all([
-      fetch("/api/workouts"),
-      fetch("/api/exercises"),
-      fetch("/api/programs"),
-      fetch("/api/users"),
-      fetch("/api/groups"),
-      fetch("/api/assignments")
-    ]);
-    state.workouts = await workoutsRes.json();
-    state.exercises = await exercisesRes.json();
-    state.programs = await programsRes.json();
-    state.users = await usersRes.json();
-    state.groups = await groupsRes.json();
-    state.assignments = await assignmentsRes.json();
-
-    populateCalendarProgramJump();
-    populateEditWorkoutSelector();
-
+    await refreshData();
     await initAuth();
   } catch (err) {
     console.error("Error loading initial data:", err);
@@ -1038,20 +1106,28 @@ async function renderCalendarView() {
 
     const workoutsOnDay = state.calendarData[isoStr] || [];
 
+    const visibleWorkouts = state.calendarProgramFilter
+      ? workoutsOnDay.filter(w => w.program_name === state.calendarProgramFilter)
+      : workoutsOnDay;
+
     let workoutsHTML = "";
-    workoutsOnDay.forEach(w => {
+    visibleWorkouts.forEach(w => {
       workoutsHTML += `
-        <div class="calendar-workout-chip ${w.is_completed ? 'completed' : ''}" title="${w.title} (${w.program_name})" onclick="selectWorkoutFromCalendar(${w.id})">
+        <div class="calendar-workout-chip ${w.is_completed ? 'completed' : ''}" title="${escapeHtml(w.title)} (${escapeHtml(w.program_name)})" onclick="selectWorkoutFromCalendar(${w.id})">
           <span style="font-size: 10px; flex-shrink: 0;">${w.is_completed ? '✓' : '•'}</span>
-          <span>${w.title}</span>
+          <span>${escapeHtml(w.title)}</span>
         </div>
       `;
     });
 
+    const addBtn = isCoach()
+      ? `<button class="calendar-add-btn" title="Create a workout on this day" onclick="quickSchedulePrompt('${isoStr}')">+</button>`
+      : "";
+
     cell.innerHTML = `
       <div class="calendar-cell-top">
         <span class="calendar-day-num">${dayNum}</span>
-        <button class="calendar-add-btn" title="Add Workout to this day" onclick="quickSchedulePrompt('${isoStr}')">+</button>
+        ${addBtn}
       </div>
       <div style="flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden;">
         ${workoutsHTML}
@@ -1083,14 +1159,19 @@ function jumpCalendarToday() {
 }
 
 function jumpCalendarToProgram(progName) {
-  if (!progName) return;
-  const firstW = state.workouts.find(w => w.program_name === progName && w.calendar_date);
-  if (firstW && firstW.calendar_date) {
-    const parts = firstW.calendar_date.split('-');
-    state.calendarYear = parseInt(parts[0]);
-    state.calendarMonth = parseInt(parts[1]) - 1;
-    renderCalendarView();
+  state.calendarProgramFilter = progName || "";
+  if (progName) {
+    const dated = state.workouts
+      .filter(w => w.program_name === progName && w.calendar_date)
+      .map(w => w.calendar_date)
+      .sort();
+    if (dated.length) {
+      const parts = dated[0].split("-");
+      state.calendarYear = parseInt(parts[0], 10);
+      state.calendarMonth = parseInt(parts[1], 10) - 1;
+    }
   }
+  renderCalendarView();
 }
 
 function selectWorkoutFromCalendar(workoutId) {
@@ -1099,41 +1180,21 @@ function selectWorkoutFromCalendar(workoutId) {
   if (w && w.calendar_date) {
     state.selectedDate = w.calendar_date;
   }
-  loadWorkout(workoutId);
-  // Switch to workouts tracker view
-  document.querySelector('.nav-tab-btn[data-tab="workouts"]').click();
+  if (isCoach()) {
+    jumpToEditWorkout(workoutId);
+    return;
+  }
+  goToTab("workouts");
 }
 
 async function quickSchedulePrompt(isoDate) {
-  const title = prompt(`Assign Workout to ${isoDate}:\nEnter new Workout Title:`, `Workout on ${isoDate}`);
-  if (!title) return;
-
-  const payload = {
-    title: title,
-    program_name: "Custom Schedule",
-    calendar_date: isoDate,
-    scheduled_date: isoDate,
-    description: `Created on calendar for ${isoDate}`,
-    exercises: [
-      {
-        exercise_id: state.exercises[0].id,
-        superset_group: "A",
-        prescribed_sets: 3,
-        target_reps: "10",
-        target_weight: "0",
-        rest_seconds: 60
-      }
-    ]
-  };
-
-  await fetch("/api/workouts", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-
-  await loadInitialData();
-  renderCalendarView();
+  if (!isCoach()) return;
+  state.selectedDate = isoDate;
+  scheduleWorkoutForCurrentDate();
+  const titleInput = document.getElementById("builderTitle");
+  if (titleInput && !titleInput.value.trim()) {
+    titleInput.value = `Workout on ${isoDate}`;
+  }
 }
 
 // -------------------------------------------------------------
@@ -1293,12 +1354,19 @@ async function saveCustomWorkout() {
 
     if (!res.ok) throw new Error("Failed to save workout");
     const created = await res.json();
-    alert(`Workout '${created.title}' created successfully!`);
 
-    await loadInitialData();
+    await refreshData();
     state.currentWorkoutId = created.id;
-    await loadWorkout(created.id);
-    document.querySelector('.nav-tab-btn[data-tab="workouts"]').click();
+    state.pendingAssignWorkoutId = created.id;
+    const status = document.getElementById("builderStatus");
+    if (status) {
+      status.style.display = "block";
+      status.innerHTML = `Saved “${escapeHtml(created.title)}”. <button type="button" class="amp-action-chip" onclick="beginAssign('user', ${created.id})">Assign to one client</button> <button type="button" class="amp-action-chip" onclick="beginAssign('group', ${created.id})">Assign to a team</button>`;
+    }
+    showToast(`Saved ${created.title}`);
+    builderExercises = [];
+    document.getElementById("builderTitle").value = "";
+    renderBuilderView();
   } catch (err) {
     console.error("Error creating workout:", err);
     alert("Error creating workout: " + err.message);
@@ -1485,7 +1553,7 @@ async function submitAddWorkoutToDay() {
     const created = await res.json();
     closeAddWorkoutModal();
 
-    await loadInitialData();
+    await refreshData();
     await renderWeekPlannerView();
     alert(`Successfully added '${created.title}' to ${targetAddDayName}!`);
   } catch (err) {
@@ -1512,7 +1580,7 @@ async function removeWorkoutFromDay(workoutId, dayName) {
       throw new Error(err.detail || "Failed to remove workout");
     }
 
-    await loadInitialData();
+    await refreshData();
     await renderWeekPlannerView();
     if (state.currentWorkoutId === workoutId) {
       await renderDailyWorkoutView();
@@ -1574,9 +1642,8 @@ async function executeCopyWeek() {
     alert(`Successfully duplicated week! Created ${created.length} new workout(s) across ${repeatCount} week(s).`);
 
     // Reload workouts, programs, and calendar
-    await loadInitialData();
-    // Navigate to calendar to see new workouts!
-    document.querySelector('.nav-tab-btn[data-tab="calendar"]').click();
+    await refreshData();
+    goToTab("calendar");
   } catch (err) {
     console.error("Error copying week:", err);
     alert("Error copying week: " + err.message);
@@ -1629,7 +1696,7 @@ async function submitSaveProgramTemplate() {
     const created = await res.json();
     closeSaveProgramModal();
 
-    await loadInitialData();
+    await refreshData();
     await renderWeekPlannerView();
     alert(`Successfully saved '${newName}' with ${created.length} workout(s) as a reusable program template!`);
   } catch (err) {
@@ -1869,7 +1936,7 @@ async function saveWorkoutEdits() {
     const updated = await res.json();
     alert(`Workout '${updated.title}' updated successfully!`);
 
-    await loadInitialData();
+    await refreshData();
     populateEditWorkoutSelector();
     document.getElementById("editWorkoutSelector").value = updated.id;
     if (state.currentWorkoutId === updated.id) {
@@ -1884,8 +1951,12 @@ async function saveWorkoutEdits() {
 async function trackCurrentlyEditedWorkout() {
   if (!editorWorkoutId) return;
   state.currentWorkoutId = editorWorkoutId;
-  await loadWorkout(editorWorkoutId);
-  document.querySelector('.nav-tab-btn[data-tab="workouts"]').click();
+  const edited = state.workouts.find(w => w.id === editorWorkoutId);
+  if (edited && edited.calendar_date) state.selectedDate = edited.calendar_date;
+  if (isCoach()) {
+    showToast("Opened this workout on its calendar day.");
+  }
+  goToTab(isCoach() ? "calendar" : "workouts");
 }
 
 async function deleteCurrentlyEditedWorkout() {
@@ -1898,10 +1969,10 @@ async function deleteCurrentlyEditedWorkout() {
     });
     if (!res.ok) throw new Error("Failed to delete workout");
 
-    alert("Workout deleted successfully.");
+    showToast("Workout deleted.");
     editorWorkoutId = null;
-    await loadInitialData();
-    document.querySelector('.nav-tab-btn[data-tab="workouts"]').click();
+    await refreshData();
+    switchPlannerSubtab("builder");
   } catch (err) {
     console.error("Error deleting workout:", err);
     alert("Error deleting workout: " + err.message);
@@ -1915,17 +1986,13 @@ function jumpToEditCurrentWorkout() {
 }
 
 function jumpToEditWorkout(workoutId) {
-  // Activate top nav planner tab
-  document.querySelectorAll(".nav-tab-btn").forEach(t => t.classList.remove("active"));
-  const plannerTab = document.querySelector('.nav-tab-btn[data-tab="planner"]');
-  if (plannerTab) plannerTab.classList.add("active");
-
-  // Show view-planner section
+  state.activeTab = "planner";
+  document.querySelectorAll("#mainNavTabs .nav-tab-btn").forEach(t => {
+    t.classList.toggle("active", t.dataset.tab === "planner");
+  });
   document.querySelectorAll(".view-section").forEach(s => s.style.display = "none");
   const viewPlanner = document.getElementById("view-planner");
   if (viewPlanner) viewPlanner.style.display = "block";
-
-  // Switch subtab to editworkout
   switchPlannerSubtab("editworkout");
   loadWorkoutIntoEditor(workoutId);
 }
@@ -1946,6 +2013,11 @@ function renderExercisesView() {
     return matchCat && matchSearch;
   });
 
+  if (filtered.length === 0) {
+    list.innerHTML = `<div style="color: #94a3b8; padding: 28px; text-align: center;">No exercises match this filter.</div>`;
+    return;
+  }
+
   filtered.forEach(ex => {
     const card = document.createElement("div");
     card.style.background = "#1e293b";
@@ -1961,21 +2033,27 @@ function renderExercisesView() {
     card.innerHTML = `
       <div style="flex: 1;">
         <div style="display: flex; align-items: center; gap: 8px;">
-          <span style="font-weight: 800; font-size: 16px; color: #ffffff;">${ex.name}</span>
-          <span style="background: rgba(14, 165, 233, 0.15); color: #0ea5e9; font-size: 11px; padding: 2px 8px; border-radius: 4px; font-weight: 700;">${ex.category}</span>
+          <span style="font-weight: 800; font-size: 16px; color: #ffffff;">${escapeHtml(ex.name)}</span>
+          <span style="background: rgba(14, 165, 233, 0.15); color: #0ea5e9; font-size: 11px; padding: 2px 8px; border-radius: 4px; font-weight: 700;">${escapeHtml(ex.category)}</span>
         </div>
         ${ex.default_notes ? `<div style="color: #94a3b8; font-size: 13px; margin-top: 4px;">${ex.default_notes}</div>` : ''}
       </div>
       <div style="display: flex; gap: 8px;">
-        <button class="btn-secondary" style="padding: 8px 12px; font-size: 12px;" onclick="openVideoModal('${ex.name}', '${ex.video_url}')">
+        <button class="btn-secondary ex-video-btn" style="padding: 8px 12px; font-size: 12px;" data-name="${escapeHtml(ex.name)}" data-url="${escapeHtml(ex.video_url || '')}">
           ▶ Video
         </button>
-        <button class="btn-secondary" style="padding: 8px 12px; font-size: 12px;" onclick="editExerciseVideo(${ex.id}, '${ex.name}', '${ex.video_url || ''}')">
-          ✏️ Edit Link
+        <button class="btn-secondary ex-edit-btn" style="padding: 8px 12px; font-size: 12px;" data-id="${ex.id}" data-name="${escapeHtml(ex.name)}" data-url="${escapeHtml(ex.video_url || '')}">
+          Edit link
         </button>
       </div>
     `;
 
+    card.querySelector(".ex-video-btn").onclick = () => {
+      openVideoModal(ex.name, ex.video_url || "");
+    };
+    card.querySelector(".ex-edit-btn").onclick = () => {
+      editExerciseVideo(ex.id, ex.name, ex.video_url || "");
+    };
     list.appendChild(card);
   });
 }
@@ -2536,7 +2614,7 @@ function renderRosterCohortsList() {
   const groupCountBadge = document.getElementById("rosterGroupCountBadge");
   if (!groupsList) return;
 
-  if (groupCountBadge) groupCountBadge.textContent = `${state.groups.length} Cohorts`;
+  if (groupCountBadge) groupCountBadge.textContent = `${state.groups.length} teams`;
 
   groupsList.innerHTML = "";
 
@@ -2557,7 +2635,7 @@ function renderRosterCohortsList() {
       </div>
       <span class="cohort-member-count">${totalStudents}</span>
     </div>
-    <div class="cohort-card-desc">Complete athlete & client directory</div>
+    <div class="cohort-card-desc">Every client</div>
   `;
   groupsList.appendChild(allCard);
 
@@ -2741,7 +2819,7 @@ async function onCohortDrop(e, groupId) {
     const res = await fetch(`/api/groups/${groupId}/members/${athleteId}`, { method: "POST" });
     if (!res.ok) throw new Error("Failed to assign athlete to cohort");
 
-    await loadInitialData();
+    await refreshData();
     renderRosterView();
   } catch (err) {
     alert("Drag & Drop error: " + err.message);
@@ -2819,7 +2897,7 @@ function updateBatchActionBar() {
 
     const select = document.getElementById("batchGroupSelect");
     if (select) {
-      select.innerHTML = `<option value="">Move to Cohort...</option>`;
+      select.innerHTML = `<option value="">Move to team...</option>`;
       state.groups.forEach(g => {
         const opt = document.createElement("option");
         opt.value = g.id;
@@ -2842,7 +2920,7 @@ async function applyBatchGroupAssignment() {
   const select = document.getElementById("batchGroupSelect");
   const groupId = parseInt(select.value);
   if (!groupId) {
-    alert("Please select a target training cohort.");
+    showToast("Choose a team first.");
     return;
   }
 
@@ -2860,7 +2938,7 @@ async function applyBatchGroupAssignment() {
     }
 
     state.selectedAthleteIds = [];
-    await loadInitialData();
+    await refreshData();
     renderRosterView();
   } catch (err) {
     alert("Batch assignment error: " + err.message);
@@ -2909,7 +2987,7 @@ async function submitCreateGroup() {
   const color = document.getElementById("newGroupColor").value;
 
   if (!name) {
-    alert("Please enter a cohort name");
+    showToast("Enter a team name.");
     return;
   }
 
@@ -2938,7 +3016,7 @@ async function submitCreateGroup() {
 }
 
 async function deleteGroup(groupId) {
-  if (!confirm("Are you sure you want to delete this training cohort?")) return;
+  if (!confirm("Delete this team? Clients stay in the directory.")) return;
   try {
     const res = await fetch(`/api/groups/${groupId}`, { method: "DELETE" });
     if (!res.ok) throw new Error("Failed to delete cohort");
@@ -3018,7 +3096,7 @@ async function submitCreateUser() {
     document.getElementById("newUserEmail").value = "";
     document.getElementById("newUserTitle").value = "";
 
-    await loadInitialData();
+    await refreshData();
     if (state.activeTab === "roster") renderRosterView();
     if (document.getElementById("view-login").style.display === "flex") openLoginOverlay();
   } catch (err) {
@@ -3080,13 +3158,35 @@ async function toggleAthleteGroupMembership(groupId, add) {
 // =============================================================
 function setAssignTargetType(type) {
   state.assignTargetType = type;
-  document.getElementById("btnAssignTypeGroup").classList.toggle("active", type === "group");
-  document.getElementById("btnAssignTypeUser").classList.toggle("active", type === "user");
+  const groupBtn = document.getElementById("btnAssignTypeGroup");
+  const userBtn = document.getElementById("btnAssignTypeUser");
+  if (groupBtn) groupBtn.classList.toggle("active", type === "group");
+  if (userBtn) userBtn.classList.toggle("active", type === "user");
 
   const label = document.getElementById("assignTargetTypeLabel");
-  if (label) label.textContent = (type === "group" ? "Cohort" : "Athlete");
+  if (label) label.textContent = (type === "group" ? "Team" : "Client");
 
   populateAssignTargetDropdown();
+}
+
+function setAssignWhat(what) {
+  state.assignWhat = what === "program" ? "program" : "workout";
+  const workoutBtn = document.getElementById("btnAssignWhatWorkout");
+  const programBtn = document.getElementById("btnAssignWhatProgram");
+  if (workoutBtn) workoutBtn.classList.toggle("active", state.assignWhat === "workout");
+  if (programBtn) programBtn.classList.toggle("active", state.assignWhat === "program");
+
+  const workoutField = document.getElementById("assignWorkoutField");
+  const programField = document.getElementById("assignProgramField");
+  const dateField = document.getElementById("assignDateField");
+  const preview = document.getElementById("assignWorkoutPreviewCard");
+  if (workoutField) workoutField.style.display = state.assignWhat === "workout" ? "" : "none";
+  if (programField) programField.style.display = state.assignWhat === "program" ? "" : "none";
+  if (dateField) dateField.style.display = state.assignWhat === "workout" ? "" : "none";
+  if (preview && state.assignWhat !== "workout") preview.style.display = "none";
+
+  const submit = document.getElementById("assignSubmitBtn");
+  if (submit) submit.textContent = state.assignWhat === "program" ? "Assign program to everyone" : "Assign workout";
 }
 
 function setAssignDatePreset(preset) {
@@ -3118,7 +3218,7 @@ function populateAssignTargetDropdown() {
     state.groups.forEach(g => {
       const opt = document.createElement("option");
       opt.value = g.id;
-      opt.textContent = `${g.name} (${g.member_count} athletes)`;
+      opt.textContent = `${g.name} (${g.member_count || 0} clients)`;
       select.appendChild(opt);
     });
   } else {
@@ -3163,29 +3263,67 @@ function onAssignWorkoutChanged(workoutId) {
   }
 }
 
+function populateAssignProgramDropdown() {
+  const select = document.getElementById("assignProgramSelect");
+  if (!select) return;
+  const current = select.value;
+  select.innerHTML = `<option value="">Choose a program...</option>`;
+  (state.programs || []).forEach(p => {
+    const opt = document.createElement("option");
+    opt.value = p.program;
+    opt.textContent = `${p.program} (${(p.weeks || []).length} wk)`;
+    select.appendChild(opt);
+  });
+  if (current && Array.from(select.options).some(o => o.value === current)) {
+    select.value = current;
+  }
+  onAssignProgramChanged();
+}
+
+function onAssignProgramChanged() {
+  const programSelect = document.getElementById("assignProgramSelect");
+  const weekSelect = document.getElementById("assignProgramWeek");
+  if (!programSelect || !weekSelect) return;
+  const prog = (state.programs || []).find(p => p.program === programSelect.value);
+  const currentWeek = weekSelect.value;
+  weekSelect.innerHTML = `<option value="">All weeks</option>`;
+  (prog?.weeks || []).forEach(wk => {
+    const opt = document.createElement("option");
+    opt.value = String(wk);
+    opt.textContent = `Week ${wk} only`;
+    weekSelect.appendChild(opt);
+  });
+  if (currentWeek && Array.from(weekSelect.options).some(o => o.value === currentWeek)) {
+    weekSelect.value = currentWeek;
+  }
+}
+
 async function renderAssignmentsView() {
+  setAssignTargetType(state.assignTargetType || "group");
+  setAssignWhat(state.assignWhat || "workout");
+  populateAssignProgramDropdown();
+
   const wSelect = document.getElementById("assignWorkoutSelect");
   if (wSelect) {
-    wSelect.innerHTML = `<option value="">Choose a workout session...</option>`;
+    wSelect.innerHTML = `<option value="">Choose a workout...</option>`;
     state.workouts.forEach(w => {
       const opt = document.createElement("option");
       opt.value = w.id;
       const exCount = w.exercise_count || (w.exercises ? w.exercises.length : 0);
-      opt.textContent = `${w.title} (${w.program_name}) - ${exCount} ex`;
+      opt.textContent = `${w.title} (${w.program_name}) — ${exCount} exercises`;
       wSelect.appendChild(opt);
     });
   }
-
-  populateAssignTargetDropdown();
 
   const datePicker = document.getElementById("assignCalendarDate");
   if (datePicker && !datePicker.value) {
     datePicker.value = getTodayIso();
   }
 
-  if (state.workouts.length > 0 && wSelect) {
-    wSelect.value = state.workouts[0].id;
-    onAssignWorkoutChanged(state.workouts[0].id);
+  const preferredId = state.pendingAssignWorkoutId || (state.workouts[0] && state.workouts[0].id);
+  if (preferredId && wSelect && state.assignWhat !== "program") {
+    wSelect.value = String(preferredId);
+    onAssignWorkoutChanged(preferredId);
   }
 
   try {
@@ -3197,6 +3335,14 @@ async function renderAssignmentsView() {
   }
 }
 
+function setAssignmentListFilter(scope) {
+  state.assignmentListFilter = scope || "all";
+  document.querySelectorAll("#assignmentListFilterPills .amp-filter-pill").forEach(p => {
+    p.classList.toggle("active", p.dataset.scope === state.assignmentListFilter);
+  });
+  renderAssignmentsTable();
+}
+
 function renderAssignmentsTable() {
   const tableContainer = document.getElementById("assignmentsTableContainer");
   const countBadge = document.getElementById("assignmentsCountBadge");
@@ -3206,6 +3352,11 @@ function renderAssignmentsTable() {
   if (!tableContainer) return;
 
   let assignments = state.assignments || [];
+  if (state.assignmentListFilter === "team") {
+    assignments = assignments.filter(a => a.group_id);
+  } else if (state.assignmentListFilter === "client") {
+    assignments = assignments.filter(a => a.user_id && !a.group_id);
+  }
   if (filterVal) {
     assignments = assignments.filter(a =>
       (a.workout_title && a.workout_title.toLowerCase().includes(filterVal)) ||
@@ -3246,10 +3397,10 @@ function renderAssignmentsTable() {
       <tr>
         <td class="sets-tabular-cell" style="color: var(--amp-orange);">${a.scheduled_date}</td>
         <td>
-          <div style="font-weight: 600; color: var(--amp-ink);">${a.workout_title}</div>
+          <div style="font-weight: 600;">${escapeHtml(a.workout_title || "")}</div>
         </td>
         <td>${targetBadge}</td>
-        <td style="color: var(--amp-slate); font-size: 13px;">${a.notes || '—'}</td>
+        <td style="color: var(--amp-slate); font-size: 13px;">${escapeHtml(a.notes || "—")}</td>
         <td style="text-align: right;">
           <button class="amp-action-chip" style="color: var(--amp-status-modified);" onclick="deleteAssignment(${a.id})" title="Remove Assignment">
             🗑️ Remove
@@ -3264,40 +3415,69 @@ function renderAssignmentsTable() {
 }
 
 async function submitCreateAssignment() {
-  const workoutId = parseInt(document.getElementById("assignWorkoutSelect").value);
   const targetId = parseInt(document.getElementById("assignTargetSelect").value);
-  const dateVal = document.getElementById("assignCalendarDate").value;
   const notes = document.getElementById("assignNotesInput").value.trim();
-
-  if (!workoutId || !targetId || !dateVal) {
-    alert("Please select a workout, target cohort/athlete, and scheduled date.");
+  if (!targetId) {
+    showToast(state.assignTargetType === "group" ? "Choose a team." : "Choose a client.");
     return;
   }
 
-  const payload = {
-    workout_id: workoutId,
+  const who = {
     assigned_by_coach_id: state.currentUser ? state.currentUser.id : null,
     group_id: state.assignTargetType === "group" ? targetId : null,
     user_id: state.assignTargetType === "user" ? targetId : null,
-    scheduled_date: dateVal,
     notes: notes
   };
 
   try {
-    const res = await fetch("/api/assignments", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
+    let res;
+    if (state.assignWhat === "program") {
+      const programName = document.getElementById("assignProgramSelect").value;
+      const weekVal = document.getElementById("assignProgramWeek").value;
+      if (!programName) {
+        showToast("Choose a program.");
+        return;
+      }
+      res = await fetch("/api/assignments/program", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...who,
+          program_name: programName,
+          week_number: weekVal ? parseInt(weekVal, 10) : null
+        })
+      });
+    } else {
+      const workoutId = parseInt(document.getElementById("assignWorkoutSelect").value);
+      const dateVal = document.getElementById("assignCalendarDate").value;
+      if (!workoutId || !dateVal) {
+        showToast("Choose a workout and a date.");
+        return;
+      }
+      res = await fetch("/api/assignments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...who,
+          workout_id: workoutId,
+          scheduled_date: dateVal
+        })
+      });
+    }
+
     if (!res.ok) {
       const err = await res.json();
-      throw new Error(err.detail || "Failed to create assignment");
+      throw new Error(err.detail || "Could not assign");
     }
+    const created = await res.json();
     document.getElementById("assignNotesInput").value = "";
+    state.pendingAssignWorkoutId = null;
+    await refreshData();
     await renderAssignmentsView();
-    alert("Workout program assigned successfully!");
+    const count = Array.isArray(created) ? created.length : 1;
+    showToast(count > 1 ? `Assigned ${count} workouts.` : "Workout assigned.");
   } catch (err) {
-    alert("Error: " + err.message);
+    showToast(err.message);
   }
 }
 
