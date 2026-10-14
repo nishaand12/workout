@@ -40,7 +40,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
-    description="wourkout — workout programming for trainers, clients, and teams",
+    description="wourkout coach calendar, workout entry, and team tools",
     version="1.0.0",
     lifespan=lifespan
 )
