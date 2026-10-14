@@ -789,7 +789,9 @@ def create_user(db: Session, user_in: UserCreate):
         email=user_in.email,
         role=user_in.role or "student",
         title=user_in.title or ("Head Coach" if user_in.role == "coach" else "Athlete"),
-        avatar_color=user_in.avatar_color or "#0ea5e9"
+        avatar_color=user_in.avatar_color or "#0ea5e9",
+        status_badge=user_in.status_badge or "Active",
+        position_tag=user_in.position_tag or "Athlete"
     )
     db.add(user)
     db.commit()
@@ -993,6 +995,8 @@ def get_coach_compliance_report(db: Session, date_str: str):
             "user_name": s.name,
             "user_email": s.email,
             "avatar_color": s.avatar_color or "#0ea5e9",
+            "status_badge": s.status_badge or "Active",
+            "position_tag": s.position_tag or (s.title or "Athlete"),
             "group_names": [g.name for g in s.groups],
             "assigned_workout_id": workout.id,
             "assigned_workout_title": workout.title,
@@ -1015,4 +1019,130 @@ def get_coach_compliance_report(db: Session, date_str: str):
         "compliance_percentage": pct,
         "athletes": athletes_data
     }
+
+def push_assignment_to_tomorrow(db: Session, user_id: int, current_date: str):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        return None
+    try:
+        curr_dt = datetime.strptime(current_date, "%Y-%m-%d")
+        next_dt = curr_dt + timedelta(days=1)
+        next_date = next_dt.strftime("%Y-%m-%d")
+    except Exception:
+        return None
+
+    # Check for direct individual assignment
+    assign = db.query(WorkoutAssignment).filter(
+        WorkoutAssignment.user_id == user_id,
+        WorkoutAssignment.scheduled_date == current_date
+    ).first()
+    if assign:
+        assign.scheduled_date = next_date
+        db.commit()
+        return next_date
+
+    # Check for group assignment
+    u_group_ids = [g.id for g in user.groups]
+    group_assign = db.query(WorkoutAssignment).filter(
+        WorkoutAssignment.group_id.in_(u_group_ids),
+        WorkoutAssignment.scheduled_date == current_date
+    ).first() if u_group_ids else None
+
+    if group_assign:
+        new_assign = WorkoutAssignment(
+            workout_id=group_assign.workout_id,
+            assigned_by_coach_id=group_assign.assigned_by_coach_id,
+            user_id=user_id,
+            group_id=None,
+            scheduled_date=next_date,
+            notes=f"Rescheduled from {current_date}"
+        )
+        db.add(new_assign)
+        db.commit()
+        return next_date
+
+    return None
+
+def mark_athlete_workout_completed(db: Session, user_id: int, workout_id: int, date_str: str):
+    workout = db.query(Workout).filter(Workout.id == workout_id).first()
+    user = db.query(User).filter(User.id == user_id).first()
+    if not workout or not user:
+        return None
+
+    session = db.query(WorkoutSession).filter(
+        WorkoutSession.workout_id == workout_id,
+        WorkoutSession.user_id == user_id
+    ).first()
+
+    now = datetime.utcnow()
+    if not session:
+        session = WorkoutSession(
+            workout_id=workout_id,
+            user_id=user_id,
+            start_time=now,
+            end_time=now,
+            completed=True,
+            notes="Marked present & completed by Coach"
+        )
+        db.add(session)
+        db.commit()
+        db.refresh(session)
+    else:
+        session.completed = True
+        session.end_time = now
+        db.commit()
+
+    for we in workout.exercises:
+        num_sets = we.prescribed_sets or 3
+        weight_num = 0.0
+        if we.target_weight:
+            clean_w = re.sub(r'[^0-9.]', '', str(we.target_weight))
+            try:
+                weight_num = float(clean_w) if clean_w else 0.0
+            except ValueError:
+                weight_num = 0.0
+        reps_num = 10.0
+        if we.target_reps:
+            clean_r = re.sub(r'[^0-9.]', '', str(we.target_reps))
+            try:
+                reps_num = float(clean_r) if clean_r else 10.0
+            except ValueError:
+                reps_num = 10.0
+
+        for s_idx in range(1, num_sets + 1):
+            existing_log = db.query(SetLog).filter(
+                SetLog.session_id == session.id,
+                SetLog.workout_exercise_id == we.id,
+                SetLog.set_number == s_idx
+            ).first()
+            if existing_log:
+                existing_log.completed = True
+                if not existing_log.weight:
+                    existing_log.weight = weight_num
+                if not existing_log.reps:
+                    existing_log.reps = reps_num
+            else:
+                new_log = SetLog(
+                    session_id=session.id,
+                    workout_exercise_id=we.id,
+                    set_number=s_idx,
+                    weight=weight_num,
+                    reps=reps_num,
+                    completed=True
+                )
+                db.add(new_log)
+    db.commit()
+    return session
+
+def bulk_assign_athletes_to_group(db: Session, group_id: int, user_ids: List[int]):
+    group = db.query(Group).filter(Group.id == group_id).first()
+    if not group:
+        return False
+    users = db.query(User).filter(User.id.in_(user_ids)).all()
+    for u in users:
+        if u not in group.members:
+            group.members.append(u)
+    db.commit()
+    return True
+
 

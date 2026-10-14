@@ -1,6 +1,7 @@
 import os
 from contextlib import asynccontextmanager
 from typing import List, Optional
+from pydantic import BaseModel
 from fastapi import FastAPI, Depends, HTTPException, Query, status
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
@@ -276,6 +277,16 @@ def delete_group(group_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Group not found")
     return {"message": "Group deleted"}
 
+class BatchGroupMembersRequest(BaseModel):
+    user_ids: List[int]
+
+@app.post("/api/groups/{group_id}/members/batch")
+def add_batch_members(group_id: int, req: BatchGroupMembersRequest, db: Session = Depends(get_db)):
+    success = crud.bulk_assign_athletes_to_group(db, group_id, req.user_ids)
+    if not success:
+        raise HTTPException(status_code=400, detail="Group not found")
+    return {"message": f"Assigned {len(req.user_ids)} athletes to group"}
+
 @app.post("/api/groups/{group_id}/members/{user_id}")
 def add_group_member(group_id: int, user_id: int, db: Session = Depends(get_db)):
     success = crud.add_user_to_group(db, group_id, user_id)
@@ -319,6 +330,30 @@ def delete_assignment(assignment_id: int, db: Session = Depends(get_db)):
 @app.get("/api/coach/compliance", response_model=CoachComplianceReport)
 def get_coach_compliance(date: str = Query(..., description="YYYY-MM-DD"), db: Session = Depends(get_db)):
     return crud.get_coach_compliance_report(db, date)
+
+class PushToTomorrowRequest(BaseModel):
+    user_id: int
+    current_date: str
+
+class MarkPresentRequest(BaseModel):
+    user_id: int
+    workout_id: int
+    date: str
+
+@app.post("/api/coach/remediate/push-to-tomorrow")
+def push_to_tomorrow(req: PushToTomorrowRequest, db: Session = Depends(get_db)):
+    new_date = crud.push_assignment_to_tomorrow(db, req.user_id, req.current_date)
+    if not new_date:
+        raise HTTPException(status_code=400, detail="Could not reschedule workout")
+    return {"message": "Pushed to tomorrow", "new_date": new_date}
+
+@app.post("/api/coach/remediate/mark-present")
+def mark_present(req: MarkPresentRequest, db: Session = Depends(get_db)):
+    session = crud.mark_athlete_workout_completed(db, req.user_id, req.workout_id, req.date)
+    if not session:
+        raise HTTPException(status_code=400, detail="Could not mark session complete")
+    return {"message": "Marked present and completed", "session_id": session.id}
+
 
 # Mount static directory for frontend assets
 static_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")

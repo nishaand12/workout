@@ -20,6 +20,8 @@ class User(Base):
     role = Column(String(50), default="student", index=True)  # 'coach' or 'student'
     title = Column(String(100), default="Athlete")  # e.g. 'Head Strength Coach', 'Varsity Athlete'
     avatar_color = Column(String(20), default="#0ea5e9")
+    status_badge = Column(String(50), default="Active")  # 'Active', 'Modified', 'Rehab'
+    position_tag = Column(String(100), default="Athlete")  # 'Varsity RB', 'Sprinter', etc.
     created_at = Column(DateTime, default=datetime.utcnow)
 
     groups = relationship("Group", secondary=user_groups, back_populates="members")

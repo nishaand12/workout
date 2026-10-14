@@ -185,6 +185,8 @@ class UserBase(BaseModel):
     role: str = "student"  # 'coach' or 'student'
     title: Optional[str] = "Athlete"
     avatar_color: Optional[str] = "#0ea5e9"
+    status_badge: Optional[str] = "Active"
+    position_tag: Optional[str] = "Athlete"
 
 class UserCreate(UserBase):
     pass
@@ -195,6 +197,8 @@ class UserUpdate(BaseModel):
     role: Optional[str] = None
     title: Optional[str] = None
     avatar_color: Optional[str] = None
+    status_badge: Optional[str] = None
+    position_tag: Optional[str] = None
 
 class UserBrief(BaseModel):
     id: int
@@ -203,6 +207,8 @@ class UserBrief(BaseModel):
     role: str
     title: str
     avatar_color: str
+    status_badge: Optional[str] = "Active"
+    position_tag: Optional[str] = "Athlete"
     model_config = ConfigDict(from_attributes=True)
 
 class GroupBase(BaseModel):
@@ -259,6 +265,8 @@ class CoachComplianceAthlete(BaseModel):
     user_name: str
     user_email: str
     avatar_color: str
+    status_badge: Optional[str] = "Active"
+    position_tag: Optional[str] = "Athlete"
     group_names: List[str] = []
     assigned_workout_id: Optional[int] = None
     assigned_workout_title: Optional[str] = None

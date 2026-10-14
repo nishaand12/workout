@@ -40,7 +40,15 @@ let state = {
   // Builder State
   builderMode: "single", // "single" or "week"
   selectedSourceProgram: "",
-  selectedSourceWeek: 1
+  selectedSourceWeek: 1,
+  // Coach Hub & Roster State
+  complianceFilter: "all",
+  rosterSearchQuery: "",
+  rosterStatusFilter: "all",
+  rosterSelectedCohortId: null,
+  selectedAthleteIds: [],
+  drawerCurrentAthlete: null,
+  draggedAthleteId: null
 };
 
 function escapeQuote(str) {
@@ -172,7 +180,7 @@ function updateNavForRole() {
   if (isCoach) {
     navTabs.innerHTML = `
       <button class="nav-tab-btn active" data-tab="coach-dashboard">Dashboard</button>
-      <button class="nav-tab-btn" data-tab="roster">Roster & Groups</button>
+      <button class="nav-tab-btn" data-tab="roster">Roster & Cohorts</button>
       <button class="nav-tab-btn" data-tab="assignments">Assign Program</button>
       <button class="nav-tab-btn" data-tab="planner">Workout Planner</button>
       <button class="nav-tab-btn" data-tab="calendar">Calendar</button>
@@ -195,20 +203,17 @@ function updateNavForRole() {
   const displayUser = (state.isStudentPreview && state.previewStudent) ? state.previewStudent : user;
   const initials = displayUser.name.split(" ").map(p => p[0]).join("").toUpperCase().slice(0, 2);
   const roleLabel = (state.isStudentPreview ? "PREVIEW" : (user.role === "coach" ? "COACH" : "ATHLETE"));
-  const roleClass = (user.role === "coach" && !state.isStudentPreview) ? "coach" : "student";
 
   navUserArea.innerHTML = `
-    <div class="nav-user-container">
-      <div class="profile-avatar" style="width: 34px; height: 34px; font-size: 13px; background: ${displayUser.avatar_color || '#ff6600'};" title="${displayUser.name} (${displayUser.email})">
+    <div class="user-profile-pill" onclick="openLoginOverlay()" title="Click to switch profile or sign in">
+      <div class="user-avatar-pip" style="background: ${displayUser.avatar_color || 'var(--amp-orange)'};">
         ${initials}
       </div>
-      <div style="display: flex; flex-direction: column; text-align: left;">
-        <span style="font-size: 12px; font-weight: 800; color: #ffffff; line-height: 1.1;">${displayUser.name}</span>
-        <span class="role-badge ${roleClass}" style="margin-top: 2px; align-self: flex-start; font-size: 9px; padding: 1px 6px;">${roleLabel}</span>
+      <div class="user-pill-info">
+        <span class="user-pill-name">${displayUser.name}</span>
+        <span class="user-pill-role">${roleLabel}</span>
       </div>
-      <button class="user-switch-btn" onclick="openLoginOverlay()" title="Switch profile or sign in as another user">
-        Switch User ⇄
-      </button>
+      <span style="font-size: 11px; color: var(--amp-slate); margin-left: 4px;">⇄</span>
     </div>
   `;
 }
@@ -251,16 +256,16 @@ function openLoginOverlay() {
 
   coaches.forEach(u => {
     const card = document.createElement("div");
-    card.className = "profile-card";
+    card.className = "profile-select-card";
     const initials = u.name.split(" ").map(p => p[0]).join("").toUpperCase().slice(0, 2);
     card.innerHTML = `
-      <div class="profile-avatar" style="background: ${u.avatar_color || '#ff6600'};">${initials}</div>
-      <div class="profile-info">
+      <div class="athlete-avatar-circle" style="background: ${u.avatar_color || 'var(--amp-orange)'}; color: #ffffff;">${initials}</div>
+      <div style="flex: 1; min-width: 0;">
         <div style="display: flex; justify-content: space-between; align-items: center;">
-          <div class="profile-name">${u.name}</div>
-          <span class="role-badge coach">COACH</span>
+          <span style="font-weight: 600; font-size: 14px; color: var(--amp-ink);">${u.name}</span>
+          <span class="status-pill not_started" style="font-size: 9px; padding: 1px 6px;">COACH</span>
         </div>
-        <div class="profile-sub">${u.title || 'Strength Coach'}</div>
+        <div style="font-size: 12px; color: var(--amp-slate); margin-top: 2px;">${u.title || 'Strength Coach'} • ${u.email}</div>
       </div>
     `;
     card.onclick = () => selectUser(u.id);
@@ -269,17 +274,19 @@ function openLoginOverlay() {
 
   students.forEach(u => {
     const card = document.createElement("div");
-    card.className = "profile-card";
+    card.className = "profile-select-card";
     const initials = u.name.split(" ").map(p => p[0]).join("").toUpperCase().slice(0, 2);
     const groupNames = u.groups && u.groups.length > 0 ? u.groups.map(g => g.name).join(", ") : "Unassigned";
     card.innerHTML = `
-      <div class="profile-avatar" style="background: ${u.avatar_color || '#3b82f6'};">${initials}</div>
-      <div class="profile-info">
+      <div class="athlete-avatar-circle" style="background: ${u.avatar_color || 'var(--amp-charcoal)'}; color: #ffffff;">${initials}</div>
+      <div style="flex: 1; min-width: 0;">
         <div style="display: flex; justify-content: space-between; align-items: center;">
-          <div class="profile-name">${u.name}</div>
-          <span class="role-badge student">ATHLETE</span>
+          <span style="font-weight: 600; font-size: 14px; color: var(--amp-ink);">${u.name}</span>
+          <span class="status-pill completed" style="font-size: 9px; padding: 1px 6px;">ATHLETE</span>
         </div>
-        <div class="profile-sub">${u.title || 'Student'} • <span style="color: #60a5fa;">${groupNames}</span></div>
+        <div style="font-size: 12px; color: var(--amp-slate); margin-top: 2px;">
+          ${u.position_tag || u.title || 'Athlete'} • <span style="color: var(--amp-orange); font-weight: 600;">${groupNames}</span>
+        </div>
       </div>
     `;
     card.onclick = () => selectUser(u.id);
@@ -2077,7 +2084,7 @@ async function addRecordPrompt() {
 }
 
 // =============================================================
-// COACH DASHBOARD LOGIC
+// COACH DASHBOARD & COMPLIANCE LOGIC (AMP ARCHITECTURE)
 // =============================================================
 function navigateCoachDashboardDate(delta) {
   const parts = state.coachDashboardDate.split("-").map(Number);
@@ -2106,6 +2113,18 @@ function onCoachDashboardDatePickerChanged(val) {
   renderCoachDashboardView();
 }
 
+function setComplianceFilter(filter) {
+  state.complianceFilter = filter;
+  document.querySelectorAll("#complianceFilterPills .amp-filter-pill").forEach(p => {
+    p.classList.toggle("active", p.dataset.filter === filter);
+  });
+  renderCoachDashboardActivityList();
+}
+
+function filterComplianceTriage() {
+  setComplianceFilter("attention");
+}
+
 async function renderCoachDashboardView() {
   if (!state.coachDashboardDate) state.coachDashboardDate = getTodayIso();
 
@@ -2130,167 +2149,370 @@ async function renderCoachDashboardView() {
     const data = await res.json();
     state.complianceReport = data;
 
-    document.getElementById("kpiTotalAthletes").textContent = data.total_athletes;
-    document.getElementById("kpiCompletedAthletes").textContent = data.completed_count;
-    document.getElementById("kpiInProgressAthletes").textContent = data.in_progress_count;
-    document.getElementById("kpiComplianceRate").textContent = `${data.compliance_percentage}%`;
+    // KPI Cards
+    const kpiTotal = document.getElementById("kpiTotalAthletes");
+    if (kpiTotal) kpiTotal.textContent = data.total_athletes;
+
+    const kpiComp = document.getElementById("kpiCompletedAthletes");
+    if (kpiComp) kpiComp.textContent = data.completed_count;
+
+    const kpiRatio = document.getElementById("kpiCompletedRatio");
+    if (kpiRatio) kpiRatio.textContent = `${data.completed_count} / ${data.total_athletes}`;
+
+    const kpiProg = document.getElementById("kpiInProgressAthletes");
+    if (kpiProg) kpiProg.textContent = data.in_progress_count;
+
+    const kpiPulse = document.getElementById("kpiActivePulse");
+    if (kpiPulse) kpiPulse.style.display = data.in_progress_count > 0 ? "inline-block" : "none";
+
+    const compRate = Math.round(data.compliance_percentage);
+    const kpiRate = document.getElementById("kpiComplianceRate");
+    if (kpiRate) kpiRate.textContent = `${compRate}%`;
 
     const barFill = document.getElementById("kpiComplianceBarFill");
-    if (barFill) barFill.style.width = `${Math.min(100, data.compliance_percentage)}%`;
+    if (barFill) barFill.style.width = `${Math.min(100, compRate)}%`;
 
-    const filterEl = document.getElementById("coachComplianceFilter");
-    const filterVal = filterEl ? filterEl.value : "all";
+    // Triage Attention Banner
+    const triageBanner = document.getElementById("triageAlertBanner");
+    const triageMsg = document.getElementById("triageAlertMessage");
+    const unstarted = (data.athletes || []).filter(a => a.status === "not_started");
+    const isTodayOrPast = state.coachDashboardDate <= getTodayIso();
 
-    const listEl = document.getElementById("coachAthleteActivityList");
-    if (!listEl) return;
-    listEl.innerHTML = "";
-
-    let filteredAthletes = data.athletes;
-    if (filterVal !== "all") {
-      filteredAthletes = filteredAthletes.filter(a => a.status === filterVal);
-    }
-
-    if (filteredAthletes.length === 0) {
-      listEl.innerHTML = `
-        <div style="text-align: center; padding: 40px 20px; color: #64748b;">
-          <div style="font-size: 32px; margin-bottom: 8px;">📋</div>
-          <div style="font-weight: 700;">No athletes matching this filter for ${formattedDate}</div>
-        </div>
-      `;
-      return;
-    }
-
-    filteredAthletes.forEach(a => {
-      const card = document.createElement("div");
-      card.className = "athlete-status-card";
-
-      const initials = a.user_name.split(" ").map(p => p[0]).join("").toUpperCase().slice(0, 2);
-      const groupsStr = a.group_names.length > 0 ? a.group_names.join(", ") : "General";
-
-      let statusBadge = "";
-      let statusText = "";
-      if (a.status === "completed") {
-        statusBadge = `<span class="status-badge completed">✓ Completed</span>`;
-        statusText = `Finished all ${a.completed_sets} sets`;
-      } else if (a.status === "in_progress") {
-        statusBadge = `<span class="status-badge in_progress">⚡ In Progress</span>`;
-        statusText = `${a.completed_sets} / ${a.total_prescribed_sets} sets completed`;
+    if (triageBanner && triageMsg) {
+      if (unstarted.length > 0 && isTodayOrPast) {
+        triageBanner.style.display = "flex";
+        triageMsg.textContent = `${unstarted.length} athlete${unstarted.length > 1 ? 's have' : ' has'} not started prescribed sessions for this day.`;
       } else {
-        statusBadge = `<span class="status-badge not_started">○ Not Started</span>`;
-        statusText = `0 / ${a.total_prescribed_sets} sets logged`;
+        triageBanner.style.display = "none";
       }
+    }
 
-      card.innerHTML = `
-        <div style="display: flex; align-items: center; gap: 14px; flex: 1; min-width: 0;">
-          <div class="profile-avatar" style="background: ${a.avatar_color || '#3b82f6'};">${initials}</div>
-          <div style="min-width: 0; flex: 1;">
-            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-              <span style="font-weight: 800; font-size: 15px; color: #ffffff;">${a.user_name}</span>
-              <span class="group-tag-pill" style="font-size: 10px;">${groupsStr}</span>
-            </div>
-            <div style="font-size: 12px; color: #94a3b8; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-              🏋️ ${a.assigned_workout_title || 'Assigned Session'}
-            </div>
-          </div>
-        </div>
-
-        <div style="display: flex; align-items: center; gap: 14px; flex-shrink: 0;">
-          <div style="text-align: right;">
-            <div>${statusBadge}</div>
-            <div style="font-size: 11px; color: #64748b; margin-top: 4px;">${statusText}</div>
-          </div>
-
-          <div style="display: flex; gap: 6px;">
-            ${a.session_id ? `
-              <button class="calendar-btn-nav" style="padding: 7px 12px; font-size: 12px; background: #334155; color: white; border: none; font-weight: 700; border-radius: 6px; cursor: pointer;" onclick="openAthleteSetsModal(${a.user_id}, ${a.assigned_workout_id}, '${escapeQuote(a.user_name)}', '${a.avatar_color}', ${a.session_id})" title="Inspect student logged sets and weights">
-                📊 View Sets
-              </button>
-            ` : ''}
-            <button class="calendar-btn-nav" style="padding: 7px 12px; font-size: 12px; background: rgba(255, 102, 0, 0.15); border: 1px solid rgba(255, 102, 0, 0.3); color: #ff8533; font-weight: 700; border-radius: 6px; cursor: pointer;" onclick="previewAsStudent(${a.user_id})" title="Preview app exactly as this athlete">
-              👁️ View as Athlete
-            </button>
-          </div>
-        </div>
-      `;
-      listEl.appendChild(card);
-    });
+    renderCoachDashboardActivityList();
   } catch (err) {
     console.error("Error loading coach compliance report:", err);
   }
 }
 
-async function openAthleteSetsModal(userId, workoutId, userName, avatarColor, sessionId) {
-  const modal = document.getElementById("athleteSetsModal");
-  if (!modal) return;
+function renderCoachDashboardActivityList() {
+  const listEl = document.getElementById("coachAthleteActivityList");
+  if (!listEl) return;
 
-  const initials = userName.split(" ").map(p => p[0]).join("").toUpperCase().slice(0, 2);
-  document.getElementById("modalAthleteAvatar").style.background = avatarColor || "#3b82f6";
-  document.getElementById("modalAthleteAvatar").textContent = initials;
-  document.getElementById("modalAthleteName").textContent = userName;
-  document.getElementById("modalAthleteSubtitle").textContent = `Logged training session #${sessionId}`;
+  const data = state.complianceReport;
+  if (!data || !data.athletes) {
+    listEl.innerHTML = `<div style="text-align: center; padding: 40px; color: var(--amp-slate);">No compliance data available.</div>`;
+    return;
+  }
 
-  const contentEl = document.getElementById("modalAthleteSetsContent");
-  contentEl.innerHTML = `<div style="text-align: center; padding: 20px; color: #94a3b8;">Loading session logs...</div>`;
-  modal.classList.add("open");
+  let filtered = data.athletes;
+  if (state.complianceFilter === "completed") {
+    filtered = filtered.filter(a => a.status === "completed");
+  } else if (state.complianceFilter === "in_progress") {
+    filtered = filtered.filter(a => a.status === "in_progress");
+  } else if (state.complianceFilter === "not_started") {
+    filtered = filtered.filter(a => a.status === "not_started");
+  } else if (state.complianceFilter === "attention") {
+    filtered = filtered.filter(a => a.status === "not_started" || (a.status_badge && a.status_badge !== "Active"));
+  }
 
-  try {
-    const res = await fetch(`/api/sessions/${sessionId}`);
-    const session = await res.json();
+  const counterEl = document.getElementById("complianceTotalCounter");
+  if (counterEl) counterEl.textContent = `${filtered.length} of ${data.athletes.length} Athletes`;
 
-    let html = "";
-    if (session.workout && session.workout.exercises) {
-      session.workout.exercises.forEach(we => {
-        const exerciseName = we.exercise ? we.exercise.name : `Exercise #${we.exercise_id}`;
-        const setsForEx = (session.set_logs || []).filter(s => s.workout_exercise_id === we.id);
+  if (filtered.length === 0) {
+    listEl.innerHTML = `
+      <div style="text-align: center; padding: 48px 20px; color: var(--amp-slate);">
+        <div style="font-size: 32px; margin-bottom: 8px;">📋</div>
+        <div style="font-weight: 600; color: var(--amp-charcoal); font-size: 15px;">No athletes matching "${state.complianceFilter}"</div>
+        <div style="font-size: 13px; margin-top: 4px;">Select another filter tab or jump to today's schedule.</div>
+      </div>
+    `;
+    return;
+  }
 
-        html += `
-          <div style="background: #0f172a; border: 1px solid #334155; border-radius: 10px; padding: 14px; margin-bottom: 12px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-              <span style="font-weight: 800; font-size: 14px; color: #ffffff;">${exerciseName}</span>
-              <span style="font-size: 11px; color: #94a3b8;">Prescribed: ${we.prescribed_sets} sets × ${we.target_reps} reps</span>
+  let html = `<div class="amp-feed-table">`;
+
+  filtered.forEach(a => {
+    const initials = a.user_name.split(" ").map(p => p[0]).join("").toUpperCase().slice(0, 2);
+    const groupsStr = a.group_names && a.group_names.length > 0 ? a.group_names.join(", ") : "General";
+    const posTag = a.position_tag || "Athlete";
+
+    let statusPillHtml = "";
+    if (a.status === "completed") {
+      statusPillHtml = `<span class="status-pill completed">✓ Completed</span>`;
+    } else if (a.status === "in_progress") {
+      statusPillHtml = `<span class="status-pill in_progress">⚡ In Progress</span>`;
+    } else {
+      statusPillHtml = `<span class="status-pill not_started">○ Not Started</span>`;
+    }
+
+    if (a.status_badge === "Modified") {
+      statusPillHtml += `<span class="status-pill modified" style="margin-left: 4px;">Modified</span>`;
+    } else if (a.status_badge === "Rehab") {
+      statusPillHtml += `<span class="status-pill rehab" style="margin-left: 4px;">Rehab</span>`;
+    }
+
+    const setsPct = a.total_prescribed_sets > 0 ? Math.round((a.completed_sets / a.total_prescribed_sets) * 100) : 0;
+    const barColor = a.status === "completed" ? "var(--amp-status-completed)" : "var(--amp-orange)";
+
+    html += `
+      <div class="amp-feed-row" onclick="openAmpDrawer(${a.user_id}, ${a.assigned_workout_id || 0}, '${escapeQuote(a.user_name)}', '${a.avatar_color}', ${a.session_id || 'null'}, '${escapeQuote(groupsStr)}')">
+        <!-- 1. Athlete Info -->
+        <div class="athlete-profile-cell">
+          <div class="athlete-avatar-circle" style="background: ${a.avatar_color || 'var(--amp-charcoal)'}; color: #ffffff;">${initials}</div>
+          <div class="athlete-name-meta">
+            <span class="athlete-row-name">${a.user_name}</span>
+            <div class="athlete-row-tags">
+              <span class="cohort-pill-tag">${groupsStr}</span>
+              <span class="position-tag">${posTag}</span>
             </div>
-            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px;">
-        `;
-
-        if (setsForEx.length === 0) {
-          html += `<span style="font-size: 12px; color: #64748b; font-style: italic;">No sets logged</span>`;
-        } else {
-          setsForEx.forEach(s => {
-            html += `
-              <div style="background: #1e293b; border: 1px solid ${s.completed ? '#10b981' : '#475569'}; border-radius: 6px; padding: 6px 10px; font-size: 12px;">
-                <div style="color: #94a3b8; font-size: 10px; font-weight: 700;">SET ${s.set_number} ${s.completed ? '✓' : ''}</div>
-                <div style="font-weight: 800; color: #ffffff; margin-top: 2px;">${s.weight} lbs × ${s.reps} reps</div>
-              </div>
-            `;
-          });
-        }
-
-        html += `</div></div>`;
-      });
-    }
-
-    if (session.notes) {
-      html += `
-        <div style="padding: 12px; background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.2); border-radius: 8px; font-size: 13px; color: #93c5fd; margin-top: 10px;">
-          💬 <strong>Athlete Notes:</strong> ${session.notes}
+          </div>
         </div>
-      `;
-    }
 
-    contentEl.innerHTML = html;
+        <!-- 2. Prescribed Workout -->
+        <div class="assigned-workout-meta">
+          <div style="font-weight: 600; color: var(--amp-ink);">${a.assigned_workout_title || 'No Session Programmed'}</div>
+          <span>${a.total_prescribed_sets} prescribed sets</span>
+        </div>
+
+        <!-- 3. Progress / Sets -->
+        <div class="sets-tabular-cell">
+          <div>${a.completed_sets} / ${a.total_prescribed_sets} sets</div>
+          <div class="kpi-progress-track" style="height: 3px; margin-top: 4px; width: 80px;">
+            <div class="kpi-progress-fill" style="width: ${setsPct}%; background: ${barColor};"></div>
+          </div>
+        </div>
+
+        <!-- 4. Status Badge -->
+        <div>
+          ${statusPillHtml}
+        </div>
+
+        <!-- 5. Quick Actions -->
+        <div class="row-actions-group" style="justify-content: flex-end;">
+          <button class="amp-action-chip primary" onclick="event.stopPropagation(); openAmpDrawer(${a.user_id}, ${a.assigned_workout_id || 0}, '${escapeQuote(a.user_name)}', '${a.avatar_color}', ${a.session_id || 'null'}, '${escapeQuote(groupsStr)}')">
+            Inspect Sets →
+          </button>
+
+          ${a.status === 'not_started' ? `
+            <button class="amp-action-chip" onclick="event.stopPropagation(); remediatePushToTomorrow(${a.user_id})" title="Reschedule session to tomorrow (+1 day)">
+              Push +1d
+            </button>
+            <button class="amp-action-chip" onclick="event.stopPropagation(); remediateMarkPresent(${a.user_id}, ${a.assigned_workout_id || 0})" title="Mark session as present and complete">
+              Mark Present
+            </button>
+          ` : ''}
+
+          <button class="amp-action-chip" onclick="event.stopPropagation(); previewAsStudent(${a.user_id})" title="Preview application as this athlete">
+            👁️
+          </button>
+        </div>
+      </div>
+    `;
+  });
+
+  html += `</div>`;
+  listEl.innerHTML = html;
+}
+
+// -------------------------------------------------------------
+// COACH 1-CLICK REMEDIATION ACTIONS
+// -------------------------------------------------------------
+async function remediatePushToTomorrow(userId) {
+  try {
+    const res = await fetch("/api/coach/remediate/push-to-tomorrow", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        user_id: userId,
+        current_date: state.coachDashboardDate
+      })
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || "Failed to push workout to tomorrow");
+    }
+    await renderCoachDashboardView();
   } catch (err) {
-    console.error("Error loading session details:", err);
-    contentEl.innerHTML = `<div style="color: #ef4444; padding: 20px;">Failed to load session details.</div>`;
+    alert("Remediation error: " + err.message);
   }
 }
 
+async function remediateMarkPresent(userId, workoutId) {
+  if (!workoutId) {
+    alert("No prescribed workout available to mark complete for this athlete.");
+    return;
+  }
+  try {
+    const res = await fetch("/api/coach/remediate/mark-present", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        user_id: userId,
+        workout_id: workoutId,
+        date: state.coachDashboardDate
+      })
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || "Failed to mark athlete present");
+    }
+    await renderCoachDashboardView();
+  } catch (err) {
+    alert("Remediation error: " + err.message);
+  }
+}
+
+// -------------------------------------------------------------
+// SLIDE-OVER INSPECTION DRAWER (AMP ARCHITECTURE)
+// -------------------------------------------------------------
+async function openAmpDrawer(userId, workoutId, userName, avatarColor, sessionId, cohortName) {
+  const drawer = document.getElementById("ampSetInspectionDrawer");
+  if (!drawer) return;
+
+  state.drawerCurrentAthlete = { userId, workoutId, userName, avatarColor, sessionId, cohortName };
+
+  const initials = userName.split(" ").map(p => p[0]).join("").toUpperCase().slice(0, 2);
+  const avatarEl = document.getElementById("drawerAthleteAvatar");
+  if (avatarEl) {
+    avatarEl.style.background = avatarColor || "var(--amp-orange)";
+    avatarEl.textContent = initials;
+  }
+
+  const nameEl = document.getElementById("drawerAthleteName");
+  if (nameEl) nameEl.textContent = userName;
+
+  const subEl = document.getElementById("drawerAthleteSubtitle");
+  if (subEl) subEl.textContent = `${cohortName || 'Training Cohort'} • Prescribed Session`;
+
+  const calloutEl = document.getElementById("drawerAthleteCallout");
+  const noteTextEl = document.getElementById("drawerAthleteNoteText");
+  if (calloutEl) calloutEl.style.display = "none";
+
+  const contentEl = document.getElementById("drawerSetsContent");
+  contentEl.innerHTML = `<div style="text-align: center; padding: 40px; color: var(--amp-slate); font-size: 13px;">Loading session logs...</div>`;
+
+  drawer.classList.add("open");
+  drawer.setAttribute("aria-hidden", "false");
+
+  try {
+    if (sessionId) {
+      const res = await fetch(`/api/sessions/${sessionId}`);
+      const session = await res.json();
+
+      if (session.notes && calloutEl && noteTextEl) {
+        noteTextEl.textContent = session.notes;
+        calloutEl.style.display = "flex";
+      }
+
+      let html = "";
+      if (session.workout && session.workout.exercises) {
+        session.workout.exercises.forEach(we => {
+          const exName = we.exercise ? we.exercise.name : `Exercise #${we.exercise_id}`;
+          const setsForEx = (session.set_logs || []).filter(s => s.workout_exercise_id === we.id);
+          const supersetBadge = we.superset_tag ? `<span class="superset-tag-badge">${we.superset_tag}</span>` : "";
+
+          html += `
+            <div class="amp-drawer-exercise-card">
+              <div class="drawer-ex-header">
+                <div class="drawer-ex-name">
+                  ${supersetBadge}${exName}
+                </div>
+                <div class="drawer-ex-prescribed">
+                  Prescribed: ${we.prescribed_sets} sets × ${we.target_reps} reps ${we.target_rpe ? `@ RPE ${we.target_rpe}` : ''}
+                </div>
+              </div>
+              <table class="drawer-sets-table">
+                <thead>
+                  <tr>
+                    <th>SET #</th>
+                    <th>PRESCRIBED</th>
+                    <th>LOGGED WEIGHT & REPS</th>
+                    <th style="text-align: right;">COMPLETION</th>
+                  </tr>
+                </thead>
+                <tbody>
+          `;
+
+          for (let sNum = 1; sNum <= we.prescribed_sets; sNum++) {
+            const logged = setsForEx.find(s => s.set_number === sNum);
+            const isDone = logged && logged.completed;
+            const logText = logged ? `<span class="weight-logged-bold">${logged.weight} lbs</span> × ${logged.reps} reps` : `<span style="color: var(--amp-slate); font-style: italic;">—</span>`;
+            const badge = isDone
+              ? `<span class="check-pill-done">✓ DONE</span>`
+              : `<span style="font-size: 11px; color: var(--amp-slate);">Pending</span>`;
+
+            html += `
+              <tr>
+                <td class="set-mono-num">SET ${sNum}</td>
+                <td style="color: var(--amp-slate); font-size: 12px;">${we.target_reps} reps</td>
+                <td>${logText}</td>
+                <td style="text-align: right;">${badge}</td>
+              </tr>
+            `;
+          }
+
+          html += `</tbody></table></div>`;
+        });
+      }
+      contentEl.innerHTML = html || `<div style="text-align: center; padding: 30px; color: var(--amp-slate);">No exercises found for this session.</div>`;
+    } else if (workoutId) {
+      const res = await fetch(`/api/workouts/${workoutId}`);
+      const workout = await res.json();
+      let html = `
+        <div style="background: var(--amp-peach-subtle); border: 1px solid rgba(255,97,5,0.2); border-radius: var(--amp-radius-card); padding: 14px; margin-bottom: 16px; font-size: 13px; color: var(--amp-charcoal);">
+          ℹ️ <strong>Session Not Started:</strong> Showing prescribed targets below.
+        </div>
+      `;
+      (workout.exercises || []).forEach(we => {
+        const exName = we.exercise ? we.exercise.name : `Exercise #${we.exercise_id}`;
+        const supersetBadge = we.superset_tag ? `<span class="superset-tag-badge">${we.superset_tag}</span>` : "";
+        html += `
+          <div class="amp-drawer-exercise-card">
+            <div class="drawer-ex-header">
+              <div class="drawer-ex-name">${supersetBadge}${exName}</div>
+              <div class="drawer-ex-prescribed">${we.prescribed_sets} sets × ${we.target_reps} reps</div>
+            </div>
+            <div style="padding: 12px 16px; font-size: 12.5px; color: var(--amp-slate);">
+              Prescribed target: ${we.prescribed_sets} sets of ${we.target_reps} reps ${we.target_rpe ? `at RPE ${we.target_rpe}` : ''}
+            </div>
+          </div>
+        `;
+      });
+      contentEl.innerHTML = html;
+    } else {
+      contentEl.innerHTML = `<div style="text-align: center; padding: 40px; color: var(--amp-slate);">No workout scheduled for this athlete.</div>`;
+    }
+  } catch (err) {
+    console.error("Error loading drawer session:", err);
+    contentEl.innerHTML = `<div style="padding: 24px; color: var(--amp-status-modified); text-align: center;">Failed to load session details.</div>`;
+  }
+}
+
+function closeAmpDrawer() {
+  const drawer = document.getElementById("ampSetInspectionDrawer");
+  if (drawer) {
+    drawer.classList.remove("open");
+    drawer.setAttribute("aria-hidden", "true");
+  }
+}
+
+function previewCurrentDrawerAthlete() {
+  if (state.drawerCurrentAthlete) {
+    const uid = state.drawerCurrentAthlete.userId;
+    closeAmpDrawer();
+    previewAsStudent(uid);
+  }
+}
+
+function openAthleteSetsModal(userId, workoutId, userName, avatarColor, sessionId) {
+  openAmpDrawer(userId, workoutId, userName, avatarColor, sessionId);
+}
+
 function closeAthleteSetsModal() {
-  const modal = document.getElementById("athleteSetsModal");
-  if (modal) modal.classList.remove("open");
+  closeAmpDrawer();
 }
 
 // =============================================================
-// ROSTER & GROUPS LOGIC
+// ROSTER & TRAINING COHORTS SPLIT VIEW LOGIC
 // =============================================================
 async function renderRosterView() {
   try {
@@ -2301,72 +2523,365 @@ async function renderRosterView() {
     state.groups = await groupsRes.json();
     state.users = await usersRes.json();
 
-    const groupCountBadge = document.getElementById("rosterGroupCountBadge");
-    if (groupCountBadge) groupCountBadge.textContent = `${state.groups.length} groups`;
-
-    const groupsList = document.getElementById("rosterGroupsList");
-    if (groupsList) {
-      groupsList.innerHTML = "";
-      if (state.groups.length === 0) {
-        groupsList.innerHTML = `<div style="color: #64748b; padding: 20px 0; text-align: center;">No groups created yet. Click "+ New Training Group" above!</div>`;
-      } else {
-        state.groups.forEach(g => {
-          const card = document.createElement("div");
-          card.className = "group-item-card";
-          const membersList = (g.members || []).map(m => `<span style="display: inline-block; padding: 2px 8px; background: #1e293b; border-radius: 4px; font-size: 11px; margin: 2px;">${m.name}</span>`).join(" ");
-          card.innerHTML = `
-            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px;">
-              <div style="display: flex; align-items: center; gap: 8px;">
-                <span style="width: 12px; height: 12px; border-radius: 50%; background: ${g.color || '#3b82f6'};"></span>
-                <span style="font-weight: 800; font-size: 15px; color: #ffffff;">${g.name}</span>
-                <span style="font-size: 11px; background: rgba(255,255,255,0.08); padding: 2px 6px; border-radius: 4px; color: #94a3b8;">${g.member_count} athletes</span>
-              </div>
-              <button style="background: transparent; border: none; color: #f87171; cursor: pointer; font-size: 13px;" onclick="deleteGroup(${g.id})" title="Delete Group">🗑️</button>
-            </div>
-            <div style="font-size: 12px; color: #94a3b8; margin-bottom: 8px;">${g.description || 'No description'}</div>
-            <div style="border-top: 1px solid #334155; padding-top: 8px;">
-              <div style="font-size: 10px; text-transform: uppercase; color: #64748b; font-weight: 700; margin-bottom: 4px;">Group Members</div>
-              <div>${membersList || '<span style="color: #64748b; font-size: 11px; font-style: italic;">No athletes assigned yet</span>'}</div>
-            </div>
-          `;
-          groupsList.appendChild(card);
-        });
-      }
-    }
-
-    const students = state.users.filter(u => u.role === "student");
-    const athleteCountBadge = document.getElementById("rosterAthleteCountBadge");
-    if (athleteCountBadge) athleteCountBadge.textContent = `${students.length} athletes`;
-
-    const athletesList = document.getElementById("rosterAthletesList");
-    if (athletesList) {
-      athletesList.innerHTML = "";
-      students.forEach(s => {
-        const card = document.createElement("div");
-        card.className = "athlete-status-card";
-        const initials = s.name.split(" ").map(p => p[0]).join("").toUpperCase().slice(0, 2);
-        const groupBadges = s.groups && s.groups.length > 0
-          ? s.groups.map(g => `<span class="group-tag-pill">${g.name}</span>`).join(" ")
-          : `<span style="color: #64748b; font-size: 11px; font-style: italic;">Unassigned</span>`;
-
-        card.innerHTML = `
-          <div style="display: flex; align-items: center; gap: 12px; flex: 1;">
-            <div class="profile-avatar" style="background: ${s.avatar_color || '#3b82f6'};">${initials}</div>
-            <div>
-              <div style="font-weight: 800; font-size: 14px; color: #ffffff;">${s.name}</div>
-              <div style="font-size: 11px; color: #94a3b8; margin-top: 2px;">${s.title || 'Athlete'} • ${s.email}</div>
-              <div style="margin-top: 6px;">${groupBadges}</div>
-            </div>
-          </div>
-          <button class="calendar-btn-nav" style="padding: 6px 12px; font-size: 11.5px; background: #334155; color: white; border: none; font-weight: 700; border-radius: 6px; cursor: pointer;" onclick="openAssignAthleteGroupModal(${s.id})">
-            ⚙️ Groups
-          </button>
-        `;
-        athletesList.appendChild(card);
-      });
-    }
+    renderRosterCohortsList();
+    renderRosterAthletesTable();
+    updateBatchActionBar();
   } catch (err) {
     console.error("Error rendering roster view:", err);
+  }
+}
+
+function renderRosterCohortsList() {
+  const groupsList = document.getElementById("rosterGroupsList");
+  const groupCountBadge = document.getElementById("rosterGroupCountBadge");
+  if (!groupsList) return;
+
+  if (groupCountBadge) groupCountBadge.textContent = `${state.groups.length} Cohorts`;
+
+  groupsList.innerHTML = "";
+
+  // "All Athletes" card at top
+  const allCard = document.createElement("div");
+  allCard.className = `cohort-card-dropzone ${state.rosterSelectedCohortId === null ? 'active' : ''}`;
+  allCard.onclick = () => {
+    state.rosterSelectedCohortId = null;
+    renderRosterCohortsList();
+    renderRosterAthletesTable();
+  };
+  const totalStudents = state.users.filter(u => u.role === "student").length;
+  allCard.innerHTML = `
+    <div class="cohort-card-top">
+      <div class="cohort-card-name">
+        <span class="cohort-color-dot" style="background: var(--amp-ink);"></span>
+        All Athletes
+      </div>
+      <span class="cohort-member-count">${totalStudents}</span>
+    </div>
+    <div class="cohort-card-desc">Complete athlete & client directory</div>
+  `;
+  groupsList.appendChild(allCard);
+
+  state.groups.forEach(g => {
+    const card = document.createElement("div");
+    card.className = `cohort-card-dropzone ${state.rosterSelectedCohortId === g.id ? 'active' : ''}`;
+    card.dataset.groupId = g.id;
+
+    // Drag and drop listeners
+    card.ondragover = (e) => onCohortDragOver(e);
+    card.ondragleave = (e) => onCohortDragLeave(e);
+    card.ondrop = (e) => onCohortDrop(e, g.id);
+
+    card.onclick = (e) => {
+      if (e.target.closest("button")) return;
+      state.rosterSelectedCohortId = g.id;
+      renderRosterCohortsList();
+      renderRosterAthletesTable();
+    };
+
+    card.innerHTML = `
+      <div class="cohort-card-top">
+        <div class="cohort-card-name">
+          <span class="cohort-color-dot" style="background: ${g.color || 'var(--amp-orange)'};"></span>
+          ${g.name}
+        </div>
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <span class="cohort-member-count">${g.member_count}</span>
+          <button style="background: transparent; border: none; color: var(--amp-slate); cursor: pointer; font-size: 13px;" onclick="event.stopPropagation(); deleteGroup(${g.id})" title="Delete Cohort">✕</button>
+        </div>
+      </div>
+      <div class="cohort-card-desc">${g.description || 'No description'}</div>
+      <div class="cohort-card-drop-hint">Drop athlete here to assign ↘</div>
+    `;
+    groupsList.appendChild(card);
+  });
+}
+
+function renderRosterAthletesTable() {
+  const tbody = document.getElementById("rosterAthletesTableBody");
+  const countBadge = document.getElementById("rosterAthleteCountBadge");
+  if (!tbody) return;
+
+  let students = state.users.filter(u => u.role === "student");
+
+  // Filter by cohort if selected
+  if (state.rosterSelectedCohortId !== null) {
+    students = students.filter(s => (s.groups || []).some(g => g.id === state.rosterSelectedCohortId));
+  }
+
+  // Filter by status if selected
+  if (state.rosterStatusFilter && state.rosterStatusFilter !== "all") {
+    students = students.filter(s => (s.status_badge || "Active") === state.rosterStatusFilter);
+  }
+
+  // Filter by search query
+  if (state.rosterSearchQuery) {
+    const q = state.rosterSearchQuery.toLowerCase();
+    students = students.filter(s =>
+      s.name.toLowerCase().includes(q) ||
+      s.email.toLowerCase().includes(q) ||
+      (s.title && s.title.toLowerCase().includes(q)) ||
+      (s.position_tag && s.position_tag.toLowerCase().includes(q))
+    );
+  }
+
+  if (countBadge) countBadge.textContent = `${students.length} athletes`;
+
+  tbody.innerHTML = "";
+
+  if (students.length === 0) {
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="5" style="text-align: center; padding: 48px; color: var(--amp-slate);">
+          No athletes matching current filters.
+        </td>
+      </tr>
+    `;
+    return;
+  }
+
+  students.forEach(s => {
+    const isSelected = state.selectedAthleteIds.includes(s.id);
+    const initials = s.name.split(" ").map(p => p[0]).join("").toUpperCase().slice(0, 2);
+    const cohortBadges = (s.groups && s.groups.length > 0)
+      ? s.groups.map(g => `<span class="cohort-pill-tag"><span class="cohort-color-dot" style="background: ${g.color || 'var(--amp-orange)'}; width: 6px; height: 6px; margin-right: 4px;"></span>${g.name}</span>`).join(" ")
+      : `<span style="color: var(--amp-slate); font-size: 11px; font-style: italic;">Unassigned</span>`;
+
+    const statusBadge = s.status_badge || "Active";
+    let statusClass = "completed";
+    if (statusBadge === "Modified") statusClass = "modified";
+    else if (statusBadge === "Rehab") statusClass = "rehab";
+
+    const tr = document.createElement("tr");
+    tr.id = `athlete-row-${s.id}`;
+    tr.draggable = true;
+    tr.ondragstart = (e) => onAthleteDragStart(e, s.id);
+    tr.ondragend = (e) => onAthleteDragEnd(e);
+
+    tr.innerHTML = `
+      <td style="text-align: center;">
+        <input type="checkbox" class="athlete-row-checkbox" value="${s.id}" ${isSelected ? 'checked' : ''} onchange="onAthleteCheckboxChange(${s.id}, this.checked)">
+      </td>
+      <td>
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span class="athlete-drag-grip" title="Drag and drop onto a cohort in the left panel">⋮⋮</span>
+          <div class="athlete-avatar-circle" style="background: ${s.avatar_color || 'var(--amp-charcoal)'}; color: #ffffff;">${initials}</div>
+          <div class="athlete-name-meta">
+            <span class="athlete-row-name">${s.name}</span>
+            <span class="position-tag">${s.position_tag || s.title || 'Athlete'} • ${s.email}</span>
+          </div>
+        </div>
+      </td>
+      <td>
+        <div style="display: flex; gap: 4px; flex-wrap: wrap;">
+          ${cohortBadges}
+        </div>
+      </td>
+      <td>
+        <button class="status-pill ${statusClass}" onclick="cycleAthleteStatus(${s.id}, '${statusBadge}')" title="Click to cycle status: Active -> Modified -> Rehab" style="border: none; cursor: pointer;">
+          ● ${statusBadge} ↻
+        </button>
+      </td>
+      <td style="text-align: right;">
+        <div class="row-actions-group" style="justify-content: flex-end;">
+          <button class="amp-action-chip" onclick="openAssignAthleteGroupModal(${s.id})" title="Manage cohort memberships">
+            ⚙️ Cohorts
+          </button>
+          <button class="amp-action-chip" onclick="previewAsStudent(${s.id})" title="View application as this athlete">
+            👁️ View
+          </button>
+        </div>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  const selectAllEl = document.getElementById("selectAllAthletesCheckbox");
+  if (selectAllEl) {
+    selectAllEl.checked = students.length > 0 && students.every(s => state.selectedAthleteIds.includes(s.id));
+  }
+}
+
+// HTML5 Drag and Drop Roster Handlers
+function onAthleteDragStart(e, athleteId) {
+  state.draggedAthleteId = athleteId;
+  e.dataTransfer.setData("text/plain", String(athleteId));
+  e.dataTransfer.effectAllowed = "move";
+  const row = document.getElementById(`athlete-row-${athleteId}`);
+  if (row) row.classList.add("is-dragging");
+}
+
+function onAthleteDragEnd(e) {
+  state.draggedAthleteId = null;
+  document.querySelectorAll(".athletes-table tr").forEach(r => r.classList.remove("is-dragging"));
+  document.querySelectorAll(".cohort-card-dropzone").forEach(c => c.classList.remove("drag-over"));
+}
+
+function onCohortDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "move";
+  e.currentTarget.classList.add("drag-over");
+}
+
+function onCohortDragLeave(e) {
+  e.currentTarget.classList.remove("drag-over");
+}
+
+async function onCohortDrop(e, groupId) {
+  e.preventDefault();
+  e.currentTarget.classList.remove("drag-over");
+
+  const athleteId = parseInt(e.dataTransfer.getData("text/plain")) || state.draggedAthleteId;
+  if (!athleteId || !groupId) return;
+
+  try {
+    const res = await fetch(`/api/groups/${groupId}/members/${athleteId}`, { method: "POST" });
+    if (!res.ok) throw new Error("Failed to assign athlete to cohort");
+
+    await loadInitialData();
+    renderRosterView();
+  } catch (err) {
+    alert("Drag & Drop error: " + err.message);
+  }
+}
+
+function onSearchAthletes(query) {
+  state.rosterSearchQuery = query.trim();
+  renderRosterAthletesTable();
+}
+
+function filterRosterByStatus(status) {
+  state.rosterStatusFilter = status;
+  document.querySelectorAll("#rosterStatusFilterPills .amp-filter-pill").forEach(p => {
+    p.classList.toggle("active", p.dataset.status === status);
+  });
+  renderRosterAthletesTable();
+}
+
+function toggleSelectAllAthletes(checked) {
+  let students = state.users.filter(u => u.role === "student");
+  if (state.rosterSelectedCohortId !== null) {
+    students = students.filter(s => (s.groups || []).some(g => g.id === state.rosterSelectedCohortId));
+  }
+  if (state.rosterStatusFilter && state.rosterStatusFilter !== "all") {
+    students = students.filter(s => (s.status_badge || "Active") === state.rosterStatusFilter);
+  }
+  if (state.rosterSearchQuery) {
+    const q = state.rosterSearchQuery.toLowerCase();
+    students = students.filter(s => s.name.toLowerCase().includes(q));
+  }
+
+  if (checked) {
+    const idsToAdd = students.map(s => s.id);
+    state.selectedAthleteIds = Array.from(new Set([...state.selectedAthleteIds, ...idsToAdd]));
+  } else {
+    const idsToRemove = new Set(students.map(s => s.id));
+    state.selectedAthleteIds = state.selectedAthleteIds.filter(id => !idsToRemove.has(id));
+  }
+
+  renderRosterAthletesTable();
+  updateBatchActionBar();
+}
+
+function onAthleteCheckboxChange(athleteId, checked) {
+  if (checked) {
+    if (!state.selectedAthleteIds.includes(athleteId)) {
+      state.selectedAthleteIds.push(athleteId);
+    }
+  } else {
+    state.selectedAthleteIds = state.selectedAthleteIds.filter(id => id !== athleteId);
+  }
+  updateBatchActionBar();
+}
+
+function updateBatchActionBar() {
+  const bar = document.getElementById("ampBatchActionBar");
+  if (!bar) return;
+
+  const count = state.selectedAthleteIds.length;
+  if (count > 0) {
+    bar.classList.add("visible");
+    const badge = document.getElementById("batchSelectedBadge");
+    if (badge) badge.textContent = `${count} Selected`;
+
+    const namesEl = document.getElementById("batchSelectedNames");
+    if (namesEl) {
+      const selectedUsers = state.users.filter(u => state.selectedAthleteIds.includes(u.id));
+      namesEl.textContent = selectedUsers.map(u => u.name).join(", ");
+    }
+
+    const select = document.getElementById("batchGroupSelect");
+    if (select) {
+      select.innerHTML = `<option value="">Move to Cohort...</option>`;
+      state.groups.forEach(g => {
+        const opt = document.createElement("option");
+        opt.value = g.id;
+        opt.textContent = g.name;
+        select.appendChild(opt);
+      });
+    }
+  } else {
+    bar.classList.remove("visible");
+  }
+}
+
+function clearBatchAthleteSelection() {
+  state.selectedAthleteIds = [];
+  renderRosterAthletesTable();
+  updateBatchActionBar();
+}
+
+async function applyBatchGroupAssignment() {
+  const select = document.getElementById("batchGroupSelect");
+  const groupId = parseInt(select.value);
+  if (!groupId) {
+    alert("Please select a target training cohort.");
+    return;
+  }
+
+  if (state.selectedAthleteIds.length === 0) return;
+
+  try {
+    const res = await fetch(`/api/groups/${groupId}/members/batch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_ids: state.selectedAthleteIds })
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || "Failed to batch assign athletes");
+    }
+
+    state.selectedAthleteIds = [];
+    await loadInitialData();
+    renderRosterView();
+  } catch (err) {
+    alert("Batch assignment error: " + err.message);
+  }
+}
+
+async function cycleAthleteStatus(userId, currentStatus) {
+  const nextMap = {
+    "Active": "Modified",
+    "Modified": "Rehab",
+    "Rehab": "Active"
+  };
+  const nextStatus = nextMap[currentStatus] || "Active";
+
+  try {
+    const res = await fetch(`/api/users/${userId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status_badge: nextStatus })
+    });
+    if (!res.ok) throw new Error("Failed to update status");
+
+    const updated = await res.json();
+    const localUser = state.users.find(u => u.id === userId);
+    if (localUser) localUser.status_badge = updated.status_badge;
+
+    renderRosterAthletesTable();
+  } catch (err) {
+    console.error("Status update error:", err);
   }
 }
 
@@ -2386,7 +2901,7 @@ async function submitCreateGroup() {
   const color = document.getElementById("newGroupColor").value;
 
   if (!name) {
-    alert("Please enter a group name");
+    alert("Please enter a cohort name");
     return;
   }
 
@@ -2403,7 +2918,7 @@ async function submitCreateGroup() {
     });
     if (!res.ok) {
       const err = await res.json();
-      throw new Error(err.detail || "Failed to create group");
+      throw new Error(err.detail || "Failed to create cohort");
     }
     closeCreateGroupModal();
     document.getElementById("newGroupName").value = "";
@@ -2415,10 +2930,10 @@ async function submitCreateGroup() {
 }
 
 async function deleteGroup(groupId) {
-  if (!confirm("Are you sure you want to delete this training group?")) return;
+  if (!confirm("Are you sure you want to delete this training cohort?")) return;
   try {
     const res = await fetch(`/api/groups/${groupId}`, { method: "DELETE" });
-    if (!res.ok) throw new Error("Failed to delete group");
+    if (!res.ok) throw new Error("Failed to delete cohort");
     await renderRosterView();
   } catch (err) {
     alert("Error: " + err.message);
@@ -2463,7 +2978,7 @@ async function submitCreateUser() {
     return;
   }
 
-  const colors = ["#3b82f6", "#06b6d4", "#10b981", "#ec4899", "#8b5cf6", "#f59e0b"];
+  const colors = ["#ff6105", "#202120", "#3b82f6", "#06b6d4", "#10b981", "#8b5cf6"];
   const randomColor = colors[Math.floor(Math.random() * colors.length)];
 
   try {
@@ -2475,12 +2990,14 @@ async function submitCreateUser() {
         email: email,
         role: role,
         title: title || (role === "coach" ? "Coach" : "Athlete"),
-        avatar_color: role === "coach" ? "#ff6600" : randomColor
+        position_tag: title || (role === "coach" ? "Coach" : "Athlete"),
+        status_badge: "Active",
+        avatar_color: role === "coach" ? "#ff6105" : randomColor
       })
     });
     if (!res.ok) {
       const err = await res.json();
-      throw new Error(err.detail || "Failed to create user");
+      throw new Error(err.detail || "Failed to create user profile");
     }
     const createdUser = await res.json();
 
@@ -2520,13 +3037,13 @@ async function openAssignAthleteGroupModal(userId) {
   state.groups.forEach(g => {
     const isChecked = studentGroupIds.includes(g.id);
     const row = document.createElement("label");
-    row.style.cssText = "display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: #0f172a; border: 1px solid #334155; border-radius: 8px; margin-bottom: 8px; cursor: pointer;";
+    row.style.cssText = "display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; background: var(--amp-linen); border: 1px solid var(--amp-hairline); border-radius: var(--amp-radius-card); margin-bottom: 8px; cursor: pointer;";
     row.innerHTML = `
       <div style="display: flex; align-items: center; gap: 8px;">
-        <span style="width: 10px; height: 10px; border-radius: 50%; background: ${g.color || '#3b82f6'};"></span>
-        <span style="font-weight: 700; color: #ffffff; font-size: 13px;">${g.name}</span>
+        <span style="width: 10px; height: 10px; border-radius: 50%; background: ${g.color || 'var(--amp-orange)'};"></span>
+        <span style="font-weight: 600; color: var(--amp-ink); font-size: 13.5px;">${g.name}</span>
       </div>
-      <input type="checkbox" ${isChecked ? 'checked' : ''} style="width: 18px; height: 18px; accent-color: #3b82f6;" onchange="toggleAthleteGroupMembership(${g.id}, this.checked)">
+      <input type="checkbox" ${isChecked ? 'checked' : ''} style="width: 18px; height: 18px; accent-color: var(--amp-orange);" onchange="toggleAthleteGroupMembership(${g.id}, this.checked)">
     `;
     container.appendChild(row);
   });
@@ -2551,13 +3068,37 @@ async function toggleAthleteGroupMembership(groupId, add) {
 }
 
 // =============================================================
-// PROGRAM & WORKOUT ASSIGNMENT LOGIC
+// PROGRAM & WORKOUT ASSIGNMENT LOGIC (AMP ARCHITECTURE)
 // =============================================================
 function setAssignTargetType(type) {
   state.assignTargetType = type;
   document.getElementById("btnAssignTypeGroup").classList.toggle("active", type === "group");
   document.getElementById("btnAssignTypeUser").classList.toggle("active", type === "user");
+
+  const label = document.getElementById("assignTargetTypeLabel");
+  if (label) label.textContent = (type === "group" ? "Cohort" : "Athlete");
+
   populateAssignTargetDropdown();
+}
+
+function setAssignDatePreset(preset) {
+  const dateInput = document.getElementById("assignCalendarDate");
+  if (!dateInput) return;
+
+  const now = new Date();
+  if (preset === "today") {
+    dateInput.value = formatLocalIso(now);
+  } else if (preset === "tomorrow") {
+    const tmrw = new Date();
+    tmrw.setDate(tmrw.getDate() + 1);
+    dateInput.value = formatLocalIso(tmrw);
+  } else if (preset === "next_monday") {
+    const mon = new Date();
+    const day = mon.getDay();
+    const daysUntilNextMonday = ((1 + 7 - day) % 7) || 7;
+    mon.setDate(mon.getDate() + daysUntilNextMonday);
+    dateInput.value = formatLocalIso(mon);
+  }
 }
 
 function populateAssignTargetDropdown() {
@@ -2569,7 +3110,7 @@ function populateAssignTargetDropdown() {
     state.groups.forEach(g => {
       const opt = document.createElement("option");
       opt.value = g.id;
-      opt.textContent = `Group: ${g.name} (${g.member_count} athletes)`;
+      opt.textContent = `${g.name} (${g.member_count} athletes)`;
       select.appendChild(opt);
     });
   } else {
@@ -2577,20 +3118,52 @@ function populateAssignTargetDropdown() {
     students.forEach(s => {
       const opt = document.createElement("option");
       opt.value = s.id;
-      opt.textContent = `Athlete: ${s.name} (${s.title || 'Student'})`;
+      opt.textContent = `${s.name} (${s.position_tag || s.title || 'Athlete'})`;
       select.appendChild(opt);
     });
+  }
+}
+
+function onAssignWorkoutChanged(workoutId) {
+  const previewCard = document.getElementById("assignWorkoutPreviewCard");
+  if (!previewCard) return;
+
+  const wid = parseInt(workoutId);
+  const workout = state.workouts.find(w => w.id === wid);
+
+  if (!workout) {
+    previewCard.style.display = "none";
+    return;
+  }
+
+  previewCard.style.display = "block";
+  const titleEl = document.getElementById("previewWorkoutTitle");
+  if (titleEl) titleEl.textContent = `${workout.title} (${workout.program_name})`;
+
+  const exCount = workout.exercise_count || (workout.exercises ? workout.exercises.length : 0);
+  const countEl = document.getElementById("previewWorkoutExercisesCount");
+  if (countEl) countEl.textContent = `${exCount} exercises`;
+
+  const sampleEl = document.getElementById("previewWorkoutSample");
+  if (sampleEl) {
+    if (workout.exercises && workout.exercises.length > 0) {
+      const sampleNames = workout.exercises.slice(0, 4).map(we => we.exercise ? we.exercise.name : `Exercise #${we.exercise_id}`).join(", ");
+      sampleEl.textContent = `Includes: ${sampleNames}${workout.exercises.length > 4 ? ', ...' : ''}`;
+    } else {
+      sampleEl.textContent = `Session: ${workout.description || 'Standard programmed training'}`;
+    }
   }
 }
 
 async function renderAssignmentsView() {
   const wSelect = document.getElementById("assignWorkoutSelect");
   if (wSelect) {
-    wSelect.innerHTML = "";
+    wSelect.innerHTML = `<option value="">Choose a workout session...</option>`;
     state.workouts.forEach(w => {
       const opt = document.createElement("option");
       opt.value = w.id;
-      opt.textContent = `${w.title} (${w.program_name}) - ${w.exercise_count || (w.exercises ? w.exercises.length : 0)} ex`;
+      const exCount = w.exercise_count || (w.exercises ? w.exercises.length : 0);
+      opt.textContent = `${w.title} (${w.program_name}) - ${exCount} ex`;
       wSelect.appendChild(opt);
     });
   }
@@ -2602,54 +3175,84 @@ async function renderAssignmentsView() {
     datePicker.value = getTodayIso();
   }
 
+  if (state.workouts.length > 0 && wSelect) {
+    wSelect.value = state.workouts[0].id;
+    onAssignWorkoutChanged(state.workouts[0].id);
+  }
+
   try {
     const res = await fetch("/api/assignments");
-    const assignments = await res.json();
-    state.assignments = assignments;
-
-    const tableContainer = document.getElementById("assignmentsTableContainer");
-    if (!tableContainer) return;
-
-    if (assignments.length === 0) {
-      tableContainer.innerHTML = `<div style="color: #64748b; padding: 20px 0; text-align: center;">No custom assignments created yet.</div>`;
-      return;
-    }
-
-    let html = `
-      <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 13px;">
-        <thead>
-          <tr style="border-bottom: 1px solid #334155; color: #94a3b8; font-size: 11px; text-transform: uppercase;">
-            <th style="padding: 10px 8px;">Date</th>
-            <th style="padding: 10px 8px;">Workout</th>
-            <th style="padding: 10px 8px;">Assigned To</th>
-            <th style="padding: 10px 8px;">Notes</th>
-            <th style="padding: 10px 8px; text-align: right;">Action</th>
-          </tr>
-        </thead>
-        <tbody>
-    `;
-
-    assignments.forEach(a => {
-      html += `
-        <tr style="border-bottom: 1px solid #1e293b;">
-          <td style="padding: 12px 8px; font-weight: 700; color: #38bdf8;">${a.scheduled_date}</td>
-          <td style="padding: 12px 8px; font-weight: 700; color: #ffffff;">${a.workout_title}</td>
-          <td style="padding: 12px 8px;"><span class="group-tag-pill">${a.target_name}</span></td>
-          <td style="padding: 12px 8px; color: #94a3b8;">${a.notes || '—'}</td>
-          <td style="padding: 12px 8px; text-align: right;">
-            <button style="background: transparent; border: none; color: #f87171; cursor: pointer; font-size: 13px;" onclick="deleteAssignment(${a.id})" title="Delete Assignment">
-              🗑️
-            </button>
-          </td>
-        </tr>
-      `;
-    });
-
-    html += `</tbody></table>`;
-    tableContainer.innerHTML = html;
+    state.assignments = await res.json();
+    renderAssignmentsTable();
   } catch (err) {
     console.error("Error loading assignments:", err);
   }
+}
+
+function renderAssignmentsTable() {
+  const tableContainer = document.getElementById("assignmentsTableContainer");
+  const countBadge = document.getElementById("assignmentsCountBadge");
+  const filterInput = document.getElementById("assignmentsFilterInput");
+  const filterVal = filterInput ? filterInput.value.toLowerCase().trim() : "";
+
+  if (!tableContainer) return;
+
+  let assignments = state.assignments || [];
+  if (filterVal) {
+    assignments = assignments.filter(a =>
+      (a.workout_title && a.workout_title.toLowerCase().includes(filterVal)) ||
+      (a.target_name && a.target_name.toLowerCase().includes(filterVal)) ||
+      (a.scheduled_date && a.scheduled_date.includes(filterVal)) ||
+      (a.notes && a.notes.toLowerCase().includes(filterVal))
+    );
+  }
+
+  if (countBadge) countBadge.textContent = `${assignments.length} Scheduled`;
+
+  if (assignments.length === 0) {
+    tableContainer.innerHTML = `<div style="text-align: center; padding: 48px; color: var(--amp-slate);">No assignments found.</div>`;
+    return;
+  }
+
+  let html = `
+    <table class="athletes-table">
+      <thead>
+        <tr>
+          <th>SCHEDULED DATE</th>
+          <th>PROGRAMMED WORKOUT</th>
+          <th>ASSIGNED TO</th>
+          <th>COACHING CUES / NOTES</th>
+          <th style="text-align: right;">ACTION</th>
+        </tr>
+      </thead>
+      <tbody>
+  `;
+
+  assignments.forEach(a => {
+    const isGroup = !!a.group_id;
+    const targetBadge = isGroup
+      ? `<span class="cohort-pill-tag">👥 ${a.target_name}</span>`
+      : `<span class="cohort-pill-tag" style="background: var(--amp-peach-subtle); border-color: rgba(255,97,5,0.2); color: var(--amp-orange);">👤 ${a.target_name}</span>`;
+
+    html += `
+      <tr>
+        <td class="sets-tabular-cell" style="color: var(--amp-orange);">${a.scheduled_date}</td>
+        <td>
+          <div style="font-weight: 600; color: var(--amp-ink);">${a.workout_title}</div>
+        </td>
+        <td>${targetBadge}</td>
+        <td style="color: var(--amp-slate); font-size: 13px;">${a.notes || '—'}</td>
+        <td style="text-align: right;">
+          <button class="amp-action-chip" style="color: var(--amp-status-modified);" onclick="deleteAssignment(${a.id})" title="Remove Assignment">
+            🗑️ Remove
+          </button>
+        </td>
+      </tr>
+    `;
+  });
+
+  html += `</tbody></table>`;
+  tableContainer.innerHTML = html;
 }
 
 async function submitCreateAssignment() {
@@ -2659,7 +3262,7 @@ async function submitCreateAssignment() {
   const notes = document.getElementById("assignNotesInput").value.trim();
 
   if (!workoutId || !targetId || !dateVal) {
-    alert("Please select a workout, target audience, and scheduled date.");
+    alert("Please select a workout, target cohort/athlete, and scheduled date.");
     return;
   }
 
@@ -2684,7 +3287,7 @@ async function submitCreateAssignment() {
     }
     document.getElementById("assignNotesInput").value = "";
     await renderAssignmentsView();
-    alert("Workout assigned successfully!");
+    alert("Workout program assigned successfully!");
   } catch (err) {
     alert("Error: " + err.message);
   }
