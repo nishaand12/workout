@@ -93,6 +93,7 @@ jobs:
           region: ${{ env.CLOUD_RUN_REGION }}
           project_id: ${{ env.PROJECT_ID }}
           image: ${{ env.ARTIFACT_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          flags: "--allow-unauthenticated"
           secrets: |
             DATABASE_URL=wourkout-database-url:latest
 
