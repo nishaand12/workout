@@ -1,0 +1,105 @@
+name: Deploy
+
+# Production deploys are cut by pushing a release tag (v1.2.3).
+# workflow_dispatch deploys whatever ref it is run against.
+# This workflow does not run database migrations.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+env:
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  ARTIFACT_REGION: ${{ vars.GCP_ARTIFACT_REGION }}
+  CLOUD_RUN_REGION: ${{ vars.GCP_CLOUD_RUN_REGION }}
+  SERVICE: ${{ vars.GCP_SERVICE }}
+  REPOSITORY: ${{ vars.GCP_REPOSITORY }}
+  IMAGE_NAME: ${{ vars.GCP_IMAGE_NAME }}
+
+jobs:
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Unit tests
+        run: python -m unittest discover -s tests
+
+  deploy-cloud-run:
+    name: Cloud Run
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Resolve release version
+        id: version
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.ARTIFACT_REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push container
+        env:
+          IMAGE: ${{ env.ARTIFACT_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}
+          TAG: ${{ github.sha }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          docker build \
+            -t "${IMAGE}:${TAG}" \
+            -t "${IMAGE}:${VERSION}" \
+            -t "${IMAGE}:latest" \
+            .
+          docker push "${IMAGE}:${TAG}"
+          docker push "${IMAGE}:${VERSION}"
+          docker push "${IMAGE}:latest"
+
+      - name: Deploy to Cloud Run
+        id: deploy
+        uses: google-github-actions/deploy-cloudrun@v3
+        with:
+          service: ${{ env.SERVICE }}
+          region: ${{ env.CLOUD_RUN_REGION }}
+          project_id: ${{ env.PROJECT_ID }}
+          image: ${{ env.ARTIFACT_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          secrets: |
+            DATABASE_URL=wourkout-database-url:latest
+
+      - name: Smoke check
+        env:
+          BASE_URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 60 "${BASE_URL}")"
+          echo "GET ${BASE_URL} -> HTTP ${status}"
+          test "${status}" = "200"
