@@ -259,6 +259,15 @@ class UserResponse(UserBase):
     is_active: bool = True
     created_at: datetime
     groups: List[GroupBrief] = []
+    is_admin: bool = False
+    is_coach: bool = False
+    is_athlete: bool = False
+    gym_id: Optional[int] = None
+    gym_name: Optional[str] = None
+    team_id: Optional[int] = None
+    team_name: Optional[str] = None
+    roles: List[str] = []
+    needs_onboarding: bool = False
     model_config = ConfigDict(from_attributes=True)
 
 # Authentication Schemas
@@ -361,3 +370,85 @@ class CoachComplianceReport(BaseModel):
     not_started_count: int
     compliance_percentage: float
     athletes: List[CoachComplianceAthlete]
+
+class ViewSwitch(BaseModel):
+    role: str
+
+class GymCreate(BaseModel):
+    name: str
+
+class JoinCodeCreate(BaseModel):
+    kind: str  # 'gym' or 'team'
+    team_id: Optional[int] = None
+
+class JoinCodeRedeem(BaseModel):
+    code: str
+
+class JoinCodeResponse(BaseModel):
+    id: int
+    code: str
+    kind: str
+    gym_id: int
+    team_id: Optional[int] = None
+    team_name: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
+
+class GymPerson(BaseModel):
+    id: int
+    name: str
+    email: str
+    roles: List[str] = []
+    team_id: Optional[int] = None
+    team_name: Optional[str] = None
+    led_teams: List[str] = []
+    latest_note: str = ""
+
+class GymTeam(BaseModel):
+    id: int
+    name: str
+    coach_id: Optional[int] = None
+    coach_name: str = ""
+    athlete_count: int = 0
+
+class GymContext(BaseModel):
+    gym_id: int
+    gym_name: str
+    coaches: List[GymPerson] = []
+    athletes: List[GymPerson] = []
+    teams: List[GymTeam] = []
+    codes: List[JoinCodeResponse] = []
+
+class GymMemberCreate(BaseModel):
+    name: str
+    email: str
+    team_id: Optional[int] = None
+
+class GymMemberCreated(BaseModel):
+    user: UserResponse
+    temporary_password: Optional[str] = None
+
+class MoveTeamRequest(BaseModel):
+    coach_id: int
+
+class CoachAssignRequest(BaseModel):
+    athlete_id: int
+    title: str
+    scheduled_date: str
+    exercise_name: Optional[str] = "Back Squat"
+    sets: Optional[int] = 3
+    reps: Optional[str] = "5"
+    weight: Optional[str] = "60"
+    notes: Optional[str] = ""
+
+class AthleteNoteRequest(BaseModel):
+    workout_id: int
+    note: str
+
+class ScheduleItem(BaseModel):
+    assignment_id: int
+    workout_id: int
+    title: str
+    scheduled_date: str
+    coach_name: str = ""
+    athlete_note: str = ""
+    exercise_count: int = 0

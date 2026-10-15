@@ -7,12 +7,14 @@ import os
 import re
 import secrets
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import httpx
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, desc, asc
 
-from app.models import Exercise, Workout, WorkoutExercise, WorkoutSession, SetLog, PersonalRecord, User, Group, WorkoutAssignment
+from app.models import Exercise, Workout, WorkoutExercise, WorkoutSession, SetLog, PersonalRecord, User, Group, WorkoutAssignment, Gym, JoinCode
+from app import access
 from app.schemas import (
     ExerciseCreate, ExerciseUpdate, WorkoutCreate, WorkoutUpdate, PersonalRecordCreate,
     CopyWeekRequest, AddWorkoutToDayRequest, SaveProgramTemplateRequest,
@@ -122,6 +124,7 @@ def create_auth_user(db: Session, user_in: UserRegister) -> User:
         position_tag=user_in.position_tag or "Athlete",
         is_active=True
     )
+    access.apply_role_flags(user, role)
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -148,6 +151,7 @@ def seed_default_users(db: Session):
                 avatar_color=color,
                 is_active=True
             )
+            access.apply_role_flags(u, role)
             db.add(u)
         else:
             if not existing.password_hash:
@@ -156,11 +160,18 @@ def seed_default_users(db: Session):
                 existing.username = uname
             if not existing.role or existing.role == "student":
                 existing.role = role
+            access.apply_role_flags(existing, role)
     try:
         db.commit()
     except Exception as e:
         db.rollback()
         logger.warning(f"Error seeding default users: {e}")
+        return
+    try:
+        _seed_demo_gym(db)
+    except Exception as e:
+        db.rollback()
+        logger.warning(f"Error seeding demo gym: {e}")
 
 MONTH_MAP = {'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4, 'MAY': 5, 'JUN': 6, 'JUL': 7, 'AUG': 8, 'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12}
 
@@ -962,25 +973,24 @@ def get_programs_and_weeks(db: Session):
 # -------------------------------------------------------------
 # USER & COACHING CRUD
 # -------------------------------------------------------------
-def get_users(db: Session, role: Optional[str] = None):
-    query = db.query(User)
-    if role:
-        query = query.filter(User.role == role)
-    return query.order_by(User.name.asc()).all()
+def get_users(db: Session, role: Optional[str] = None, viewer: Optional[User] = None):
+    return access.visible_users(db, viewer, role=role)
 
 def get_user(db: Session, user_id: int):
     return db.query(User).filter(User.id == user_id).first()
 
 def create_user(db: Session, user_in: UserCreate):
+    role = user_in.role or "student"
     user = User(
         name=user_in.name,
         email=user_in.email,
-        role=user_in.role or "student",
-        title=user_in.title or ("Head Coach" if user_in.role == "coach" else "Athlete"),
+        role=role,
+        title=user_in.title or ("Head Coach" if role == "coach" else "Athlete"),
         avatar_color=user_in.avatar_color or "#0ea5e9",
         status_badge=user_in.status_badge or "Active",
         position_tag=user_in.position_tag or "Athlete"
     )
+    access.apply_role_flags(user, role)
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -999,14 +1009,17 @@ def update_user(db: Session, user_id: int, user_in: UserUpdate):
 def delete_user(db: Session, user_id: int):
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
-        return False
+        return "missing"
+    block = access.coach_removal_block(db, user)
+    if block:
+        return block
     db.delete(user)
     db.commit()
-    return True
+    return "deleted"
 
 # Groups & Rosters
-def get_groups(db: Session):
-    groups = db.query(Group).order_by(Group.name.asc()).all()
+def get_groups(db: Session, viewer: Optional[User] = None):
+    groups = access.visible_teams(db, viewer)
     for g in groups:
         g.member_count = len(g.members)
     return groups
@@ -1044,19 +1057,48 @@ def update_group(db: Session, group_id: int, group_in: GroupUpdate):
 def delete_group(db: Session, group_id: int):
     group = db.query(Group).filter(Group.id == group_id).first()
     if not group:
-        return False
+        return "missing"
+    athletes = db.query(User).filter(User.team_id == group.id).count()
+    if athletes or group.members:
+        return "This team still has athletes. Remove them or move them to another coach before deleting the team."
     db.delete(group)
     db.commit()
-    return True
+    return "deleted"
+
+def place_athlete_on_team(db: Session, user: User, group: Group, allow_move: bool = False, commit: bool = True) -> User:
+    """An athlete belongs to exactly one team, and that team belongs to one coach."""
+    if user.gym_id and group.gym_id and user.gym_id != group.gym_id:
+        raise ValueError("That athlete is in another gym.")
+    if user.team_id and user.team_id != group.id:
+        if not allow_move:
+            raise ValueError("An athlete belongs to exactly one team.")
+        old = db.query(Group).filter(Group.id == user.team_id).first()
+        if old and user in old.members:
+            old.members.remove(user)
+    if group.gym_id and not user.gym_id:
+        user.gym_id = group.gym_id
+    elif group.gym_id and user.gym_id == group.gym_id:
+        user.gym_id = group.gym_id
+    user.team_id = group.id
+    user.is_athlete = True
+    if user.role not in ("student", "athlete", "coach", "admin"):
+        user.role = "athlete"
+    if user not in group.members:
+        group.members.append(user)
+    if commit:
+        db.commit()
+        db.refresh(user)
+    return user
 
 def add_user_to_group(db: Session, group_id: int, user_id: int):
     group = db.query(Group).filter(Group.id == group_id).first()
     user = db.query(User).filter(User.id == user_id).first()
     if not group or not user:
         return False
-    if user not in group.members:
-        group.members.append(user)
-        db.commit()
+    try:
+        place_athlete_on_team(db, user, group, allow_move=False)
+    except ValueError:
+        return False
     return True
 
 def remove_user_from_group(db: Session, group_id: int, user_id: int):
@@ -1066,7 +1108,11 @@ def remove_user_from_group(db: Session, group_id: int, user_id: int):
         return False
     if user in group.members:
         group.members.remove(user)
-        db.commit()
+    if user.team_id == group.id:
+        user.team_id = None
+        if not user.is_coach and not user.is_admin:
+            user.is_athlete = False
+    db.commit()
     return True
 
 # Workout Assignments
@@ -1213,8 +1259,11 @@ def delete_assignment(db: Session, assignment_id: int):
     return True
 
 # Coach Compliance Dashboard Report
-def get_coach_compliance_report(db: Session, date_str: str):
-    students = db.query(User).filter(User.role == "student").order_by(User.name.asc()).all()
+def get_coach_compliance_report(db: Session, date_str: str, viewer: Optional[User] = None):
+    if viewer is None:
+        students = db.query(User).filter(User.role == "student").order_by(User.name.asc()).all()
+    else:
+        students = access.athletes_for(db, viewer)
     athletes_data = []
 
     completed_count = 0
@@ -1407,10 +1456,624 @@ def bulk_assign_athletes_to_group(db: Session, group_id: int, user_ids: List[int
     if not group:
         return False
     users = db.query(User).filter(User.id.in_(user_ids)).all()
+    if len(users) != len(set(user_ids)):
+        return False
     for u in users:
-        if u not in group.members:
-            group.members.append(u)
+        if u.team_id and u.team_id != group.id:
+            return False
+        if u.gym_id and group.gym_id and u.gym_id != group.gym_id:
+            return False
+    for u in users:
+        place_athlete_on_team(db, u, group, allow_move=False, commit=False)
     db.commit()
     return True
+
+
+def _seed_demo_gym(db: Session):
+    """One gym, two coaches, and a workout the varsity athlete can open."""
+    gym = db.query(Gym).filter(Gym.name == "wourkout").first()
+    if not gym:
+        gym = Gym(name="wourkout")
+        db.add(gym)
+        db.flush()
+
+    def by_email(email):
+        return db.query(User).filter(User.email == email).first()
+
+    extras = [
+        ("Alex Rivera", "alex.rivera@wourkout.app", "alex", "coach", "CoachPassword123!", "Coach", "#f59e0b"),
+        ("Maya Lin", "maya.lin@wourkout.app", "maya", "athlete", "AthletePassword123!", "Athlete", "#ec4899"),
+    ]
+    for name, email, uname, role, pwd, title, color in extras:
+        if not by_email(email):
+            row = User(
+                name=name, email=email, username=uname, role=role, title=title,
+                avatar_color=color, is_active=True, password_hash=hash_password(pwd)
+            )
+            access.apply_role_flags(row, role)
+            db.add(row)
+    db.flush()
+
+    admin = by_email("admin@wourkout.app")
+    coach = by_email("coach@wourkout.app")
+    athlete = by_email("athlete@wourkout.app")
+    eric = by_email("ericvanzeumeren@gmail.com")
+    leah = by_email("leah@example.com")
+    alex = by_email("alex.rivera@wourkout.app")
+    maya = by_email("maya.lin@wourkout.app")
+
+    def pin(user, admin_flag=False, coach_flag=False, athlete_flag=False):
+        if not user:
+            return
+        user.gym_id = gym.id
+        if admin_flag:
+            user.is_admin = True
+            user.role = "admin"
+        if coach_flag:
+            user.is_coach = True
+            if not user.is_admin:
+                user.role = "coach"
+        if athlete_flag:
+            user.is_athlete = True
+            if not user.is_admin and not user.is_coach:
+                user.role = "athlete"
+
+    pin(admin, admin_flag=True)
+    pin(coach, coach_flag=True)
+    pin(athlete, athlete_flag=True)
+    pin(eric, athlete_flag=True)
+    pin(leah, athlete_flag=True)
+    pin(alex, coach_flag=True)
+    pin(maya, athlete_flag=True)
+
+    def ensure_team(name, leader):
+        team = db.query(Group).filter(Group.name == name).first()
+        if not team:
+            team = Group(name=name, description="Team", color="#3b82f6", gym_id=gym.id, coach_id=leader.id if leader else None)
+            db.add(team)
+            db.flush()
+        else:
+            team.gym_id = gym.id
+            if leader:
+                team.coach_id = leader.id
+        return team
+
+    varsity = ensure_team("Varsity", coach) if coach else None
+    speed = ensure_team("Speed", alex) if alex else None
+    if varsity:
+        for person in (athlete, eric, leah):
+            if person:
+                place_athlete_on_team(db, person, varsity, allow_move=True, commit=False)
+    if speed and maya:
+        place_athlete_on_team(db, maya, speed, allow_move=True, commit=False)
+
+    if athlete and coach:
+        already = db.query(WorkoutAssignment).filter(
+            WorkoutAssignment.user_id == athlete.id,
+            WorkoutAssignment.scheduled_date == "2026-10-15"
+        ).first()
+        if not already:
+            exercise = db.query(Exercise).filter(Exercise.name == "Back Squat").first()
+            if not exercise:
+                exercise = Exercise(name="Back Squat", category="Strength")
+                db.add(exercise)
+                db.flush()
+            workout = Workout(
+                title="Lower Strength",
+                program_name="Varsity",
+                scheduled_date="2026-10-15",
+                calendar_date="2026-10-15",
+                week_number=1,
+                day_of_week="Thursday",
+                description="Assigned to Varsity Athlete",
+                created_by_coach_id=coach.id,
+                gym_id=gym.id,
+            )
+            db.add(workout)
+            db.flush()
+            db.add(WorkoutExercise(
+                workout_id=workout.id,
+                exercise_id=exercise.id,
+                superset_group="A",
+                order_index=0,
+                prescription_text="3 X 5",
+                prescribed_sets=3,
+                target_reps="5",
+                target_weight="60",
+                rest_seconds=90,
+            ))
+            db.add(WorkoutAssignment(
+                workout_id=workout.id,
+                assigned_by_coach_id=coach.id,
+                user_id=athlete.id,
+                scheduled_date="2026-10-15",
+                notes="Lower body",
+            ))
+    db.commit()
+
+
+_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+
+def _new_join_code(db: Session) -> str:
+    for _ in range(8):
+        code = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(6))
+        if not db.query(JoinCode).filter(JoinCode.code == code).first():
+            return code
+    return secrets.token_hex(4).upper()
+
+
+def create_own_gym(db: Session, user: User, name: str) -> User:
+    """A signed-in user with no gym founds one and becomes its admin."""
+    name = (name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Enter a gym name.")
+    if len(name) > 255:
+        raise HTTPException(status_code=400, detail="That gym name is too long.")
+    if user.gym_id:
+        raise HTTPException(status_code=409, detail="You already belong to a gym.")
+    gym = Gym(name=name)
+    db.add(gym)
+    db.flush()
+    user.gym_id = gym.id
+    user.is_admin = True
+    user.is_coach = False
+    user.is_athlete = False
+    user.team_id = None
+    user.role = "admin"
+    user.title = "Gym Admin"
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def create_join_code(db: Session, user: User, kind: str, team_id: Optional[int] = None) -> JoinCode:
+    access.require_gym(user)
+    kind = (kind or "").lower().strip()
+    if kind not in access.CODE_KINDS:
+        raise HTTPException(status_code=400, detail="Join codes are only a gym code or a team code.")
+    team = None
+    if kind == "gym":
+        access.require_admin(user)
+    else:
+        team = db.query(Group).filter(Group.id == team_id).first() if team_id else None
+        access.assert_leads_team(db, user, team)
+    row = JoinCode(
+        code=_new_join_code(db),
+        kind=kind,
+        gym_id=user.gym_id,
+        team_id=team.id if team else None,
+        created_by_id=user.id,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def list_join_codes(db: Session, user: User) -> List[JoinCode]:
+    access.require_gym(user)
+    query = db.query(JoinCode).filter(JoinCode.gym_id == user.gym_id)
+    if access.is_admin(user) and not access.is_coach(user):
+        query = query.filter(JoinCode.kind == "gym")
+    elif access.is_admin(user):
+        team_ids = [t.id for t in access.leads_teams(db, user)]
+        query = query.filter(or_(JoinCode.kind == "gym", JoinCode.team_id.in_(team_ids or [-1])))
+    elif access.is_coach(user):
+        team_ids = [t.id for t in access.leads_teams(db, user)]
+        query = query.filter(JoinCode.kind == "team", JoinCode.team_id.in_(team_ids or [-1]))
+    else:
+        return []
+    return query.order_by(JoinCode.id.asc()).all()
+
+
+def redeem_join_code(db: Session, user: User, raw_code: str) -> User:
+    code = (raw_code or "").strip().upper()
+    row = db.query(JoinCode).filter(JoinCode.code == code).first()
+    if not row or row.kind not in access.CODE_KINDS:
+        raise HTTPException(status_code=404, detail="That code does not match a gym or a team.")
+    if user.gym_id and user.gym_id != row.gym_id:
+        raise HTTPException(status_code=403, detail="You already belong to another gym.")
+    if row.kind == "gym":
+        user.gym_id = row.gym_id
+        user.is_coach = True
+        user.is_admin = False
+        if user.team_id:
+            team = db.query(Group).filter(Group.id == user.team_id).first()
+            if not team or team.gym_id != row.gym_id:
+                user.team_id = None
+                user.is_athlete = False
+        else:
+            user.is_athlete = False
+        user.role = "coach"
+    else:
+        team = db.query(Group).filter(Group.id == row.team_id).first()
+        if not team or team.gym_id != row.gym_id:
+            raise HTTPException(status_code=404, detail="That team code is no longer valid.")
+        if user.team_id and user.team_id != team.id:
+            raise HTTPException(status_code=409, detail="An athlete belongs to exactly one team.")
+        already_here = user.gym_id == row.gym_id and (user.is_coach or user.is_admin)
+        user.gym_id = row.gym_id
+        user.is_admin = False
+        if not already_here:
+            user.is_coach = False
+            user.role = "athlete"
+        else:
+            user.is_athlete = True
+            if user.role not in user.roles:
+                user.role = "athlete"
+        try:
+            place_athlete_on_team(db, user, team, allow_move=False, commit=False)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def _temporary_password() -> str:
+    return "Join-" + "".join(secrets.choice(_CODE_ALPHABET) for _ in range(8))
+
+
+def add_gym_coach(db: Session, admin: User, name: str, email: str) -> tuple:
+    access.require_admin(admin)
+    email = email.strip().lower()
+    existing = get_user_by_email_or_username(db, email)
+    if existing:
+        if existing.gym_id and existing.gym_id != admin.gym_id:
+            raise HTTPException(status_code=403, detail="That person is already in another gym.")
+        existing.gym_id = admin.gym_id
+        existing.is_coach = True
+        if not existing.is_admin and not existing.is_athlete:
+            existing.role = "coach"
+        elif existing.role not in ("admin", "coach", "athlete"):
+            existing.role = "coach"
+        db.commit()
+        db.refresh(existing)
+        return existing, None
+    password = _temporary_password()
+    username = email.split("@")[0]
+    if db.query(User).filter(User.username == username).first():
+        username = f"{username}_{secrets.token_hex(2)}"
+    user = User(
+        name=name.strip(),
+        email=email,
+        username=username,
+        password_hash=hash_password(password),
+        role="coach",
+        title="Coach",
+        gym_id=admin.gym_id,
+        is_coach=True,
+        is_active=True,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user, password
+
+
+def remove_gym_coach(db: Session, admin: User, user_id: int) -> str:
+    access.require_admin(admin)
+    user = get_user(db, user_id)
+    if not user or user.gym_id != admin.gym_id:
+        raise HTTPException(status_code=404, detail="Coach not found in this gym.")
+    if user.id == admin.id:
+        raise HTTPException(status_code=400, detail="You cannot remove yourself.")
+    if "coach" not in user.roles and (user.role or "") != "coach":
+        raise HTTPException(status_code=400, detail="That person is not a coach.")
+    block = access.coach_removal_block(db, user)
+    if block:
+        raise HTTPException(status_code=409, detail=block)
+    if user.is_admin or user.is_athlete or user.team_id:
+        user.is_coach = False
+        if user.role == "coach":
+            user.role = "admin" if user.is_admin else "athlete"
+        db.commit()
+        return "demoted"
+    db.delete(user)
+    db.commit()
+    return "deleted"
+
+
+def add_gym_athlete(db: Session, actor: User, name: str, email: str, team_id: int) -> tuple:
+    access.require_gym(actor)
+    team = db.query(Group).filter(Group.id == team_id).first()
+    if access.is_admin(actor) and team and team.gym_id == actor.gym_id:
+        pass
+    else:
+        access.assert_leads_team(db, actor, team)
+    email = email.strip().lower()
+    existing = get_user_by_email_or_username(db, email)
+    password = None
+    if existing:
+        if existing.gym_id and existing.gym_id != actor.gym_id:
+            raise HTTPException(status_code=403, detail="That person is already in another gym.")
+        user = existing
+    else:
+        password = _temporary_password()
+        username = email.split("@")[0]
+        if db.query(User).filter(User.username == username).first():
+            username = f"{username}_{secrets.token_hex(2)}"
+        user = User(
+            name=name.strip(),
+            email=email,
+            username=username,
+            password_hash=hash_password(password),
+            role="athlete",
+            title="Athlete",
+            gym_id=actor.gym_id,
+            is_athlete=True,
+            is_active=True,
+        )
+        db.add(user)
+        db.flush()
+    if not user.gym_id:
+        user.gym_id = actor.gym_id
+    try:
+        place_athlete_on_team(db, user, team, allow_move=access.is_admin(actor), commit=False)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not user.is_coach and not user.is_admin:
+        user.role = "athlete"
+    db.commit()
+    db.refresh(user)
+    return user, password
+
+
+def remove_athlete(db: Session, actor: User, user_id: int) -> str:
+    access.require_gym(actor)
+    athlete = get_user(db, user_id)
+    if not athlete or athlete.gym_id != actor.gym_id:
+        raise HTTPException(status_code=404, detail="Athlete not found in this gym.")
+    if access.is_admin(actor):
+        pass
+    else:
+        access.assert_own_athlete(db, actor, athlete)
+    block = access.coach_removal_block(db, athlete)
+    if block:
+        raise HTTPException(status_code=409, detail=block)
+    if athlete.is_admin or athlete.is_coach:
+        if athlete.team_id:
+            team = db.query(Group).filter(Group.id == athlete.team_id).first()
+            if team and athlete in team.members:
+                team.members.remove(athlete)
+        athlete.team_id = None
+        athlete.is_athlete = False
+        if athlete.role == "athlete":
+            athlete.role = "admin" if athlete.is_admin else "coach"
+        db.commit()
+        return "demoted"
+    db.delete(athlete)
+    db.commit()
+    return "deleted"
+
+
+def move_team(db: Session, admin: User, team_id: int, coach_id: int) -> Group:
+    access.require_admin(admin)
+    team = get_group(db, team_id)
+    coach = get_user(db, coach_id)
+    if not team or team.gym_id != admin.gym_id:
+        raise HTTPException(status_code=404, detail="Team not found in this gym.")
+    if not coach or coach.gym_id != admin.gym_id:
+        raise HTTPException(status_code=404, detail="Coach not found in this gym.")
+    if "coach" not in coach.roles and "admin" not in coach.roles:
+        raise HTTPException(status_code=400, detail="That person is not a coach in this gym.")
+    if "coach" not in coach.roles:
+        coach.is_coach = True
+    team.coach_id = coach.id
+    db.commit()
+    db.refresh(team)
+    team.member_count = len(team.members)
+    return team
+
+
+def latest_athlete_note(db: Session, user_id: int) -> str:
+    row = db.query(WorkoutSession).filter(
+        WorkoutSession.user_id == user_id,
+        WorkoutSession.athlete_note.isnot(None),
+        WorkoutSession.athlete_note != "",
+    ).order_by(desc(WorkoutSession.id)).first()
+    return row.athlete_note if row else ""
+
+def person_payload(db: Session, user: User) -> dict:
+    led = [t.name for t in access.leads_teams(db, user)]
+    return {
+        "id": user.id,
+        "name": user.name,
+        "email": user.email,
+        "roles": list(user.roles),
+        "team_id": user.team_id,
+        "team_name": user.team_name,
+        "led_teams": led,
+        "latest_note": latest_athlete_note(db, user.id),
+    }
+
+
+def gym_context(db: Session, user: User) -> dict:
+    access.require_gym(user)
+    gym = db.query(Gym).filter(Gym.id == user.gym_id).first()
+    if access.is_admin(user):
+        people = db.query(User).filter(User.gym_id == user.gym_id).order_by(User.name.asc()).all()
+        coaches = [p for p in people if "coach" in p.roles]
+        athletes = [p for p in people if p.team_id or "athlete" in p.roles]
+        teams = db.query(Group).filter(Group.gym_id == user.gym_id).order_by(Group.name.asc()).all()
+    elif access.is_coach(user):
+        coaches = [user]
+        athletes = access.athletes_for(db, user)
+        teams = access.leads_teams(db, user)
+    else:
+        raise HTTPException(status_code=403, detail="Athlete accounts do not have coach tools.")
+    codes = list_join_codes(db, user)
+    return {
+        "gym_id": gym.id,
+        "gym_name": gym.name,
+        "coaches": [person_payload(db, p) for p in coaches],
+        "athletes": [person_payload(db, p) for p in athletes if p.id != user.id or "athlete" in p.roles],
+        "teams": [{
+            "id": t.id,
+            "name": t.name,
+            "coach_id": t.coach_id,
+            "coach_name": t.coach.name if t.coach else "",
+            "athlete_count": db.query(User).filter(User.team_id == t.id).count(),
+        } for t in teams],
+        "codes": [{
+            "id": c.id,
+            "code": c.code,
+            "kind": c.kind,
+            "gym_id": c.gym_id,
+            "team_id": c.team_id,
+            "team_name": c.team.name if c.team else None,
+        } for c in codes],
+    }
+
+
+def assign_workout_to_athlete(db: Session, coach: User, athlete_id: int, title: str, scheduled_date: str, exercise_name: str, sets: int, reps: str, weight: str, notes: str):
+    athlete = get_user(db, athlete_id)
+    access.assert_own_athlete(db, coach, athlete)
+    exercise = db.query(Exercise).filter(Exercise.name == exercise_name).first()
+    if not exercise:
+        exercise = Exercise(name=exercise_name, category="Strength")
+        db.add(exercise)
+        db.flush()
+    workout = Workout(
+        title=title.strip() or "Workout",
+        program_name="wourkout",
+        scheduled_date=scheduled_date,
+        calendar_date=scheduled_date,
+        week_number=1,
+        day_of_week="",
+        description=notes or "",
+        created_by_coach_id=coach.id,
+        gym_id=coach.gym_id,
+    )
+    db.add(workout)
+    db.flush()
+    db.add(WorkoutExercise(
+        workout_id=workout.id,
+        exercise_id=exercise.id,
+        superset_group="A",
+        order_index=0,
+        prescription_text=f"{sets or 3} X {reps or '5'}",
+        prescribed_sets=sets or 3,
+        target_reps=reps or "5",
+        target_weight=weight or "0",
+        rest_seconds=90,
+    ))
+    assignment = WorkoutAssignment(
+        workout_id=workout.id,
+        assigned_by_coach_id=coach.id,
+        user_id=athlete.id,
+        scheduled_date=scheduled_date,
+        notes=notes or "",
+    )
+    db.add(assignment)
+    db.commit()
+    db.refresh(assignment)
+    assignment.workout_title = workout.title
+    assignment.target_name = f"Client: {athlete.name}"
+    return assignment
+
+
+def schedule_for_athlete(db: Session, user: User) -> List[dict]:
+    if "athlete" not in user.roles and (user.role or "") not in ("athlete", "student"):
+        raise HTTPException(status_code=403, detail="Only an athlete can open their schedule.")
+    rows = []
+    direct = db.query(WorkoutAssignment).filter(WorkoutAssignment.user_id == user.id).all()
+    team_rows = []
+    if user.team_id:
+        team_rows = db.query(WorkoutAssignment).filter(WorkoutAssignment.group_id == user.team_id).all()
+    seen = set()
+    for assignment in direct + team_rows:
+        key = (assignment.workout_id, assignment.scheduled_date, assignment.user_id or 0, assignment.group_id or 0)
+        if key in seen:
+            continue
+        seen.add(key)
+        workout = assignment.workout
+        session = db.query(WorkoutSession).filter(
+            WorkoutSession.workout_id == assignment.workout_id,
+            WorkoutSession.user_id == user.id
+        ).order_by(desc(WorkoutSession.id)).first()
+        coach = assignment.coach
+        if not coach and assignment.group and assignment.group.coach:
+            coach = assignment.group.coach
+        rows.append({
+            "assignment_id": assignment.id,
+            "workout_id": assignment.workout_id,
+            "title": workout.title if workout else "",
+            "scheduled_date": assignment.scheduled_date,
+            "coach_name": coach.name if coach else "",
+            "athlete_note": (session.athlete_note or "") if session else "",
+            "exercise_count": len(workout.exercises) if workout else 0,
+        })
+    rows.sort(key=lambda r: (r["scheduled_date"], r["assignment_id"]))
+    return rows
+
+
+def write_athlete_note(db: Session, user: User, workout_id: int, note: str) -> WorkoutSession:
+    if "athlete" not in user.roles and (user.role or "") not in ("athlete", "student"):
+        raise HTTPException(status_code=403, detail="Only an athlete can write a note on their workout.")
+    clauses = [WorkoutAssignment.user_id == user.id]
+    if user.team_id:
+        clauses.append(WorkoutAssignment.group_id == user.team_id)
+    allowed = db.query(WorkoutAssignment).filter(
+        WorkoutAssignment.workout_id == workout_id,
+        or_(*clauses)
+    ).first()
+    if not allowed:
+        raise HTTPException(status_code=403, detail="That workout is not on your schedule.")
+    session = db.query(WorkoutSession).filter(
+        WorkoutSession.workout_id == workout_id,
+        WorkoutSession.user_id == user.id
+    ).order_by(desc(WorkoutSession.id)).first()
+    if not session:
+        session = WorkoutSession(workout_id=workout_id, user_id=user.id, athlete_note=note.strip())
+        db.add(session)
+    else:
+        session.athlete_note = note.strip()
+    db.commit()
+    db.refresh(session)
+    return session
+
+
+def athlete_can_read_workout(db: Session, user: User, workout_id: int) -> bool:
+    if user.gym_id:
+        workout = db.query(Workout).filter(Workout.id == workout_id).first()
+        if workout and workout.gym_id and workout.gym_id != user.gym_id:
+            return False
+    clauses = [WorkoutAssignment.user_id == user.id]
+    if user.team_id:
+        clauses.append(WorkoutAssignment.group_id == user.team_id)
+    hit = db.query(WorkoutAssignment).filter(
+        WorkoutAssignment.workout_id == workout_id,
+        or_(*clauses)
+    ).first()
+    return hit is not None
+
+
+def scope_assignments(db: Session, viewer: Optional[User], rows: List[WorkoutAssignment]) -> List[WorkoutAssignment]:
+    if viewer is None:
+        return rows
+    if not viewer.gym_id:
+        return [row for row in rows if row.user_id == viewer.id]
+    own_athlete = "athlete" in viewer.roles
+    staff = "coach" in viewer.roles or "admin" in viewer.roles
+    if own_athlete and not staff:
+        return [
+            row for row in rows
+            if row.user_id == viewer.id or (viewer.team_id and row.group_id == viewer.team_id)
+        ]
+    ids = set(access.athlete_ids_for(db, viewer))
+    team_ids = {t.id for t in access.leads_teams(db, viewer)}
+    if own_athlete:
+        ids.add(viewer.id)
+    scoped = []
+    for row in rows:
+        if row.user_id and row.user_id in ids:
+            scoped.append(row)
+        elif row.group_id and row.group_id in team_ids:
+            scoped.append(row)
+        elif own_athlete and viewer.team_id and row.group_id == viewer.team_id:
+            scoped.append(row)
+    return scoped
 
 
