@@ -17,16 +17,21 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), nullable=False, index=True)
     email = Column(String(255), unique=True, index=True, nullable=False)
-    role = Column(String(50), default="student", index=True)  # 'coach' or 'student'
+    username = Column(String(100), unique=True, index=True, nullable=True)
+    password_hash = Column(String(255), nullable=True)  # Nullable for OAuth-only users
+    supabase_uid = Column(String(128), unique=True, index=True, nullable=True)
+    role = Column(String(50), default="athlete", index=True)  # 'coach', 'athlete', 'admin' (or legacy 'student')
     title = Column(String(100), default="Athlete")  # e.g. 'Head Strength Coach', 'Varsity Athlete'
     avatar_color = Column(String(20), default="#0ea5e9")
     status_badge = Column(String(50), default="Active")  # 'Active', 'Modified', 'Rehab'
     position_tag = Column(String(100), default="Athlete")  # 'Varsity RB', 'Sprinter', etc.
+    is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     groups = relationship("Group", secondary=user_groups, back_populates="members")
     sessions = relationship("WorkoutSession", back_populates="user", cascade="all, delete-orphan")
     individual_assignments = relationship("WorkoutAssignment", back_populates="user", foreign_keys="WorkoutAssignment.user_id", cascade="all, delete-orphan")
+    records = relationship("PersonalRecord", back_populates="user", cascade="all, delete-orphan")
 
 class Group(Base):
     __tablename__ = "groups"
@@ -145,9 +150,11 @@ class PersonalRecord(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     exercise_id = Column(Integer, ForeignKey("exercises.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     weight = Column(Float, nullable=False)
     reps = Column(Integer, default=1)
     notes = Column(String(255), default="")
     date = Column(DateTime, default=datetime.utcnow)
 
     exercise = relationship("Exercise", back_populates="records")
+    user = relationship("User", back_populates="records")

@@ -1,8 +1,14 @@
+import base64
+import hashlib
+import hmac
 import json
+import logging
 import os
 import re
+import secrets
 from datetime import datetime, timedelta
 from typing import List, Optional
+import httpx
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, desc, asc
 
@@ -10,9 +16,151 @@ from app.models import Exercise, Workout, WorkoutExercise, WorkoutSession, SetLo
 from app.schemas import (
     ExerciseCreate, ExerciseUpdate, WorkoutCreate, WorkoutUpdate, PersonalRecordCreate,
     CopyWeekRequest, AddWorkoutToDayRequest, SaveProgramTemplateRequest,
-    UserCreate, UserUpdate, GroupCreate, GroupUpdate, WorkoutAssignmentCreate
+    UserCreate, UserUpdate, GroupCreate, GroupUpdate, WorkoutAssignmentCreate, UserRegister
 )
 from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+# Authentication & Password Security
+def hash_password(password: str) -> str:
+    if not password:
+        return ""
+    salt = secrets.token_hex(16)
+    key = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 100000)
+    return f"pbkdf2:sha256:100000${salt}${key.hex()}"
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    if not plain_password or not hashed_password or "$" not in hashed_password:
+        return False
+    try:
+        parts = hashed_password.split("$")
+        if len(parts) != 3:
+            return False
+        salt = parts[1]
+        key_hex = parts[2]
+        computed = hashlib.pbkdf2_hmac("sha256", plain_password.encode("utf-8"), salt.encode("utf-8"), 100000)
+        return hmac.compare_digest(computed.hex(), key_hex)
+    except Exception:
+        return False
+
+def create_access_token(user_id: int, role: str = "athlete", expires_hours: Optional[int] = None) -> str:
+    hours = expires_hours or settings.ACCESS_TOKEN_EXPIRE_HOURS
+    payload = {
+        "sub": str(user_id),
+        "role": role,
+        "exp": (datetime.utcnow() + timedelta(hours=hours)).timestamp()
+    }
+    payload_b64 = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+    signature = hmac.new(settings.JWT_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
+    return f"{payload_b64}.{signature}"
+
+def decode_access_token(token: str) -> Optional[dict]:
+    try:
+        parts = token.split(".")
+        if len(parts) != 2:
+            return None
+        payload_b64, signature = parts
+        padding = "=" * (-len(payload_b64) % 4)
+        expected_sig = hmac.new(settings.JWT_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected_sig):
+            return None
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64 + padding).decode())
+        if payload.get("exp", 0) < datetime.utcnow().timestamp():
+            return None
+        return payload
+    except Exception:
+        return None
+
+async def verify_supabase_token(access_token: str) -> Optional[dict]:
+    if not settings.SUPABASE_URL or not access_token:
+        return None
+    try:
+        headers = {"Authorization": f"Bearer {access_token}"}
+        if settings.SUPABASE_ANON_KEY:
+            headers["apikey"] = settings.SUPABASE_ANON_KEY
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            res = await client.get(f"{settings.SUPABASE_URL}/auth/v1/user", headers=headers)
+            if res.status_code == 200:
+                return res.json()
+    except Exception as exc:
+        logger.warning(f"Supabase token verification error: {exc}")
+    return None
+
+def get_user_by_email_or_username(db: Session, identifier: str) -> Optional[User]:
+    ident = (identifier or "").strip().lower()
+    if not ident:
+        return None
+    return db.query(User).filter(
+        (User.email.ilike(ident)) | (User.username.ilike(ident))
+    ).first()
+
+def get_user_by_supabase_uid(db: Session, uid: str) -> Optional[User]:
+    if not uid:
+        return None
+    return db.query(User).filter(User.supabase_uid == uid).first()
+
+def create_auth_user(db: Session, user_in: UserRegister) -> User:
+    role = (user_in.role or "athlete").lower()
+    if role not in ["coach", "athlete", "admin"]:
+        role = "athlete"
+    email = user_in.email.strip().lower()
+    username = user_in.username.strip().lower() if user_in.username else email.split("@")[0]
+
+    existing_u = db.query(User).filter(User.username == username).first()
+    if existing_u:
+        username = f"{username}_{secrets.token_hex(3)}"
+
+    user = User(
+        name=user_in.name,
+        email=email,
+        username=username,
+        password_hash=hash_password(user_in.password) if user_in.password else None,
+        supabase_uid=user_in.supabase_uid,
+        role=role,
+        title=user_in.title or ("Head Coach" if role == "coach" else ("System Admin" if role == "admin" else "Athlete")),
+        position_tag=user_in.position_tag or "Athlete",
+        is_active=True
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+def seed_default_users(db: Session):
+    defaults = [
+        ("System Admin", "admin@wourkout.app", "admin", "admin", "AdminPassword123!", "System Administrator", "#ef4444"),
+        ("Head Coach", "coach@wourkout.app", "coach", "coach", "CoachPassword123!", "Head Strength Coach", "#3b82f6"),
+        ("Varsity Athlete", "athlete@wourkout.app", "athlete", "athlete", "AthletePassword123!", "Varsity Athlete", "#10b981"),
+        ("Eric Van Zeumeren", "ericvanzeumeren@gmail.com", "eric", "athlete", "AthletePassword123!", "Varsity Athlete", "#0ea5e9"),
+        ("Leah Van Zeumeren", "leah@example.com", "leah", "athlete", "AthletePassword123!", "Varsity Athlete", "#a855f7")
+    ]
+    for name, email, uname, role, pwd, title, color in defaults:
+        existing = db.query(User).filter((User.email == email) | (User.username == uname)).first()
+        if not existing:
+            u = User(
+                name=name,
+                email=email,
+                username=uname,
+                password_hash=hash_password(pwd),
+                role=role,
+                title=title,
+                avatar_color=color,
+                is_active=True
+            )
+            db.add(u)
+        else:
+            if not existing.password_hash:
+                existing.password_hash = hash_password(pwd)
+            if not existing.username:
+                existing.username = uname
+            if not existing.role or existing.role == "student":
+                existing.role = role
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.warning(f"Error seeding default users: {e}")
 
 MONTH_MAP = {'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4, 'MAY': 5, 'JUN': 6, 'JUL': 7, 'AUG': 8, 'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12}
 
@@ -225,6 +373,14 @@ def update_exercise(db: Session, exercise_id: int, exercise_in: ExerciseUpdate):
     db.commit()
     db.refresh(ex)
     return ex
+
+def delete_exercise(db: Session, exercise_id: int) -> bool:
+    ex = db.query(Exercise).filter(Exercise.id == exercise_id).first()
+    if not ex:
+        return False
+    db.delete(ex)
+    db.commit()
+    return True
 
 # Workout Queries
 def get_workouts(db: Session, skip: int = 0, limit: int = 500, program: Optional[str] = None):
@@ -455,7 +611,8 @@ def get_or_create_active_session(db: Session, workout_id: int, user_id: Optional
         for we in workout.exercises:
             reps_val = 10.0
             try:
-                digits = "".join([c for c in we.target_reps if c.isdigit() or c == '.'])
+                first_reps = we.target_reps.split(",")[0].strip() if we.target_reps else "10"
+                digits = "".join([c for c in first_reps if c.isdigit() or c == '.'])
                 if digits:
                     reps_val = float(digits)
             except Exception:
@@ -463,7 +620,8 @@ def get_or_create_active_session(db: Session, workout_id: int, user_id: Optional
 
             wt_val = 0.0
             try:
-                wt_val = float(we.target_weight)
+                first_wt = we.target_weight.split(",")[0].strip() if we.target_weight else "0"
+                wt_val = float(first_wt)
             except Exception:
                 wt_val = 0.0
 
@@ -528,12 +686,19 @@ def complete_session(db: Session, session_id: int, notes: str = ""):
     return session
 
 # Personal Records
-def get_personal_records(db: Session):
-    return db.query(PersonalRecord).order_by(desc(PersonalRecord.weight)).all()
+def get_personal_records(db: Session, user_id: Optional[int] = None, include_global: bool = True):
+    query = db.query(PersonalRecord)
+    if user_id is not None:
+        if include_global:
+            query = query.filter(or_(PersonalRecord.user_id == user_id, PersonalRecord.user_id.is_(None)))
+        else:
+            query = query.filter(PersonalRecord.user_id == user_id)
+    return query.order_by(desc(PersonalRecord.weight)).all()
 
 def add_personal_record(db: Session, record_in: PersonalRecordCreate):
     pr = PersonalRecord(
         exercise_id=record_in.exercise_id,
+        user_id=record_in.user_id,
         weight=record_in.weight,
         reps=record_in.reps or 1,
         notes=record_in.notes or "",
@@ -553,6 +718,14 @@ def update_personal_record(db: Session, record_id: int, record_in):
     db.commit()
     db.refresh(pr)
     return pr
+
+def delete_personal_record(db: Session, record_id: int) -> bool:
+    pr = db.query(PersonalRecord).filter(PersonalRecord.id == record_id).first()
+    if not pr:
+        return False
+    db.delete(pr)
+    db.commit()
+    return True
 
 # Week Planner, Bulk Copy & Calendar Queries
 def copy_week(db: Session, req: CopyWeekRequest) -> List[Workout]:

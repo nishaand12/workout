@@ -1,12 +1,15 @@
 import os
+import logging
 from contextlib import asynccontextmanager
 from typing import List, Optional
 from pydantic import BaseModel
 from fastapi import FastAPI, Depends, HTTPException, Query, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+from sqlalchemy import inspect, text
 
 from app.config import settings
 from app.database import Base, engine, get_db, SessionLocal
@@ -18,28 +21,57 @@ from app.schemas import (
     SetLogResponse, SetLogBase,
     PersonalRecordResponse, PersonalRecordCreate, PersonalRecordUpdate,
     CopyWeekRequest, RescheduleWorkoutRequest, CalendarDayResponse,
-    AddWorkoutToDayRequest,     SaveProgramTemplateRequest,
+    AddWorkoutToDayRequest, SaveProgramTemplateRequest,
     UserResponse, UserCreate, UserUpdate,
     GroupResponse, GroupCreate, GroupUpdate,
     WorkoutAssignmentResponse, WorkoutAssignmentCreate, ProgramAssignmentCreate,
-    CoachComplianceReport
+    CoachComplianceReport,
+    AuthConfigResponse, UserRegister, UserLogin, Token,
+    PasswordResetRequest, PasswordResetConfirm, SupabaseAuthSync
 )
 from app import crud
 
+logger = logging.getLogger(__name__)
+
+def ensure_schema_migrations():
+    """Safely add new columns to existing SQLite or Postgres tables if missing."""
+    try:
+        inspector = inspect(engine)
+        tables = inspector.get_table_names()
+        with engine.begin() as conn:
+            if "users" in tables:
+                cols = [c["name"] for c in inspector.get_columns("users")]
+                if "password_hash" not in cols:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN password_hash VARCHAR(255)"))
+                if "supabase_uid" not in cols:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN supabase_uid VARCHAR(128)"))
+                if "username" not in cols:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN username VARCHAR(100)"))
+                if "is_active" not in cols:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT TRUE"))
+
+            if "personal_records" in tables:
+                cols = [c["name"] for c in inspector.get_columns("personal_records")]
+                if "user_id" not in cols:
+                    conn.execute(text("ALTER TABLE personal_records ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE CASCADE"))
+    except Exception as exc:
+        logger.warning(f"Schema migration notice: {exc}")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: create tables and seed data
+    # Startup: create tables, apply migrations, seed data & default accounts
     try:
         Base.metadata.create_all(bind=engine)
+        ensure_schema_migrations()
         db = SessionLocal()
         try:
             crud.seed_database_if_empty(db)
+            crud.seed_default_users(db)
             crud.scrub_visible_brand(db)
         finally:
             db.close()
     except Exception as exc:
-        import logging
-        logging.getLogger(__name__).error(f"Error during startup database initialization: {exc}")
+        logger.error(f"Error during startup database initialization: {exc}")
     yield
 
 app = FastAPI(
@@ -48,6 +80,62 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+
+security = HTTPBearer(auto_error=False)
+
+async def get_current_user(
+    cred: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    db: Session = Depends(get_db)
+) -> Optional[crud.User]:
+    if not cred or not cred.credentials:
+        return None
+    token = cred.credentials
+
+    # 1. Try local JWT token
+    payload = crud.decode_access_token(token)
+    if payload:
+        user_id = int(payload.get("sub", 0))
+        user = crud.get_user(db, user_id)
+        if user and user.is_active:
+            return user
+
+    # 2. Try Supabase token
+    if settings.SUPABASE_URL:
+        supa_user = await crud.verify_supabase_token(token)
+        if supa_user:
+            uid = supa_user.get("id")
+            email = supa_user.get("email")
+            user = crud.get_user_by_supabase_uid(db, uid) or crud.get_user_by_email_or_username(db, email)
+            if not user and email:
+                name = (
+                    supa_user.get("user_metadata", {}).get("full_name") or
+                    supa_user.get("user_metadata", {}).get("name") or
+                    email.split("@")[0]
+                )
+                user = crud.create_auth_user(db, UserRegister(
+                    name=name, email=email, password="", supabase_uid=uid, role="athlete"
+                ))
+            elif user and not user.supabase_uid:
+                user.supabase_uid = uid
+                db.commit()
+            return user
+    return None
+
+def require_auth(current_user: Optional[crud.User] = Depends(get_current_user)) -> crud.User:
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return current_user
+
+def require_role(allowed_roles: List[str]):
+    def role_checker(current_user: crud.User = Depends(require_auth)):
+        role = "athlete" if current_user.role == "student" else current_user.role
+        if role not in allowed_roles:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Access denied: role '{role}' lacks required permissions."
+            )
+        return current_user
+    return role_checker
 
 # Enable CORS for multi-device access over Tailnet
 app.add_middleware(
@@ -86,6 +174,13 @@ def update_exercise(exercise_id: int, exercise_in: ExerciseUpdate, db: Session =
     if not updated:
         raise HTTPException(status_code=404, detail="Exercise not found")
     return updated
+
+@app.delete("/api/exercises/{exercise_id}")
+def delete_exercise(exercise_id: int, db: Session = Depends(get_db)):
+    success = crud.delete_exercise(db, exercise_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Exercise not found")
+    return {"message": "Exercise deleted"}
 
 # Workout Endpoints
 @app.get("/api/workouts", response_model=List[WorkoutResponse])
@@ -211,8 +306,12 @@ def list_sessions(db: Session = Depends(get_db)):
 
 # Personal Records Endpoints
 @app.get("/api/records", response_model=List[PersonalRecordResponse])
-def list_records(db: Session = Depends(get_db)):
-    return crud.get_personal_records(db)
+def list_records(
+    user_id: Optional[int] = Query(None, description="Filter by athlete user_id"),
+    include_global: bool = Query(True, description="Include team-wide/unassigned records"),
+    db: Session = Depends(get_db)
+):
+    return crud.get_personal_records(db, user_id=user_id, include_global=include_global)
 
 @app.post("/api/records", response_model=PersonalRecordResponse, status_code=status.HTTP_201_CREATED)
 def create_record(record_in: PersonalRecordCreate, db: Session = Depends(get_db)):
@@ -225,8 +324,131 @@ def update_record(record_id: int, record_in: PersonalRecordUpdate, db: Session =
         raise HTTPException(status_code=404, detail="Record not found")
     return record
 
+@app.delete("/api/records/{record_id}")
+def delete_record(record_id: int, db: Session = Depends(get_db)):
+    success = crud.delete_personal_record(db, record_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Record not found")
+    return {"message": "Record deleted"}
+
 # -------------------------------------------------------------
-# User & Authentication Endpoints
+# Authentication Endpoints
+# -------------------------------------------------------------
+@app.get("/api/auth/config", response_model=AuthConfigResponse)
+def get_auth_config():
+    return {
+        "supabase_url": settings.SUPABASE_URL,
+        "supabase_anon_key": settings.SUPABASE_ANON_KEY,
+        "allow_google_oauth": bool(settings.SUPABASE_URL and settings.SUPABASE_ANON_KEY),
+        "allow_email_password": True
+    }
+
+@app.post("/api/auth/register", response_model=Token, status_code=status.HTTP_201_CREATED)
+def register_user(user_in: UserRegister, db: Session = Depends(get_db)):
+    existing = crud.get_user_by_email_or_username(db, user_in.email)
+    if existing:
+        raise HTTPException(status_code=400, detail="An account with this email already exists.")
+    if user_in.username:
+        if crud.get_user_by_email_or_username(db, user_in.username):
+            raise HTTPException(status_code=400, detail="This username is already taken.")
+    user = crud.create_auth_user(db, user_in)
+    access_token = crud.create_access_token(user.id, user.role)
+    return {"access_token": access_token, "token_type": "bearer", "user": user}
+
+@app.post("/api/auth/login", response_model=Token)
+def login_user(login_in: UserLogin, db: Session = Depends(get_db)):
+    user = crud.get_user_by_email_or_username(db, login_in.email_or_username)
+    if not user or not crud.verify_password(login_in.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid username/email or password.")
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Account is disabled.")
+    access_token = crud.create_access_token(user.id, user.role)
+    return {"access_token": access_token, "token_type": "bearer", "user": user}
+
+@app.get("/api/auth/me", response_model=UserResponse)
+def get_my_profile(current_user: crud.User = Depends(require_auth)):
+    return current_user
+
+@app.post("/api/auth/sync-supabase", response_model=Token)
+async def sync_supabase_user(req: SupabaseAuthSync, db: Session = Depends(get_db)):
+    supa_user = await crud.verify_supabase_token(req.access_token)
+    if not supa_user:
+        if req.email:
+            user = crud.get_user_by_email_or_username(db, req.email)
+            if not user:
+                user = crud.create_auth_user(db, UserRegister(
+                    name=req.name or req.email.split("@")[0],
+                    email=req.email,
+                    password="",
+                    supabase_uid=req.supabase_uid,
+                    role=req.role or "athlete"
+                ))
+            access_token = crud.create_access_token(user.id, user.role)
+            return {"access_token": access_token, "token_type": "bearer", "user": user}
+        raise HTTPException(status_code=401, detail="Could not verify Supabase credentials.")
+
+    uid = supa_user.get("id")
+    email = supa_user.get("email")
+    user = crud.get_user_by_supabase_uid(db, uid) or crud.get_user_by_email_or_username(db, email)
+    if not user:
+        name = (
+            supa_user.get("user_metadata", {}).get("full_name") or
+            supa_user.get("user_metadata", {}).get("name") or
+            req.name or
+            email.split("@")[0]
+        )
+        role = req.role if req.role in ["coach", "athlete", "admin"] else "athlete"
+        user = crud.create_auth_user(db, UserRegister(
+            name=name, email=email, password="", supabase_uid=uid, role=role
+        ))
+    else:
+        if not user.supabase_uid:
+            user.supabase_uid = uid
+            db.commit()
+
+    access_token = crud.create_access_token(user.id, user.role)
+    return {"access_token": access_token, "token_type": "bearer", "user": user}
+
+@app.post("/api/auth/reset-password-request")
+async def reset_password_request(req: PasswordResetRequest, db: Session = Depends(get_db)):
+    user = crud.get_user_by_email_or_username(db, req.email)
+    reset_token = None
+    if user:
+        reset_token = crud.create_access_token(user.id, role=user.role, expires_hours=1)
+    return {
+        "message": "If this email is registered, password reset instructions have been sent.",
+        "reset_token": reset_token
+    }
+
+@app.post("/api/auth/reset-password")
+async def reset_password(req: PasswordResetConfirm, db: Session = Depends(get_db)):
+    if not req.new_password or len(req.new_password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters.")
+    # Check if token is local access token or supabase
+    payload = crud.decode_access_token(req.token)
+    if payload:
+        user_id = int(payload.get("sub", 0))
+        user = crud.get_user(db, user_id)
+        if user:
+            user.password_hash = crud.hash_password(req.new_password)
+            db.commit()
+            return {"message": "Password updated successfully."}
+
+    if settings.SUPABASE_URL:
+        supa_user = await crud.verify_supabase_token(req.token)
+        if supa_user:
+            uid = supa_user.get("id")
+            email = supa_user.get("email")
+            user = crud.get_user_by_supabase_uid(db, uid) or crud.get_user_by_email_or_username(db, email)
+            if user:
+                user.password_hash = crud.hash_password(req.new_password)
+                db.commit()
+                return {"message": "Password updated successfully."}
+
+    raise HTTPException(status_code=400, detail="Invalid or expired reset token.")
+
+# -------------------------------------------------------------
+# User & Team/Group Endpoints
 # -------------------------------------------------------------
 @app.get("/api/users", response_model=List[UserResponse])
 def list_users(role: Optional[str] = Query(None), db: Session = Depends(get_db)):

@@ -191,6 +191,135 @@ class TrainerFlowTests(unittest.TestCase):
         tomorrow = self.client.get("/api/coach/compliance", params={"date": "2026-12-02"}).json()
         self.assertIn(client["id"], {row["user_id"] for row in tomorrow["athletes"]})
 
+    def test_auth_flows(self):
+        # Register user with role
+        reg_res = self.client.post("/api/auth/register", json={
+            "name": f"Auth User {self.stamp}",
+            "email": f"auth.{self.stamp}@example.com",
+            "username": f"user_{self.stamp[:8]}",
+            "password": "Password123!",
+            "role": "athlete"
+        })
+        self.assertEqual(reg_res.status_code, 201, reg_res.text)
+        token = reg_res.json()["access_token"]
+        user = reg_res.json()["user"]
+        self.assertEqual(user["role"], "athlete")
+
+        # Verify /api/auth/me
+        me_res = self.client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+        self.assertEqual(me_res.status_code, 200)
+        self.assertEqual(me_res.json()["email"], f"auth.{self.stamp}@example.com")
+
+        # Login with email
+        login_res = self.client.post("/api/auth/login", json={
+            "email_or_username": f"auth.{self.stamp}@example.com",
+            "password": "Password123!"
+        })
+        self.assertEqual(login_res.status_code, 200)
+
+        # Login with username
+        login_u_res = self.client.post("/api/auth/login", json={
+            "email_or_username": f"user_{self.stamp[:8]}",
+            "password": "Password123!"
+        })
+        self.assertEqual(login_u_res.status_code, 200)
+
+        # Config endpoint
+        config_res = self.client.get("/api/auth/config")
+        self.assertEqual(config_res.status_code, 200)
+        self.assertTrue(config_res.json()["allow_email_password"])
+
+    def test_goals_with_athlete_assignment(self):
+        ex = self._exercise()
+        client = self._user("Goal Client")
+
+        # Create goal for specific athlete
+        create_res = self.client.post("/api/records", json={
+            "exercise_id": ex["id"],
+            "user_id": client["id"],
+            "weight": 145.0,
+            "reps": 1,
+            "notes": "Athlete target PR"
+        })
+        self.assertEqual(create_res.status_code, 201, create_res.text)
+        record = create_res.json()
+        self.assertEqual(record["user_id"], client["id"])
+        self.assertEqual(record["weight"], 145.0)
+
+        # Filter by user_id
+        filtered_res = self.client.get(f"/api/records?user_id={client['id']}&include_global=false")
+        self.assertEqual(filtered_res.status_code, 200)
+        records = filtered_res.json()
+        self.assertTrue(any(r["id"] == record["id"] for r in records))
+
+        # Delete record
+        del_res = self.client.delete(f"/api/records/{record['id']}")
+        self.assertEqual(del_res.status_code, 200)
+
+        # Delete exercise
+        del_ex_res = self.client.delete(f"/api/exercises/{ex['id']}")
+        self.assertEqual(del_ex_res.status_code, 200)
+
+    def test_password_reset_flow(self):
+        # Register user
+        email = f"reset.{self.stamp}@example.com"
+        reg = self.client.post("/api/auth/register", json={
+            "name": "Reset Test User",
+            "email": email,
+            "username": f"reset_{self.stamp[:8]}",
+            "password": "OldPassword123!",
+            "role": "coach"
+        })
+        self.assertEqual(reg.status_code, 201)
+
+        # Request reset
+        req_res = self.client.post("/api/auth/reset-password-request", json={"email": email})
+        self.assertEqual(req_res.status_code, 200)
+        self.assertIn("message", req_res.json())
+        token = req_res.json()["reset_token"]
+        self.assertIsNotNone(token)
+
+        # Confirm reset
+        confirm_res = self.client.post("/api/auth/reset-password", json={
+            "token": token,
+            "new_password": "NewPassword123!"
+        })
+        self.assertEqual(confirm_res.status_code, 200)
+
+        # Verify login with new password
+        login_res = self.client.post("/api/auth/login", json={
+            "email_or_username": email,
+            "password": "NewPassword123!"
+        })
+        self.assertEqual(login_res.status_code, 200)
+
+    def test_active_session_comma_separated_parsing(self):
+        coach = self._user(f"Coach Parse {self.stamp}", role="coach")
+        client = self._user(f"Client Parse {self.stamp}")
+        ex = self._exercise()
+
+        # Workout with comma-separated weights and reps
+        w_res = self.client.post("/api/workouts", json={
+            "title": f"Parsing Workout {self.stamp}",
+            "program_name": "Test",
+            "calendar_date": "2026-10-15",
+            "scheduled_date": "2026-10-15",
+            "exercises": [{
+                "exercise_id": ex["id"],
+                "prescribed_sets": 3,
+                "target_reps": "5,5,5",
+                "target_weight": "60,70,80",
+            }]
+        })
+        self.assertEqual(w_res.status_code, 201)
+        workout_id = w_res.json()["id"]
+
+        # Active session
+        session_res = self.client.get(f"/api/sessions/active/{workout_id}?user_id={client['id']}")
+        self.assertEqual(session_res.status_code, 200, session_res.text)
+        session = session_res.json()
+        self.assertEqual(session["user_id"], client["id"])
+
 
 if __name__ == "__main__":
     unittest.main()

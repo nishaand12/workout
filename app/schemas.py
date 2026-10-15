@@ -150,6 +150,7 @@ class WorkoutSessionCreate(BaseModel):
 class WorkoutSessionResponse(BaseModel):
     id: int
     workout_id: int
+    user_id: Optional[int] = None
     start_time: datetime
     end_time: Optional[datetime] = None
     completed: bool
@@ -162,13 +163,54 @@ class WorkoutSessionDetailResponse(WorkoutSessionResponse):
     model_config = ConfigDict(from_attributes=True)
 
 # Personal Record Schemas
+# User & Team/Group Schemas
+class UserBase(BaseModel):
+    name: str
+    email: str
+    username: Optional[str] = None
+    role: str = "athlete"  # 'coach', 'athlete', 'admin' (or legacy 'student')
+    title: Optional[str] = "Athlete"
+    avatar_color: Optional[str] = "#0ea5e9"
+    status_badge: Optional[str] = "Active"
+    position_tag: Optional[str] = "Athlete"
+
+class UserCreate(UserBase):
+    password: Optional[str] = None
+
+class UserUpdate(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    role: Optional[str] = None
+    title: Optional[str] = None
+    avatar_color: Optional[str] = None
+    status_badge: Optional[str] = None
+    position_tag: Optional[str] = None
+    is_active: Optional[bool] = None
+
+class UserBrief(BaseModel):
+    id: int
+    name: str
+    email: str
+    username: Optional[str] = None
+    role: str
+    title: str
+    avatar_color: str
+    status_badge: Optional[str] = "Active"
+    position_tag: Optional[str] = "Athlete"
+    model_config = ConfigDict(from_attributes=True)
+
 class PersonalRecordCreate(BaseModel):
     exercise_id: int
+    user_id: Optional[int] = None
     weight: float
     reps: Optional[int] = 1
     notes: Optional[str] = ""
 
 class PersonalRecordUpdate(BaseModel):
+    exercise_id: Optional[int] = None
+    user_id: Optional[int] = None
     weight: Optional[float] = None
     reps: Optional[int] = None
     notes: Optional[str] = None
@@ -176,44 +218,13 @@ class PersonalRecordUpdate(BaseModel):
 class PersonalRecordResponse(BaseModel):
     id: int
     exercise_id: int
+    user_id: Optional[int] = None
+    user: Optional[UserBrief] = None
     weight: float
     reps: int
     notes: str
     date: datetime
     exercise: ExerciseResponse
-    model_config = ConfigDict(from_attributes=True)
-
-# User & Team/Group Schemas
-class UserBase(BaseModel):
-    name: str
-    email: str
-    role: str = "student"  # 'coach' or 'student'
-    title: Optional[str] = "Athlete"
-    avatar_color: Optional[str] = "#0ea5e9"
-    status_badge: Optional[str] = "Active"
-    position_tag: Optional[str] = "Athlete"
-
-class UserCreate(UserBase):
-    pass
-
-class UserUpdate(BaseModel):
-    name: Optional[str] = None
-    email: Optional[str] = None
-    role: Optional[str] = None
-    title: Optional[str] = None
-    avatar_color: Optional[str] = None
-    status_badge: Optional[str] = None
-    position_tag: Optional[str] = None
-
-class UserBrief(BaseModel):
-    id: int
-    name: str
-    email: str
-    role: str
-    title: str
-    avatar_color: str
-    status_badge: Optional[str] = "Active"
-    position_tag: Optional[str] = "Athlete"
     model_config = ConfigDict(from_attributes=True)
 
 class GroupBase(BaseModel):
@@ -244,9 +255,51 @@ class GroupResponse(GroupBase):
 
 class UserResponse(UserBase):
     id: int
+    supabase_uid: Optional[str] = None
+    is_active: bool = True
     created_at: datetime
     groups: List[GroupBrief] = []
     model_config = ConfigDict(from_attributes=True)
+
+# Authentication Schemas
+class UserRegister(BaseModel):
+    name: str
+    email: str
+    password: Optional[str] = ""
+    username: Optional[str] = None
+    role: Optional[str] = "athlete"  # 'coach', 'athlete', 'admin'
+    title: Optional[str] = None
+    position_tag: Optional[str] = None
+    supabase_uid: Optional[str] = None
+
+class UserLogin(BaseModel):
+    email_or_username: str
+    password: str
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserResponse
+
+class PasswordResetRequest(BaseModel):
+    email: str
+
+class PasswordResetConfirm(BaseModel):
+    token: str
+    new_password: str
+
+class AuthConfigResponse(BaseModel):
+    supabase_url: str
+    supabase_anon_key: str
+    allow_google_oauth: bool
+    allow_email_password: bool = True
+
+class SupabaseAuthSync(BaseModel):
+    access_token: str
+    supabase_uid: Optional[str] = None
+    email: Optional[str] = None
+    name: Optional[str] = None
+    role: Optional[str] = "athlete"
 
 class WorkoutAssignmentCreate(BaseModel):
     workout_id: int

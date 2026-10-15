@@ -127,7 +127,10 @@ function blankDay(date, extra = {}) {
     weekLabel: extra.weekLabel || weekName(date),
     recurring: extra.recurring || 0,
     color: extra.color || "#3b82f6",
-    items: extra.items || []
+    items: extra.items || [],
+    savedFor: extra.savedFor || null,
+    savedWorkoutId: extra.savedWorkoutId || null,
+    assignmentId: extra.assignmentId || null
   };
 }
 
@@ -174,7 +177,7 @@ function fmtShort(date) {
 function ericCalendar() {
   const cal = {};
   const put = (date, title, recurring, items) => {
-    cal[date] = blankDay(date, { title, recurring, items });
+    cal[date] = blankDay(date, { title, recurring, items, savedFor: "eric" });
   };
   put("2026-09-28", "Week 3 Lower", 1, [
     lift("Back Squat", "A", 5, 5, "Super slow squats"),
@@ -274,9 +277,10 @@ function leahCalendar() {
   cal["2026-10-13"] = blankDay("2026-10-13", {
     title: "Upper accessory",
     recurring: 1,
+    savedFor: "leah",
     items: [lift("DB Bicep Curl", "A", 3, 10), lift("Push Up", "B", 3, 12), lift("Sit Up and Reach", "C", 3, 10)]
   });
-  cal["2026-10-01"] = blankDay("2026-10-01", { title: "Push", items: [lift("Push Up", "A", 4, 10)] });
+  cal["2026-10-01"] = blankDay("2026-10-01", { title: "Push", savedFor: "leah", items: [lift("Push Up", "A", 4, 10)] });
   return cal;
 }
 
@@ -349,12 +353,26 @@ const state = {
   requestNote: "",
   role: "coach",
   actingAthlete: null,
+  serverUserId: null,
+  selectedGoalAthlete: "all",
   serverUsers: {},
   athleteAssignments: [],
   athleteWorkouts: {},
   athleteOpenDate: null,
   openWorkout: null,
-  openSession: null
+  openSession: null,
+  auth: {
+    isAuthenticated: false,
+    user: null,
+    token: localStorage.getItem("wourkout_token") || null,
+    mode: "login",
+    loading: false,
+    error: "",
+    success: "",
+    resetToken: null,
+    roleChoice: "athlete",
+    config: { supabase_url: "", supabase_anon_key: "", google_auth_enabled: false }
+  }
 };
 
 function cal() {
@@ -380,6 +398,7 @@ function noteHist(text) {
 function toast(msg) {
   state.toast = msg;
   clearTimeout(toast._t);
+  render();
   toast._t = setTimeout(() => { state.toast = ""; render(); }, 2200);
 }
 function dismissToast() {
@@ -457,13 +476,19 @@ function closeFloats() {
   state.teamFilter = false;
 }
 function render() {
-  const light = state.view !== "build" && state.view !== "mine";
   const root = document.getElementById("app");
+  if (!root) return;
+  if (!state.auth || !state.auth.isAuthenticated) {
+    root.className = "";
+    root.innerHTML = renderLoginGate() + (state.toast ? `<div class="toast">${esc(state.toast)}</div>` : "");
+    return;
+  }
+  const light = state.view !== "build" && state.view !== "mine";
   root.className = light ? "light" : "";
   const active = document.activeElement;
   const focusId = active && active.dataset ? active.dataset.focus : null;
   const sel = active && active.selectionStart;
-  const toastHtml = state.toast && state.role !== "athlete" ? `<div class="toast">${esc(state.toast)}</div>` : "";
+  const toastHtml = state.toast ? `<div class="toast">${esc(state.toast)}</div>` : "";
   root.innerHTML = nav() + '<div class="shell">' + body() + rightRail() + "</div>" + toastHtml + modalHtml() + fabHtml();
   if (focusId) {
     const el = root.querySelector(`[data-focus="${focusId}"]`);
@@ -477,29 +502,55 @@ function render() {
 }
 
 function nav() {
+  const isAthlete = state.role === "athlete";
   const item = (id, label, caret) => `<div class="nav-anchor"><button class="navbtn ${state.view === id || (id === "feed" && (state.view === "feed" || state.view === "journal")) ? "active" : ""}" onclick="go('${id}', event)">${label}${caret ? ' <span class="caret">▼</span>' : ""}</button>${menuFor(id)}</div>`;
-  return `<header class="topnav">
-    <div class="wordmark">w<span>ourkout</span></div>
+  
+  const user = state.auth && state.auth.user;
+  const displayName = user ? (user.name || user.username) : (isAthlete ? "Athlete" : "Coach");
+  const initial = (displayName[0] || "U").toUpperCase();
+  const roleClass = state.role || "athlete";
+  const avatarBg = roleClass === "athlete" ? "#22c55e" : roleClass === "admin" ? "#ef4444" : "#3b82f6";
+
+  const athleteNav = `
+    ${item("daily", "DAILY BRIEF")}
+    ${item("feed", "FEED")}
+    ${item("mine", "MY CALENDAR")}
+    ${item("workout", "WORKOUT TOOLS", true)}
+  `;
+
+  const coachNav = `
     ${item("daily", "DAILY BRIEF")}
     ${item("feed", "FEED")}
     ${item("build", "BUILD")}
     ${item("workout", "WORKOUT TOOLS", true)}
     ${item("coach", "COACH TOOLS", true)}
     ${item("ams", "AMS")}
+  `;
+
+  return `<header class="topnav">
+    <div class="wordmark" onclick="go('${isAthlete ? 'mine' : 'build'}')">w<span>ourkout</span></div>
+    ${isAthlete ? athleteNav : coachNav}
     <div class="spacer"></div>
-    <button class="req" onclick="openRequest(event)">REQUEST PROGRAM</button>
+    ${!isAthlete ? `<button class="req" onclick="openRequest(event)">REQUEST PROGRAM</button>` : ""}
     <button class="iconbtn" title="Help" onclick="toggleNav('help', event)">?</button>
     <button class="iconbtn" title="Notifications" onclick="toggleNav('bell', event)">🔔</button>
-    <button class="avatar" title="Account" onclick="toggleNav('account', event)">${state.role === "athlete" ? esc((ATHLETES.find((a) => a.id === state.actingAthlete) || { name: "A" }).name[0]) : "C"}</button>
+    <div class="nav-profile">
+      <div class="nav-avatar" style="background:${avatarBg}">${initial}</div>
+      <div class="nav-user-info">
+        <span class="nav-user-name">${esc(displayName)}</span>
+        <span class="role-badge ${roleClass}">${esc(roleClass.toUpperCase())}</span>
+      </div>
+      <button class="nav-logout-btn" onclick="handleLogout()">Log out</button>
+    </div>
   </header>`;
 }
 function menuFor(id) {
   if (state.navMenu !== id) return "";
   if (id === "workout") {
-    return `<div class="menu" style="top:40px">${[
-      ["weightroom", "WEIGHTROOM VIEW"], ["whiteboard", "WHITEBOARD"], ["entry", "WORKOUT ENTRY"],
-      ["maxes", "MAXES / PRS"], ["journal", "JOURNAL"], ["leaderboard", "LEADERBOARD"], ["evaluations", "EVALUATIONS"]
-    ].map(([v, l]) => `<button onclick="goTool('${v}')">${l}</button>`).join("")}</div>`;
+    const list = state.role === "athlete"
+      ? [["weightroom", "WEIGHTROOM VIEW"], ["whiteboard", "WHITEBOARD"], ["maxes", "MAXES / PRS"], ["journal", "JOURNAL"], ["leaderboard", "LEADERBOARD"], ["evaluations", "EVALUATIONS"]]
+      : [["weightroom", "WEIGHTROOM VIEW"], ["whiteboard", "WHITEBOARD"], ["entry", "WORKOUT ENTRY"], ["maxes", "MAXES / PRS"], ["journal", "JOURNAL"], ["leaderboard", "LEADERBOARD"], ["evaluations", "EVALUATIONS"]];
+    return `<div class="menu" style="top:40px">${list.map(([v, l]) => `<button onclick="goTool('${v}')">${l}</button>`).join("")}</div>`;
   }
   if (id === "coach") {
     return `<div class="menu" style="top:40px">${[
@@ -516,6 +567,7 @@ function menuFor(id) {
       <div class="help">Signed in as ${esc(who)}</div>
       <button onclick="backToCoach()">Coach calendar</button>
       ${ATHLETES.map((a) => `<button onclick="openAsAthlete('${a.id}')">${esc(a.name)}</button>`).join("")}
+      <button onclick="handleLogout()" style="color:#ef4444;font-weight:700">Log out</button>
     </div>`;
   }
   return "";
@@ -659,7 +711,7 @@ function dayCol(date) {
        <button class="iconbtn" title="Move" onclick="openCopy('${date}','move')">→</button>
        <button class="iconbtn" title="Delete" onclick="askDelete('${date}')">🗑</button>`
     : `<button class="recur" onclick="openRecur('${date}', event)">${recurLabel}</button>`;
-  return `<div class="day ${focused}" data-day="${date}" style="border-left:3px solid ${day.color || "#3b82f6"}" onmouseenter="state.hoverDay='${date}'" onclick="state.focusDay='${date}'">
+  return `<div class="day ${focused}" data-day="${date}" style="border-left:3px solid ${day.color || "#3b82f6"}" onmouseenter="state.hoverDay='${date}'" onclick="state.focusDay='${date}';render()">
     <div class="day-top"><span>${fmtDay(date)}</span>
       <span class="tools">
         <button class="iconbtn" title="Copy Workout" onclick="openCopy('${date}','workout')">⧉</button>
@@ -1100,12 +1152,30 @@ function saveDay(date) {
 }
 
 async function api(method, url, body) {
+  const headers = {};
+  if (body) headers["Content-Type"] = "application/json";
+  if (state.auth && state.auth.token) {
+    headers["Authorization"] = "Bearer " + state.auth.token;
+  }
   const res = await fetch(url, {
     method,
-    headers: body ? { "Content-Type": "application/json" } : undefined,
+    headers: Object.keys(headers).length ? headers : undefined,
     body: body ? JSON.stringify(body) : undefined
   });
-  if (!res.ok) throw new Error((await res.text()) || String(res.status));
+  if (res.status === 401 && !url.includes("/api/auth/login") && !url.includes("/api/auth/register")) {
+    handleLogout("Your session has expired. Please log in again.");
+    throw new Error("Unauthorized");
+  }
+  if (!res.ok) {
+    let errText = "";
+    try {
+      const errJson = await res.json();
+      errText = errJson.detail || JSON.stringify(errJson);
+    } catch (_) {
+      errText = await res.text();
+    }
+    throw new Error(errText || String(res.status));
+  }
   return res.json();
 }
 async function ensureUser(person, role) {
@@ -1193,6 +1263,7 @@ async function publishDay(date, opts = {}) {
     }
     day.savedWorkoutId = workout.id;
     day.savedFor = person.id;
+    state.athleteWorkouts[date] = workout;
     if (!opts.quiet && day.recurWeeks) {
       const copies = refreshFutureCopies(date);
       for (const copyDate of copies) {
@@ -1203,17 +1274,20 @@ async function publishDay(date, opts = {}) {
     if (!opts.quiet) toast("Saved for " + person.name);
     render();
   } catch (err) {
-    if (!opts.quiet) toast("Save failed");
+    if (!opts.quiet) toast("Save failed: " + (err.message || "error"));
     console.error(err);
   }
 }
 function backToCoach() {
-  state.role = "coach";
+  state.role = (state.auth && state.auth.user && state.auth.user.role) || "coach";
   state.actingAthlete = null;
   state.view = "build";
   state.openWorkout = null;
   state.openSession = null;
   state.navMenu = null;
+  if (state.auth && state.auth.user) {
+    state.serverUserId = state.auth.user.id;
+  }
   render();
 }
 async function openAsAthlete(localId) {
@@ -1221,6 +1295,7 @@ async function openAsAthlete(localId) {
   dismissToast();
   state.navMenu = null;
   state.actingAthlete = person.id;
+  state.athleteId = person.id;
   state.role = "athlete";
   state.view = "mine";
   state.openWorkout = null;
@@ -1243,6 +1318,11 @@ async function openAsAthlete(localId) {
   }
 }
 async function openAthleteWorkout(workoutId) {
+  if (!state.serverUserId) {
+    const person = ATHLETES.find((a) => a.id === state.actingAthlete) || athlete();
+    const user = await ensureUser(person, "student");
+    state.serverUserId = user.id;
+  }
   const workout = await api("GET", "/api/workouts/" + workoutId);
   const session = await api("GET", "/api/sessions/active/" + workoutId + "?user_id=" + state.serverUserId);
   state.openWorkout = workout;
@@ -1265,7 +1345,12 @@ function savedDay(date) {
     return { title: day.title, weekLabel: day.weekLabel, items: day.items, workoutId: day.savedWorkoutId };
   }
   const workout = (state.athleteWorkouts || {})[date];
-  if (!workout) return null;
+  if (!workout) {
+    if (day && (day.items || []).length) {
+      return { title: day.title, weekLabel: day.weekLabel, items: day.items, workoutId: day.savedWorkoutId };
+    }
+    return null;
+  }
   return {
     title: workout.title,
     weekLabel: weekName(date),
@@ -1338,7 +1423,7 @@ function mineView() {
   </section>`;
 }
 async function openAthleteDay(date) {
-  const day = savedDay(date);
+  let day = savedDay(date);
   if (!day) return;
   dismissToast();
   state.athleteOpenDate = date;
@@ -1346,6 +1431,16 @@ async function openAthleteDay(date) {
   if (day.workoutId) {
     try { await openAthleteWorkout(day.workoutId); }
     catch (err) { console.error(err); }
+  } else if (day.items && day.items.length) {
+    try {
+      await publishDay(date, { quiet: true });
+      const refreshed = savedDay(date);
+      if (refreshed && refreshed.workoutId) {
+        await openAthleteWorkout(refreshed.workoutId);
+      }
+    } catch (err) {
+      console.error(err);
+    }
   }
 }
 function athleteOpenPanel() {
@@ -1873,9 +1968,21 @@ function exportData() {
   a.download = "wourkout-export.json";
   a.click();
 }
-function removeUser(id) {
+async function removeUser(id) {
+  const row = state.coaches.concat(state.athletes).find((c) => c.id === id);
+  const serverId = row ? row.serverId : (String(id).startsWith("srv") ? parseInt(String(id).slice(3)) : (String(id).startsWith("u") ? parseInt(String(id).slice(1)) : null));
+  if (serverId) {
+    try {
+      await api("DELETE", "/api/users/" + serverId);
+    } catch (e) {
+      console.warn("Failed to delete user on server:", e);
+    }
+  }
   state.coaches = state.coaches.filter((c) => c.id !== id);
   state.athletes = state.athletes.filter((c) => c.id !== id);
+  const aIdx = ATHLETES.findIndex((a) => a.id === id || (row && a.email === row.email));
+  if (aIdx >= 0) ATHLETES.splice(aIdx, 1);
+  toast("User removed");
   render();
 }
 function editUser(id) {
@@ -2174,17 +2281,56 @@ function renameCalendar(id, name) {
 }
 function goalsView() {
   const rows = state.serverRecords || [];
-  return `<section class="stage light-page"><h1>Goals</h1>
+  const athletesList = ATHLETES;
+  const isCoach = state.role === "coach" || state.role === "admin";
+  return `<section class="stage light-page">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:14px">
+      <h1>Goals & Personal Records</h1>
+      ${isCoach ? `
+        <div style="display:flex;align-items:center;gap:8px">
+          <label style="font-size:12px;font-weight:700;color:#555">Filter athlete:</label>
+          <select class="plain" onchange="filterGoalsAthlete(this.value)">
+            <option value="all" ${state.selectedGoalAthlete === 'all' ? 'selected' : ''}>All Athletes</option>
+            ${athletesList.map(a => `<option value="${a.id}" ${state.selectedGoalAthlete === a.id ? 'selected' : ''}>${esc(a.name)}</option>`).join("")}
+          </select>
+        </div>
+      ` : ""}
+    </div>
     <form class="toolbar" onsubmit="addGoalRecord(); return false;">
-      <input class="plain" placeholder="Lift" data-focus="goal-name" value="${esc(state.toolForm.goalName || "")}" oninput="state.toolForm.goalName=this.value">
-      <input class="plain" placeholder="Kg" data-focus="goal-kg" value="${esc(state.toolForm.goalWeight || "")}" oninput="state.toolForm.goalWeight=this.value">
+      <input class="plain" placeholder="Lift (e.g. Back Squat)" data-focus="goal-name" value="${esc(state.toolForm.goalName || "")}" oninput="state.toolForm.goalName=this.value">
+      <input class="plain" placeholder="Kg (e.g. 180)" data-focus="goal-kg" value="${esc(state.toolForm.goalWeight || "")}" oninput="state.toolForm.goalWeight=this.value">
+      ${isCoach ? `
+        <select class="plain" onchange="state.toolForm.goalAthlete=this.value">
+          <option value="">Assign to Athlete (optional)</option>
+          ${athletesList.map(a => `<option value="${a.id}" ${state.toolForm.goalAthlete === a.id ? 'selected' : ''}>${esc(a.name)}</option>`).join("")}
+        </select>
+      ` : ""}
       <button class="req" type="submit">Add goal</button>
     </form>
-    <div class="grid-cards">${rows.map((r) => `<article class="card">
-      <strong>${esc((r.exercise && r.exercise.name) || "Goal")}</strong>
-      <div class="row"><input class="plain" value="${esc(r.weight)}" oninput="rememberGoal(${r.id}, this.value)" onchange="saveGoalWeight(${r.id})"> kg</div>
-      <div class="hint">${esc(r.notes || "")}</div>
-    </article>`).join("") || `<p class="hint">No goals saved yet.</p>`}</div></section>`;
+    <div class="grid-cards">${rows.map((r) => {
+      const athleteName = r.user ? r.user.name : "Unassigned / Team";
+      return `<article class="card">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start">
+          <strong>${esc((r.exercise && r.exercise.name) || "Goal")}</strong>
+          <button class="icon-a" title="Delete Goal" onclick="deleteGoalRecord(${r.id})">🗑</button>
+        </div>
+        <div class="row" style="margin:8px 0"><input class="plain" value="${esc(r.weight)}" oninput="rememberGoal(${r.id}, this.value)" onchange="saveGoalWeight(${r.id})"> kg</div>
+        <div><span class="goal-assignee-tag ${r.user ? '' : 'team'}">👤 ${esc(athleteName)}</span></div>
+        <div class="hint" style="margin-top:6px">${esc(r.notes || "")}</div>
+      </article>`;
+    }).join("") || `<p class="hint">No goals saved yet.</p>`}</div></section>`;
+}
+async function filterGoalsAthlete(athleteId) {
+  state.selectedGoalAthlete = athleteId;
+  let targetUserId = null;
+  if (athleteId !== "all") {
+    const person = ATHLETES.find(a => a.id === athleteId);
+    if (person) {
+      const u = await ensureUser(person, "student");
+      targetUserId = u.id;
+    }
+  }
+  await loadGoals(targetUserId);
 }
 function rememberGoal(id, value) {
   const rec = state.serverRecords.find((r) => r.id === id);
@@ -2203,9 +2349,15 @@ async function saveGoalWeight(id) {
     console.error(err);
   }
 }
-async function loadGoals() {
+async function loadGoals(userId) {
   try {
-    state.serverRecords = await api("GET", "/api/records");
+    let url = "/api/records";
+    if (userId) {
+      url += "?user_id=" + userId;
+    } else if (state.role === "athlete" && state.serverUserId) {
+      url += "?user_id=" + state.serverUserId;
+    }
+    state.serverRecords = await api("GET", url);
     render();
   } catch (err) { console.error(err); }
 }
@@ -2215,7 +2367,23 @@ async function addGoalRecord() {
   if (!name) { toast("Name the lift"); return; }
   try {
     const exercise = await ensureExercise(name);
-    const rec = await api("POST", "/api/records", { exercise_id: exercise.id, weight: weight || 0, reps: 1, notes: "Goal" });
+    let targetUserId = null;
+    if (state.role === "athlete") {
+      targetUserId = state.serverUserId;
+    } else if (state.toolForm.goalAthlete) {
+      const person = ATHLETES.find(a => a.id === state.toolForm.goalAthlete);
+      if (person) {
+        const u = await ensureUser(person, "student");
+        targetUserId = u.id;
+      }
+    } else if (state.selectedGoalAthlete && state.selectedGoalAthlete !== "all") {
+      const person = ATHLETES.find(a => a.id === state.selectedGoalAthlete);
+      if (person) {
+        const u = await ensureUser(person, "student");
+        targetUserId = u.id;
+      }
+    }
+    const rec = await api("POST", "/api/records", { exercise_id: exercise.id, weight: weight || 0, reps: 1, notes: "Goal", user_id: targetUserId });
     state.serverRecords.unshift(rec);
     state.toolForm.goalName = "";
     state.toolForm.goalWeight = "";
@@ -2223,6 +2391,17 @@ async function addGoalRecord() {
     render();
   } catch (err) {
     toast("Could not save that goal");
+    console.error(err);
+  }
+}
+async function deleteGoalRecord(id) {
+  try {
+    await api("DELETE", "/api/records/" + id);
+    state.serverRecords = state.serverRecords.filter(r => r.id !== id);
+    toast("Goal deleted");
+    render();
+  } catch (err) {
+    toast("Could not delete goal");
     console.error(err);
   }
 }
@@ -2402,13 +2581,13 @@ function modalHtml() {
   }
   if (m.type === "user") {
     const r = m.row;
-    return `<div class="modal-back"><div class="modal"><h3>Edit user</h3><input class="field" value="${esc(r.first)}" oninput="state.modal.row.first=this.value"><input class="field" value="${esc(r.last)}" oninput="state.modal.row.last=this.value" style="margin-top:6px"><input class="field" value="${esc(r.email)}" oninput="state.modal.row.email=this.value" style="margin-top:6px"><button class="full primary" onclick="saveUserEdit()">SAVE</button></div></div>`;
+    return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render();}"><div class="modal"><h3>Edit user</h3><input class="field" value="${esc(r.first)}" oninput="state.modal.row.first=this.value"><input class="field" value="${esc(r.last)}" oninput="state.modal.row.last=this.value" style="margin-top:6px"><input class="field" value="${esc(r.email)}" oninput="state.modal.row.email=this.value" style="margin-top:6px"><button class="full primary" onclick="saveUserEdit()">SAVE</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
   }
   if (m.type === "journal") {
-    return `<div class="modal-back"><div class="modal"><h3>Journal entry</h3><input class="field" placeholder="Title" data-focus="jtitle" oninput="state.modal.title=this.value"><textarea data-focus="jbody" oninput="state.modal.body=this.value"></textarea><button class="full primary" onclick="state.journal.unshift({title:state.modal.title||'Note', body:state.modal.body||'', date: fmtLong('2026-10-14')}); state.feedMode='journal'; state.modal=null; render()">SAVE</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
+    return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render();}"><div class="modal"><h3>Journal entry</h3><input class="field" placeholder="Title" data-focus="jtitle" oninput="state.modal.title=this.value"><textarea data-focus="jbody" oninput="state.modal.body=this.value"></textarea><button class="full primary" onclick="state.journal.unshift({title:state.modal.title||'Note', body:state.modal.body||'', date: fmtLong('2026-10-14')}); state.feedMode='journal'; state.modal=null; render()">SAVE</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
   }
   if (m.type === "adduser") {
-    return `<div class="modal-back"><div class="modal"><h3>Add user</h3><input class="field" placeholder="First" oninput="state.modal.first=this.value"><input class="field" placeholder="Last" oninput="state.modal.last=this.value" style="margin-top:6px"><input class="field" placeholder="Email" oninput="state.modal.email=this.value" style="margin-top:6px"><button class="full primary" onclick="addUserFromModal()">ADD</button></div></div>`;
+    return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render();}"><div class="modal"><h3>Add user</h3><input class="field" placeholder="First" oninput="state.modal.first=this.value"><input class="field" placeholder="Last" oninput="state.modal.last=this.value" style="margin-top:6px"><input class="field" placeholder="Email" oninput="state.modal.email=this.value" style="margin-top:6px"><button class="full primary" onclick="addUserFromModal()">ADD</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
   }
   return "";
 }
@@ -2553,10 +2732,444 @@ window.exportData = exportData;
 window.removeUser = removeUser;
 window.editUser = editUser;
 window.addNamed = addNamed;
+function renderLoginGate() {
+  const mode = state.auth.mode || "login";
+  const errHtml = state.auth.error ? `<div class="auth-error-banner">${esc(state.auth.error)}</div>` : "";
+  const succHtml = state.auth.success ? `<div class="auth-success-banner">${esc(state.auth.success)}</div>` : "";
+  
+  const googleBtn = (mode === "login" || mode === "register") ? `
+    <button type="button" class="google-btn" onclick="handleGoogleLogin()">
+      <svg viewBox="0 0 24 24">
+        <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+        <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+        <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
+        <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
+      </svg>
+      Continue with Google
+    </button>
+    <div class="auth-divider">or continue with email</div>
+  ` : "";
+
+  let content = "";
+  if (mode === "login") {
+    content = `
+      <form class="auth-form" onsubmit="handleLogin(event); return false;">
+        <div class="auth-input-group">
+          <label>Username or Email</label>
+          <input class="auth-input" id="auth-identity" placeholder="coach@wourkout.app" required autofocus autocomplete="username">
+        </div>
+        <div class="auth-input-group">
+          <label>Password</label>
+          <input class="auth-input" id="auth-password" type="password" placeholder="••••••••" required autocomplete="current-password">
+        </div>
+        <button class="auth-submit-btn" type="submit" ${state.auth.loading ? "disabled" : ""}>
+          ${state.auth.loading ? "Signing in..." : "Sign In"}
+        </button>
+        <div class="auth-footer-links">
+          <button type="button" class="auth-link" onclick="setAuthMode('forgot')">Forgot password?</button>
+          <button type="button" class="auth-link" onclick="setAuthMode('register')">Create an account</button>
+        </div>
+      </form>
+    `;
+  } else if (mode === "register") {
+    content = `
+      <form class="auth-form" onsubmit="handleRegister(event); return false;">
+        <div class="auth-input-group">
+          <label>Full Name</label>
+          <input class="auth-input" id="reg-name" placeholder="Alex Morgan" required>
+        </div>
+        <div class="auth-input-group">
+          <label>Username</label>
+          <input class="auth-input" id="reg-username" placeholder="alexm" required autocomplete="username">
+        </div>
+        <div class="auth-input-group">
+          <label>Email Address</label>
+          <input class="auth-input" id="reg-email" type="email" placeholder="alex@example.com" required autocomplete="email">
+        </div>
+        <div class="auth-input-group">
+          <label>Password (min. 6 characters)</label>
+          <input class="auth-input" id="reg-password" type="password" placeholder="••••••••" required minlength="6" autocomplete="new-password">
+        </div>
+        <div class="auth-input-group">
+          <label>Account Role</label>
+          <div class="role-pill-group">
+            <button type="button" class="role-pill ${state.auth.roleChoice === 'athlete' ? 'selected' : ''}" onclick="state.auth.roleChoice='athlete';render()">Athlete</button>
+            <button type="button" class="role-pill ${state.auth.roleChoice === 'coach' ? 'selected' : ''}" onclick="state.auth.roleChoice='coach';render()">Coach</button>
+            <button type="button" class="role-pill ${state.auth.roleChoice === 'admin' ? 'selected' : ''}" onclick="state.auth.roleChoice='admin';render()">Admin</button>
+          </div>
+        </div>
+        <button class="auth-submit-btn" type="submit" ${state.auth.loading ? "disabled" : ""}>
+          ${state.auth.loading ? "Creating Account..." : "Create Account"}
+        </button>
+        <div class="auth-footer-links" style="justify-content:center">
+          <button type="button" class="auth-link" onclick="setAuthMode('login')">Already have an account? Sign In</button>
+        </div>
+      </form>
+    `;
+  } else if (mode === "forgot") {
+    content = `
+      <form class="auth-form" onsubmit="handleForgotPassword(event); return false;">
+        <p style="font-size:13px;color:#aaa;margin-bottom:12px;line-height:1.4">
+          Enter your account email. We will send you a password reset link powered by Supabase Auth.
+        </p>
+        <div class="auth-input-group">
+          <label>Email Address</label>
+          <input class="auth-input" id="forgot-email" type="email" placeholder="your-email@example.com" required autocomplete="email">
+        </div>
+        <button class="auth-submit-btn" type="submit" ${state.auth.loading ? "disabled" : ""}>
+          ${state.auth.loading ? "Sending..." : "Send Reset Link"}
+        </button>
+        <div class="auth-footer-links" style="justify-content:center">
+          <button type="button" class="auth-link" onclick="setAuthMode('login')">Back to Sign In</button>
+        </div>
+      </form>
+    `;
+  } else if (mode === "reset") {
+    content = `
+      <form class="auth-form" onsubmit="handleResetPassword(event); return false;">
+        <p style="font-size:13px;color:#aaa;margin-bottom:12px;line-height:1.4">
+          Enter your new password below to reset your credentials.
+        </p>
+        <div class="auth-input-group">
+          <label>New Password (min. 6 characters)</label>
+          <input class="auth-input" id="new-password" type="password" placeholder="••••••••" required minlength="6" autocomplete="new-password">
+        </div>
+        <div class="auth-input-group">
+          <label>Confirm New Password</label>
+          <input class="auth-input" id="confirm-password" type="password" placeholder="••••••••" required minlength="6" autocomplete="new-password">
+        </div>
+        <button class="auth-submit-btn" type="submit" ${state.auth.loading ? "disabled" : ""}>
+          ${state.auth.loading ? "Resetting..." : "Update Password"}
+        </button>
+        <div class="auth-footer-links" style="justify-content:center">
+          <button type="button" class="auth-link" onclick="setAuthMode('login')">Back to Sign In</button>
+        </div>
+      </form>
+    `;
+  }
+
+  const tabsHtml = (mode === "login" || mode === "register") ? `
+    <div class="auth-tabs">
+      <button type="button" class="auth-tab ${mode === 'login' ? 'active' : ''}" onclick="setAuthMode('login')">Sign In</button>
+      <button type="button" class="auth-tab ${mode === 'register' ? 'active' : ''}" onclick="setAuthMode('register')">Sign Up</button>
+    </div>
+  ` : "";
+
+  return `
+    <div class="auth-gate">
+      <div class="auth-card">
+        <div class="auth-logo">w<span>ourkout</span></div>
+        <div class="auth-sub">Athletic Performance & Training Platform</div>
+        ${tabsHtml}
+        ${errHtml}
+        ${succHtml}
+        ${googleBtn}
+        ${content}
+      </div>
+    </div>
+  `;
+}
+
+function setAuthMode(mode) {
+  state.auth.mode = mode;
+  state.auth.error = "";
+  state.auth.success = "";
+  render();
+}
+
+async function handleLogin(e) {
+  if (e) e.preventDefault();
+  const identity = (document.getElementById("auth-identity")?.value || "").trim();
+  const password = document.getElementById("auth-password")?.value || "";
+  if (!identity || !password) return;
+  state.auth.loading = true;
+  state.auth.error = "";
+  state.auth.success = "";
+  render();
+  try {
+    const data = await api("POST", "/api/auth/login", { identity, password });
+    localStorage.setItem("wourkout_token", data.access_token);
+    state.auth.token = data.access_token;
+    state.auth.user = data.user;
+    state.auth.isAuthenticated = true;
+    state.role = data.user.role || "coach";
+    state.serverUserId = data.user.id;
+    if (state.role === "athlete") {
+      state.view = "mine";
+      state.actingAthlete = data.user.username || "eric";
+      state.athleteId = data.user.username || "eric";
+    } else {
+      state.view = "build";
+    }
+    toast("Welcome back, " + (data.user.name || data.user.username));
+    await loadRoster();
+    await loadExercises();
+    await loadGoals();
+  } catch (err) {
+    state.auth.error = err.message || "Failed to sign in";
+  } finally {
+    state.auth.loading = false;
+    render();
+  }
+}
+
+async function handleRegister(e) {
+  if (e) e.preventDefault();
+  const name = (document.getElementById("reg-name")?.value || "").trim();
+  const username = (document.getElementById("reg-username")?.value || "").trim();
+  const email = (document.getElementById("reg-email")?.value || "").trim();
+  const password = document.getElementById("reg-password")?.value || "";
+  const role = state.auth.roleChoice || "athlete";
+  if (!name || !username || !email || !password) return;
+  state.auth.loading = true;
+  state.auth.error = "";
+  state.auth.success = "";
+  render();
+  try {
+    const data = await api("POST", "/api/auth/register", {
+      name,
+      username,
+      email,
+      password,
+      role,
+      title: role === "coach" ? "Coach" : (role === "admin" ? "Administrator" : "Athlete")
+    });
+    localStorage.setItem("wourkout_token", data.access_token);
+    state.auth.token = data.access_token;
+    state.auth.user = data.user;
+    state.auth.isAuthenticated = true;
+    state.role = data.user.role || role;
+    state.serverUserId = data.user.id;
+    if (state.role === "athlete") {
+      state.view = "mine";
+      state.actingAthlete = data.user.username || "eric";
+      state.athleteId = data.user.username || "eric";
+    } else {
+      state.view = "build";
+    }
+    toast("Account created! Welcome, " + (data.user.name || data.user.username));
+    await loadRoster();
+    await loadExercises();
+    await loadGoals();
+  } catch (err) {
+    state.auth.error = err.message || "Registration failed";
+  } finally {
+    state.auth.loading = false;
+    render();
+  }
+}
+
+async function handleGoogleLogin() {
+  state.auth.error = "";
+  if (window.supabaseClient) {
+    try {
+      const { error } = await window.supabaseClient.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: window.location.origin + window.location.pathname
+        }
+      });
+      if (error) throw error;
+    } catch (err) {
+      state.auth.error = err.message || "Google sign in error";
+      render();
+    }
+  } else {
+    state.auth.error = "Google Auth is being configured with Supabase credentials. You can sign in using email/password or create an account.";
+    render();
+  }
+}
+
+async function syncSupabaseSession(accessToken) {
+  state.auth.loading = true;
+  state.auth.error = "";
+  render();
+  try {
+    const data = await api("POST", "/api/auth/sync-supabase", {
+      access_token: accessToken,
+      role: state.auth.roleChoice || "athlete"
+    });
+    localStorage.setItem("wourkout_token", data.access_token);
+    state.auth.token = data.access_token;
+    state.auth.user = data.user;
+    state.auth.isAuthenticated = true;
+    state.role = data.user.role || "athlete";
+    state.serverUserId = data.user.id;
+    if (state.role === "athlete") {
+      state.view = "mine";
+      state.actingAthlete = data.user.username || "eric";
+      state.athleteId = data.user.username || "eric";
+    } else {
+      state.view = "build";
+    }
+    toast("Welcome, " + (data.user.name || data.user.username));
+    await loadRoster();
+    await loadExercises();
+    await loadGoals();
+  } catch (err) {
+    state.auth.error = err.message || "Failed to sync with Supabase session";
+  } finally {
+    state.auth.loading = false;
+    render();
+  }
+}
+
+async function handleForgotPassword(e) {
+  if (e) e.preventDefault();
+  const email = (document.getElementById("forgot-email")?.value || "").trim();
+  if (!email) return;
+  state.auth.loading = true;
+  state.auth.error = "";
+  state.auth.success = "";
+  render();
+  try {
+    if (window.supabaseClient) {
+      const { error } = await window.supabaseClient.auth.resetPasswordForEmail(email, {
+        redirectTo: window.location.origin + window.location.pathname
+      });
+      if (error) throw error;
+    } else {
+      await api("POST", "/api/auth/reset-password-request", { email });
+    }
+    state.auth.success = "Password reset instructions sent to " + email + ". Check your inbox!";
+  } catch (err) {
+    state.auth.error = err.message || "Password reset request failed";
+  } finally {
+    state.auth.loading = false;
+    render();
+  }
+}
+
+async function handleResetPassword(e) {
+  if (e) e.preventDefault();
+  const pwd = document.getElementById("new-password")?.value || "";
+  const confirm = document.getElementById("confirm-password")?.value || "";
+  if (!pwd || !confirm) return;
+  if (pwd !== confirm) {
+    state.auth.error = "Passwords do not match";
+    render();
+    return;
+  }
+  state.auth.loading = true;
+  state.auth.error = "";
+  state.auth.success = "";
+  render();
+  try {
+    if (window.supabaseClient && window.supabaseClient.auth) {
+      const { error } = await window.supabaseClient.auth.updateUser({ password: pwd });
+      if (error) throw error;
+    } else {
+      await api("POST", "/api/auth/reset-password", {
+        token: state.auth.resetToken || "mock-token",
+        new_password: pwd
+      });
+    }
+    state.auth.success = "Password updated successfully! Please sign in.";
+    state.auth.mode = "login";
+  } catch (err) {
+    state.auth.error = err.message || "Failed to update password";
+  } finally {
+    state.auth.loading = false;
+    render();
+  }
+}
+
+function handleLogout(reason) {
+  localStorage.removeItem("wourkout_token");
+  state.auth.token = null;
+  state.auth.user = null;
+  state.auth.isAuthenticated = false;
+  state.auth.mode = "login";
+  state.auth.error = reason || "";
+  state.auth.success = "";
+  state.serverUserId = null;
+  if (window.supabaseClient) {
+    try { window.supabaseClient.auth.signOut(); } catch (_) {}
+  }
+  if (reason) toast(reason);
+  render();
+}
+
+async function initAuth() {
+  try {
+    const config = await api("GET", "/api/auth/config").catch(() => null);
+    if (config) {
+      state.auth.config = config;
+      if (window.supabase && config.supabase_url && config.supabase_anon_key) {
+        window.supabaseClient = window.supabase.createClient(config.supabase_url, config.supabase_anon_key);
+      }
+    }
+  } catch (e) {
+    console.warn("Could not load auth config:", e);
+  }
+
+  // Handle URL hash fragments (Supabase OAuth callbacks & Password Reset recovery)
+  if (window.location.hash) {
+    const hashParams = new URLSearchParams(window.location.hash.slice(1));
+    const accessToken = hashParams.get("access_token");
+    const type = hashParams.get("type");
+    if (type === "recovery" && accessToken) {
+      state.auth.mode = "reset";
+      state.auth.resetToken = accessToken;
+      history.replaceState(null, null, window.location.pathname);
+      render();
+      return;
+    } else if (accessToken) {
+      history.replaceState(null, null, window.location.pathname);
+      await syncSupabaseSession(accessToken);
+      return;
+    }
+  }
+
+  // Check stored JWT token
+  const token = localStorage.getItem("wourkout_token");
+  if (token) {
+    state.auth.token = token;
+    try {
+      const me = await api("GET", "/api/auth/me");
+      state.auth.user = me;
+      state.auth.isAuthenticated = true;
+      state.role = me.role || "coach";
+      state.serverUserId = me.id;
+      if (state.role === "athlete") {
+        state.view = "mine";
+        state.actingAthlete = me.username || "eric";
+        state.athleteId = me.username || "eric";
+      }
+      await loadRoster();
+      await loadExercises();
+      await loadGoals();
+    } catch (err) {
+      console.warn("Session expired or invalid:", err);
+      localStorage.removeItem("wourkout_token");
+      state.auth.token = null;
+      state.auth.user = null;
+      state.auth.isAuthenticated = false;
+    }
+  }
+  render();
+}
+
 window.saveInfo = saveInfo;
 window.onFab = onFab;
 window.addItem = addItem;
 window.snapshot = snapshot;
 window.toast = toast;
+window.renderLoginGate = renderLoginGate;
+window.setAuthMode = setAuthMode;
+window.handleLogin = handleLogin;
+window.handleRegister = handleRegister;
+window.handleGoogleLogin = handleGoogleLogin;
+window.handleForgotPassword = handleForgotPassword;
+window.handleResetPassword = handleResetPassword;
+window.handleLogout = handleLogout;
+window.deleteGoalRecord = deleteGoalRecord;
+window.filterGoalsAthlete = filterGoalsAthlete;
 
-render();
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", () => {
+    initAuth();
+  });
+} else {
+  initAuth();
+}
