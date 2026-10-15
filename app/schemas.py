@@ -273,8 +273,15 @@ class UserRegister(BaseModel):
     supabase_uid: Optional[str] = None
 
 class UserLogin(BaseModel):
-    email_or_username: str
+    email_or_username: Optional[str] = None
+    identity: Optional[str] = None
+    username: Optional[str] = None
+    email: Optional[str] = None
     password: str
+
+    @property
+    def identifier(self) -> str:
+        return (self.email_or_username or self.identity or self.username or self.email or "").strip()
 
 class Token(BaseModel):
     access_token: str

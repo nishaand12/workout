@@ -357,7 +357,10 @@ def register_user(user_in: UserRegister, db: Session = Depends(get_db)):
 
 @app.post("/api/auth/login", response_model=Token)
 def login_user(login_in: UserLogin, db: Session = Depends(get_db)):
-    user = crud.get_user_by_email_or_username(db, login_in.email_or_username)
+    identity = login_in.identifier
+    if not identity:
+        raise HTTPException(status_code=400, detail="Username or email is required.")
+    user = crud.get_user_by_email_or_username(db, identity)
     if not user or not crud.verify_password(login_in.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid username/email or password.")
     if not user.is_active:

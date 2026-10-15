@@ -286,12 +286,34 @@ class TrainerFlowTests(unittest.TestCase):
         })
         self.assertEqual(confirm_res.status_code, 200)
 
-        # Verify login with new password
+        # Verify login with new password via email_or_username
         login_res = self.client.post("/api/auth/login", json={
             "email_or_username": email,
             "password": "NewPassword123!"
         })
         self.assertEqual(login_res.status_code, 200)
+
+        # Verify login using 'identity' field (as sent by frontend)
+        login_id_res = self.client.post("/api/auth/login", json={
+            "identity": email,
+            "password": "NewPassword123!"
+        })
+        self.assertEqual(login_id_res.status_code, 200)
+
+        # Verify login using 'username' field
+        username = f"reset_{self.stamp[:8]}"
+        login_user_res = self.client.post("/api/auth/login", json={
+            "username": username,
+            "password": "NewPassword123!"
+        })
+        self.assertEqual(login_user_res.status_code, 200)
+
+        # Verify login failure with bad password
+        bad_pw_res = self.client.post("/api/auth/login", json={
+            "identity": email,
+            "password": "WrongPassword!"
+        })
+        self.assertEqual(bad_pw_res.status_code, 401)
 
     def test_active_session_comma_separated_parsing(self):
         coach = self._user(f"Coach Parse {self.stamp}", role="coach")

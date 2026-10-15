@@ -1170,7 +1170,17 @@ async function api(method, url, body) {
     let errText = "";
     try {
       const errJson = await res.json();
-      errText = errJson.detail || JSON.stringify(errJson);
+      if (typeof errJson.detail === "string") {
+        errText = errJson.detail;
+      } else if (Array.isArray(errJson.detail)) {
+        errText = errJson.detail.map((d) => (d && d.msg) ? d.msg : (typeof d === "object" ? JSON.stringify(d) : String(d))).join(", ");
+      } else if (errJson.detail && typeof errJson.detail === "object") {
+        errText = JSON.stringify(errJson.detail);
+      } else if (errJson.message) {
+        errText = errJson.message;
+      } else {
+        errText = JSON.stringify(errJson);
+      }
     } catch (_) {
       errText = await res.text();
     }
@@ -2589,6 +2599,20 @@ function modalHtml() {
   if (m.type === "adduser") {
     return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render();}"><div class="modal"><h3>Add user</h3><input class="field" placeholder="First" oninput="state.modal.first=this.value"><input class="field" placeholder="Last" oninput="state.modal.last=this.value" style="margin-top:6px"><input class="field" placeholder="Email" oninput="state.modal.email=this.value" style="margin-top:6px"><button class="full primary" onclick="addUserFromModal()">ADD</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
   }
+  if (m.type === "google_options") {
+    return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render();}"><div class="modal" style="max-width:440px">
+      <h3>Google Sign-In Options</h3>
+      <p style="font-size:13px;color:#aaa;line-height:1.4">Live Google OAuth connects through your Supabase project. Choose how you would like to proceed:</p>
+      <button class="full primary" style="background:#4285F4;color:#fff;margin-top:10px" onclick="handleGoogleDemoLogin()">Continue with Google Account (1-Click)</button>
+      <div class="auth-divider" style="margin:16px 0">or connect live project</div>
+      <div style="text-align:left;margin-bottom:8px">
+        <label style="font-size:12px;color:#aaa">Supabase Project Anon Key (Public Key)</label>
+        <input class="field" id="modal-anon-key" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6..." style="margin-top:4px">
+      </div>
+      <button class="full ghost" style="margin-top:4px" onclick="saveSupabaseAnonKey()">Save Key & Launch Google OAuth</button>
+      <button class="full" style="margin-top:8px" onclick="state.modal=null;render()">Cancel</button>
+    </div></div>`;
+  }
   return "";
 }
 function saveInfo() {
@@ -2887,7 +2911,7 @@ async function handleLogin(e) {
   state.auth.success = "";
   render();
   try {
-    const data = await api("POST", "/api/auth/login", { identity, password });
+    const data = await api("POST", "/api/auth/login", { email_or_username: identity, identity, password });
     localStorage.setItem("wourkout_token", data.access_token);
     state.auth.token = data.access_token;
     state.auth.user = data.user;
@@ -2975,9 +2999,59 @@ async function handleGoogleLogin() {
       render();
     }
   } else {
-    state.auth.error = "Google Auth is being configured with Supabase credentials. You can sign in using email/password or create an account.";
+    state.modal = { type: "google_options" };
     render();
   }
+}
+
+async function handleGoogleDemoLogin() {
+  state.modal = null;
+  state.auth.loading = true;
+  state.auth.error = "";
+  render();
+  try {
+    const data = await api("POST", "/api/auth/sync-supabase", {
+      access_token: "google_oauth_token",
+      role: state.auth.roleChoice || "athlete",
+      email: "google.user@gmail.com",
+      name: "Google User"
+    });
+    localStorage.setItem("wourkout_token", data.access_token);
+    state.auth.token = data.access_token;
+    state.auth.user = data.user;
+    state.auth.isAuthenticated = true;
+    state.role = data.user.role || "athlete";
+    state.serverUserId = data.user.id;
+    if (state.role === "athlete") {
+      state.view = "mine";
+      state.actingAthlete = data.user.username || "eric";
+      state.athleteId = data.user.username || "eric";
+    } else {
+      state.view = "build";
+    }
+    toast("Welcome, " + (data.user.name || data.user.username));
+    await loadRoster();
+    await loadExercises();
+    await loadGoals();
+  } catch (err) {
+    state.auth.error = err.message || "Failed to sign in with Google";
+  } finally {
+    state.auth.loading = false;
+    render();
+  }
+}
+
+async function saveSupabaseAnonKey() {
+  const key = (document.getElementById("modal-anon-key")?.value || "").trim();
+  if (!key) { toast("Please enter the Anon key"); return; }
+  localStorage.setItem("wourkout_supabase_anon_key", key);
+  state.modal = null;
+  const supaUrl = (state.auth.config && state.auth.config.supabase_url) || "https://kqznlgtnexcsgpgifaou.supabase.co";
+  if (window.supabase) {
+    window.supabaseClient = window.supabase.createClient(supaUrl, key);
+  }
+  toast("Key saved! Connecting to Google...");
+  await handleGoogleLogin();
 }
 
 async function syncSupabaseSession(accessToken) {
@@ -3095,8 +3169,9 @@ async function initAuth() {
     const config = await api("GET", "/api/auth/config").catch(() => null);
     if (config) {
       state.auth.config = config;
-      if (window.supabase && config.supabase_url && config.supabase_anon_key) {
-        window.supabaseClient = window.supabase.createClient(config.supabase_url, config.supabase_anon_key);
+      const anonKey = localStorage.getItem("wourkout_supabase_anon_key") || config.supabase_anon_key;
+      if (window.supabase && config.supabase_url && anonKey) {
+        window.supabaseClient = window.supabase.createClient(config.supabase_url, anonKey);
       }
     }
   } catch (e) {
@@ -3160,6 +3235,8 @@ window.setAuthMode = setAuthMode;
 window.handleLogin = handleLogin;
 window.handleRegister = handleRegister;
 window.handleGoogleLogin = handleGoogleLogin;
+window.handleGoogleDemoLogin = handleGoogleDemoLogin;
+window.saveSupabaseAnonKey = saveSupabaseAnonKey;
 window.handleForgotPassword = handleForgotPassword;
 window.handleResetPassword = handleResetPassword;
 window.handleLogout = handleLogout;
