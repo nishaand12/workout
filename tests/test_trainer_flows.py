@@ -342,6 +342,213 @@ class TrainerFlowTests(unittest.TestCase):
         session = session_res.json()
         self.assertEqual(session["user_id"], client["id"])
 
+    def _ensure_demo_gym(self):
+        from app.database import SessionLocal
+        from app import crud
+        db = SessionLocal()
+        try:
+            crud.seed_default_users(db)
+        finally:
+            db.close()
+
+    def _login(self, email, password):
+        self._ensure_demo_gym()
+        res = self.client.post("/api/auth/login", json={"email_or_username": email, "password": password})
+        self.assertEqual(res.status_code, 200, res.text)
+        token = res.json()["access_token"]
+        return token, res.json()["user"]
+
+    def _auth(self, token):
+        return {"Authorization": f"Bearer {token}"}
+
+    def test_join_codes_place_coach_and_athlete(self):
+        admin_token, admin = self._login("admin@wourkout.app", "AdminPassword123!")
+        self.assertIn("admin", admin["roles"])
+        self.assertFalse(admin["needs_onboarding"])
+        self.assertEqual(admin["gym_name"], "wourkout")
+
+        gym_code = self.client.post("/api/join-codes", json={"kind": "gym"}, headers=self._auth(admin_token))
+        self.assertEqual(gym_code.status_code, 201, gym_code.text)
+        self.assertEqual(gym_code.json()["kind"], "gym")
+
+        rejected = self.client.post("/api/join-codes", json={"kind": "admin"}, headers=self._auth(admin_token))
+        self.assertEqual(rejected.status_code, 400, rejected.text)
+
+        reg = self.client.post("/api/auth/register", json={
+            "name": "New Coach",
+            "email": f"new.coach.{self.stamp}@example.com",
+            "username": f"nc_{self.stamp[:8]}",
+            "password": "Password123!",
+            "role": "athlete",
+        })
+        self.assertEqual(reg.status_code, 201, reg.text)
+        self.assertTrue(reg.json()["user"]["needs_onboarding"])
+        coach_token = reg.json()["access_token"]
+        redeemed = self.client.post("/api/join-codes/redeem", json={"code": gym_code.json()["code"]}, headers=self._auth(coach_token))
+        self.assertEqual(redeemed.status_code, 200, redeemed.text)
+        coach = redeemed.json()
+        self.assertEqual(coach["role"], "coach")
+        self.assertIn("coach", coach["roles"])
+        self.assertNotIn("admin", coach["roles"])
+        self.assertEqual(coach["gym_id"], admin["gym_id"])
+        self.assertFalse(coach["needs_onboarding"])
+
+        team = self.client.post("/api/groups", json={"name": f"Falcons {self.stamp}"}, headers=self._auth(coach_token))
+        self.assertEqual(team.status_code, 201, team.text)
+        self.assertEqual(team.json()["coach_id"], coach["id"])
+        team_code = self.client.post(
+            "/api/join-codes",
+            json={"kind": "team", "team_id": team.json()["id"]},
+            headers=self._auth(coach_token),
+        )
+        self.assertEqual(team_code.status_code, 201, team_code.text)
+
+        # A coach cannot mint a gym code.
+        gym_denied = self.client.post("/api/join-codes", json={"kind": "gym"}, headers=self._auth(coach_token))
+        self.assertEqual(gym_denied.status_code, 403, gym_denied.text)
+
+        athlete_reg = self.client.post("/api/auth/register", json={
+            "name": "New Athlete",
+            "email": f"new.athlete.{self.stamp}@example.com",
+            "username": f"na_{self.stamp[:8]}",
+            "password": "Password123!",
+            "role": "coach",
+        })
+        athlete_token = athlete_reg.json()["access_token"]
+        joined = self.client.post(
+            "/api/join-codes/redeem",
+            json={"code": team_code.json()["code"].lower()},
+            headers=self._auth(athlete_token),
+        )
+        self.assertEqual(joined.status_code, 200, joined.text)
+        athlete = joined.json()
+        self.assertEqual(athlete["role"], "athlete")
+        self.assertEqual(athlete["roles"], ["athlete"])
+        self.assertEqual(athlete["team_id"], team.json()["id"])
+        self.assertEqual(athlete["gym_id"], admin["gym_id"])
+        self.assertFalse(athlete["needs_onboarding"])
+
+        # Second team is refused.
+        other = self.client.post("/api/groups", json={"name": f"Other {self.stamp}"}, headers=self._auth(coach_token))
+        second = self.client.post(f"/api/groups/{other.json()['id']}/members/{athlete['id']}", headers=self._auth(coach_token))
+        self.assertEqual(second.status_code, 400, second.text)
+
+    def test_coach_scope_and_blocked_removal(self):
+        admin_token, admin = self._login("admin@wourkout.app", "AdminPassword123!")
+        coach_token, coach = self._login("coach@wourkout.app", "CoachPassword123!")
+        alex_token, alex = self._login("alex.rivera@wourkout.app", "CoachPassword123!")
+
+        coach_users = self.client.get("/api/users", headers=self._auth(coach_token)).json()
+        coach_emails = {row["email"] for row in coach_users}
+        self.assertIn("athlete@wourkout.app", coach_emails)
+        self.assertNotIn("maya.lin@wourkout.app", coach_emails)
+        self.assertNotIn("alex.rivera@wourkout.app", coach_emails)
+
+        alex_users = self.client.get("/api/users", headers=self._auth(alex_token)).json()
+        alex_emails = {row["email"] for row in alex_users}
+        self.assertIn("maya.lin@wourkout.app", alex_emails)
+        self.assertNotIn("athlete@wourkout.app", alex_emails)
+
+        # Head coach cannot assign to Alex's athlete.
+        maya = next(row for row in alex_users if row["email"] == "maya.lin@wourkout.app")
+        workout = self._workout(f"Secret {self.stamp}", f"Secret {self.stamp}", "2026-10-20")
+        denied = self.client.post("/api/assignments", json={
+            "workout_id": workout["id"],
+            "user_id": maya["id"],
+            "scheduled_date": "2026-10-20",
+        }, headers=self._auth(coach_token))
+        self.assertEqual(denied.status_code, 403, denied.text)
+
+        # Removing Head Coach is blocked while Varsity still exists.
+        blocked = self.client.delete(f"/api/gym/coaches/{coach['id']}", headers=self._auth(admin_token))
+        self.assertEqual(blocked.status_code, 409, blocked.text)
+        self.assertIn("team", blocked.json()["detail"].lower())
+
+        # A coach with no team can be removed. One who still has a team cannot,
+        # until the admin moves that team or deletes its athletes and the team.
+        created = self.client.post("/api/gym/coaches", json={
+            "name": "Temp Coach",
+            "email": f"temp.coach.{self.stamp}@example.com",
+        }, headers=self._auth(admin_token))
+        self.assertEqual(created.status_code, 201, created.text)
+        temp = created.json()["user"]
+        temp_token, _ = self._login(temp["email"], created.json()["temporary_password"])
+        temp_team = self.client.post("/api/groups", json={"name": f"Temp {self.stamp}"}, headers=self._auth(temp_token))
+        self.assertEqual(temp_team.status_code, 201, temp_team.text)
+        added = self.client.post("/api/gym/athletes", json={
+            "name": "Temp Athlete",
+            "email": f"temp.athlete.{self.stamp}@example.com",
+            "team_id": temp_team.json()["id"],
+        }, headers=self._auth(temp_token))
+        self.assertEqual(added.status_code, 201, added.text)
+        still = self.client.delete(f"/api/gym/coaches/{temp['id']}", headers=self._auth(admin_token))
+        self.assertEqual(still.status_code, 409, still.text)
+
+        moved = self.client.post(f"/api/gym/teams/{temp_team.json()['id']}/move", json={"coach_id": alex["id"]}, headers=self._auth(admin_token))
+        self.assertEqual(moved.status_code, 200, moved.text)
+        self.assertEqual(moved.json()["coach_id"], alex["id"])
+        gone = self.client.delete(f"/api/gym/coaches/{temp['id']}", headers=self._auth(admin_token))
+        self.assertEqual(gone.status_code, 200, gone.text)
+
+        # Alex now leads the moved team, so removing Alex is blocked again.
+        alex_blocked = self.client.delete(f"/api/gym/coaches/{alex['id']}", headers=self._auth(admin_token))
+        self.assertEqual(alex_blocked.status_code, 409, alex_blocked.text)
+
+    def test_athlete_sees_only_own_schedule_and_can_note_coach(self):
+        athlete_token, athlete = self._login("athlete@wourkout.app", "AthletePassword123!")
+        self.assertEqual(athlete["roles"], ["athlete"])
+        self.assertEqual(athlete["team_name"], "Varsity")
+        schedule = self.client.get("/api/my/schedule", headers=self._auth(athlete_token))
+        self.assertEqual(schedule.status_code, 200, schedule.text)
+        self.assertTrue(any(row["title"] == "Lower Strength" for row in schedule.json()))
+        workout_id = next(row["workout_id"] for row in schedule.json() if row["title"] == "Lower Strength")
+
+        noted = self.client.post("/api/my/note", json={"workout_id": workout_id, "note": "Felt heavy on the last set"}, headers=self._auth(athlete_token))
+        self.assertEqual(noted.status_code, 200, noted.text)
+        self.assertEqual(noted.json()["athlete_note"], "Felt heavy on the last set")
+
+        coach_token, coach = self._login("coach@wourkout.app", "CoachPassword123!")
+        report = self.client.get("/api/coach/compliance", params={"date": "2026-10-15"}, headers=self._auth(coach_token))
+        self.assertEqual(report.status_code, 200, report.text)
+        ids = {row["user_id"] for row in report.json()["athletes"]}
+        self.assertIn(athlete["id"], ids)
+        maya = self._login("alex.rivera@wourkout.app", "CoachPassword123!")[1]
+        # Maya is not on this coach's team, so she is absent even if she had a workout today.
+        self.assertNotIn(maya["id"], ids)
+
+        hidden = self.client.get("/api/my/schedule", headers=self._auth(coach_token))
+        self.assertEqual(hidden.status_code, 403, hidden.text)
+        tools = self.client.get("/api/gym/context", headers=self._auth(athlete_token))
+        self.assertEqual(tools.status_code, 403, tools.text)
+        users = self.client.get("/api/users", headers=self._auth(athlete_token)).json()
+        self.assertEqual([row["id"] for row in users], [athlete["id"]])
+
+        # Assign a private workout to Maya and prove the varsity athlete cannot open it.
+        alex_token, alex = self._login("alex.rivera@wourkout.app", "CoachPassword123!")
+        maya_row = next(row for row in self.client.get("/api/users", headers=self._auth(alex_token)).json() if row["email"] == "maya.lin@wourkout.app")
+        assigned = self.client.post("/api/coach/assign", json={
+            "athlete_id": maya_row["id"],
+            "title": f"Speed day {self.stamp}",
+            "scheduled_date": "2026-10-16",
+            "exercise_name": "10 yard sprint",
+        }, headers=self._auth(alex_token))
+        self.assertEqual(assigned.status_code, 201, assigned.text)
+        stolen = self.client.get(f"/api/workouts/{assigned.json()['workout_id']}", headers=self._auth(athlete_token))
+        self.assertEqual(stolen.status_code, 403, stolen.text)
+        note_denied = self.client.post("/api/my/note", json={"workout_id": assigned.json()["workout_id"], "note": "nope"}, headers=self._auth(athlete_token))
+        self.assertEqual(note_denied.status_code, 403, note_denied.text)
+
+        # Head coach assigns to their own athlete.
+        own = self.client.post("/api/coach/assign", json={
+            "athlete_id": athlete["id"],
+            "title": f"Upper {self.stamp}",
+            "scheduled_date": "2026-10-16",
+        }, headers=self._auth(coach_token))
+        self.assertEqual(own.status_code, 201, own.text)
+        again = self.client.get("/api/my/schedule", headers=self._auth(athlete_token)).json()
+        self.assertTrue(any(row["title"] == f"Upper {self.stamp}" for row in again))
+        self.assertTrue(all(row["title"] != f"Speed day {self.stamp}" for row in again))
+
 
 if __name__ == "__main__":
     unittest.main()

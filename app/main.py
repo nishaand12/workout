@@ -14,6 +14,7 @@ from sqlalchemy import inspect, text
 from app.config import settings
 from app.database import Base, engine, get_db, SessionLocal
 from app.models import Workout, Exercise
+from app import access
 from app.schemas import (
     ExerciseResponse, ExerciseCreate, ExerciseUpdate,
     WorkoutResponse, WorkoutDetailResponse, WorkoutCreate, WorkoutUpdate,
@@ -27,7 +28,10 @@ from app.schemas import (
     WorkoutAssignmentResponse, WorkoutAssignmentCreate, ProgramAssignmentCreate,
     CoachComplianceReport,
     AuthConfigResponse, UserRegister, UserLogin, Token,
-    PasswordResetRequest, PasswordResetConfirm, SupabaseAuthSync
+    PasswordResetRequest, PasswordResetConfirm, SupabaseAuthSync,
+    ViewSwitch, JoinCodeCreate, JoinCodeRedeem, JoinCodeResponse,
+    GymContext, GymMemberCreate, GymMemberCreated, MoveTeamRequest,
+    CoachAssignRequest, AthleteNoteRequest, ScheduleItem
 )
 from app import crud
 
@@ -49,6 +53,34 @@ def ensure_schema_migrations():
                     conn.execute(text("ALTER TABLE users ADD COLUMN username VARCHAR(100)"))
                 if "is_active" not in cols:
                     conn.execute(text("ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT TRUE"))
+                if "is_admin" not in cols:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN is_admin BOOLEAN DEFAULT 0"))
+                if "is_coach" not in cols:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN is_coach BOOLEAN DEFAULT 0"))
+                if "is_athlete" not in cols:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN is_athlete BOOLEAN DEFAULT 0"))
+                if "gym_id" not in cols:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN gym_id INTEGER"))
+                if "team_id" not in cols:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN team_id INTEGER"))
+                conn.execute(text("UPDATE users SET is_admin = COALESCE(is_admin, 0)"))
+                conn.execute(text("UPDATE users SET is_coach = COALESCE(is_coach, 0)"))
+                conn.execute(text("UPDATE users SET is_athlete = COALESCE(is_athlete, 0)"))
+
+            if "groups" in tables:
+                gcols = [c["name"] for c in inspector.get_columns("groups")]
+                if "gym_id" not in gcols:
+                    conn.execute(text("ALTER TABLE groups ADD COLUMN gym_id INTEGER"))
+
+            if "workouts" in tables:
+                wcols = [c["name"] for c in inspector.get_columns("workouts")]
+                if "gym_id" not in wcols:
+                    conn.execute(text("ALTER TABLE workouts ADD COLUMN gym_id INTEGER"))
+
+            if "workout_sessions" in tables:
+                scols = [c["name"] for c in inspector.get_columns("workout_sessions")]
+                if "athlete_note" not in scols:
+                    conn.execute(text("ALTER TABLE workout_sessions ADD COLUMN athlete_note TEXT DEFAULT ''"))
 
             if "personal_records" in tables:
                 cols = [c["name"] for c in inspector.get_columns("personal_records")]
@@ -128,14 +160,20 @@ def require_auth(current_user: Optional[crud.User] = Depends(get_current_user)) 
 
 def require_role(allowed_roles: List[str]):
     def role_checker(current_user: crud.User = Depends(require_auth)):
-        role = "athlete" if current_user.role == "student" else current_user.role
-        if role not in allowed_roles:
+        held = set(current_user.roles or [])
+        if current_user.role == "student":
+            held.add("athlete")
+        if not held.intersection(allowed_roles):
             raise HTTPException(
                 status_code=403,
-                detail=f"Access denied: role '{role}' lacks required permissions."
+                detail="Access denied: this account lacks the required role."
             )
         return current_user
     return role_checker
+
+def _staff(user: crud.User) -> bool:
+    roles = set(user.roles or [])
+    return "coach" in roles or "admin" in roles
 
 # Enable CORS for multi-device access over Tailnet
 app.add_middleware(
@@ -183,20 +221,60 @@ def delete_exercise(exercise_id: int, db: Session = Depends(get_db)):
     return {"message": "Exercise deleted"}
 
 # Workout Endpoints
+def _workout_visible(db: Session, viewer: Optional[crud.User], workout) -> bool:
+    if viewer is None:
+        return True
+    if not viewer.gym_id or workout.gym_id != viewer.gym_id:
+        return False
+    if not _staff(viewer):
+        return crud.athlete_can_read_workout(db, viewer, workout.id)
+    if workout.created_by_coach_id == viewer.id:
+        return True
+    ids = access.athlete_ids_for(db, viewer) or [-1]
+    return db.query(crud.WorkoutAssignment).filter(
+        crud.WorkoutAssignment.workout_id == workout.id,
+        crud.WorkoutAssignment.user_id.in_(ids),
+    ).first() is not None
+
 @app.get("/api/workouts", response_model=List[WorkoutResponse])
-def list_workouts(program: Optional[str] = Query(None), db: Session = Depends(get_db)):
-    return crud.get_workouts(db, program=program)
+def list_workouts(
+    program: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    viewer: Optional[crud.User] = Depends(get_current_user),
+):
+    rows = crud.get_workouts(db, program=program)
+    if viewer is None:
+        return rows
+    return [w for w in rows if _workout_visible(db, viewer, w)]
 
 @app.get("/api/workouts/{workout_id}", response_model=WorkoutDetailResponse)
-def get_workout(workout_id: int, db: Session = Depends(get_db)):
+def get_workout(
+    workout_id: int,
+    db: Session = Depends(get_db),
+    viewer: Optional[crud.User] = Depends(get_current_user),
+):
     w = crud.get_workout(db, workout_id)
     if not w:
         raise HTTPException(status_code=404, detail="Workout not found")
+    if viewer is not None and not _workout_visible(db, viewer, w):
+        raise HTTPException(status_code=403, detail="That workout is not visible to you.")
     return w
 
 @app.post("/api/workouts", response_model=WorkoutDetailResponse, status_code=status.HTTP_201_CREATED)
-def create_workout(workout_in: WorkoutCreate, db: Session = Depends(get_db)):
-    return crud.create_workout(db, workout_in)
+def create_workout(
+    workout_in: WorkoutCreate,
+    db: Session = Depends(get_db),
+    viewer: Optional[crud.User] = Depends(get_current_user),
+):
+    if viewer is not None and not _staff(viewer):
+        raise HTTPException(status_code=403, detail="Athlete accounts do not have coach tools.")
+    workout = crud.create_workout(db, workout_in)
+    if viewer is not None and viewer.gym_id:
+        workout.gym_id = viewer.gym_id
+        workout.created_by_coach_id = viewer.id
+        db.commit()
+        db.refresh(workout)
+    return workout
 
 @app.put("/api/workouts/{workout_id}", response_model=WorkoutDetailResponse)
 def update_workout(workout_id: int, workout_in: WorkoutUpdate, db: Session = Depends(get_db)):
@@ -256,7 +334,20 @@ def save_program_template(req: SaveProgramTemplateRequest, db: Session = Depends
 
 # Workout Session & Logging Endpoints
 @app.get("/api/sessions/active/{workout_id}", response_model=WorkoutSessionDetailResponse)
-def get_active_session(workout_id: int, user_id: Optional[int] = Query(None), db: Session = Depends(get_db)):
+def get_active_session(
+    workout_id: int,
+    user_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    viewer: Optional[crud.User] = Depends(get_current_user),
+):
+    if viewer is not None and not _staff(viewer):
+        if user_id and user_id != viewer.id:
+            raise HTTPException(status_code=403, detail="You can only open your own workout.")
+        if not crud.athlete_can_read_workout(db, viewer, workout_id):
+            raise HTTPException(status_code=403, detail="That workout is not on your schedule.")
+        user_id = viewer.id
+    elif viewer is not None and user_id and user_id not in access.athlete_ids_for(db, viewer) and user_id != viewer.id:
+        raise HTTPException(status_code=403, detail="That athlete is not on a team you lead.")
     session = crud.get_or_create_active_session(db, workout_id, user_id=user_id)
     if not session:
         raise HTTPException(status_code=404, detail="Workout not found")
@@ -372,6 +463,13 @@ def login_user(login_in: UserLogin, db: Session = Depends(get_db)):
 def get_my_profile(current_user: crud.User = Depends(require_auth)):
     return current_user
 
+@app.post("/api/auth/view", response_model=UserResponse)
+def switch_view(req: ViewSwitch, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    access.set_active_role(current_user, req.role)
+    db.commit()
+    db.refresh(current_user)
+    return current_user
+
 @app.post("/api/auth/sync-supabase", response_model=Token)
 async def sync_supabase_user(req: SupabaseAuthSync, db: Session = Depends(get_db)):
     supa_user = await crud.verify_supabase_token(req.access_token)
@@ -454,14 +552,24 @@ async def reset_password(req: PasswordResetConfirm, db: Session = Depends(get_db
 # User & Team/Group Endpoints
 # -------------------------------------------------------------
 @app.get("/api/users", response_model=List[UserResponse])
-def list_users(role: Optional[str] = Query(None), db: Session = Depends(get_db)):
-    return crud.get_users(db, role=role)
+def list_users(
+    role: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    viewer: Optional[crud.User] = Depends(get_current_user),
+):
+    return crud.get_users(db, role=role, viewer=viewer)
 
 @app.get("/api/users/{user_id}", response_model=UserResponse)
-def get_user(user_id: int, db: Session = Depends(get_db)):
+def get_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    viewer: Optional[crud.User] = Depends(get_current_user),
+):
     user = crud.get_user(db, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    if viewer is not None and not access.can_see_user(db, viewer, user):
+        raise HTTPException(status_code=403, detail="You cannot view that person.")
     return user
 
 @app.post("/api/users", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
@@ -476,18 +584,36 @@ def update_user(user_id: int, user_in: UserUpdate, db: Session = Depends(get_db)
     return user
 
 @app.delete("/api/users/{user_id}")
-def delete_user(user_id: int, db: Session = Depends(get_db)):
-    success = crud.delete_user(db, user_id)
-    if not success:
+def delete_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    viewer: crud.User = Depends(require_auth),
+):
+    target = crud.get_user(db, user_id)
+    if not target:
         raise HTTPException(status_code=404, detail="User not found")
+    if not access.can_see_user(db, viewer, target) or viewer.id == target.id:
+        if viewer.id == target.id:
+            raise HTTPException(status_code=400, detail="You cannot remove yourself.")
+        raise HTTPException(status_code=403, detail="You cannot remove that person.")
+    if not access.is_admin(viewer):
+        access.assert_own_athlete(db, viewer, target)
+    result = crud.delete_user(db, user_id)
+    if result == "missing":
+        raise HTTPException(status_code=404, detail="User not found")
+    if result != "deleted":
+        raise HTTPException(status_code=409, detail=result)
     return {"message": "User deleted"}
 
 # -------------------------------------------------------------
 # Training Groups / Rosters Endpoints
 # -------------------------------------------------------------
 @app.get("/api/groups", response_model=List[GroupResponse])
-def list_groups(db: Session = Depends(get_db)):
-    return crud.get_groups(db)
+def list_groups(
+    db: Session = Depends(get_db),
+    viewer: Optional[crud.User] = Depends(get_current_user),
+):
+    return crud.get_groups(db, viewer=viewer)
 
 @app.get("/api/groups/{group_id}", response_model=GroupResponse)
 def get_group(group_id: int, db: Session = Depends(get_db)):
@@ -497,8 +623,26 @@ def get_group(group_id: int, db: Session = Depends(get_db)):
     return group
 
 @app.post("/api/groups", response_model=GroupResponse, status_code=status.HTTP_201_CREATED)
-def create_group(group_in: GroupCreate, db: Session = Depends(get_db)):
-    return crud.create_group(db, group_in)
+def create_group(
+    group_in: GroupCreate,
+    db: Session = Depends(get_db),
+    viewer: Optional[crud.User] = Depends(get_current_user),
+):
+    if viewer is not None:
+        if not _staff(viewer):
+            raise HTTPException(status_code=403, detail="Athlete accounts do not have coach tools.")
+        access.require_gym(viewer)
+        group_in.coach_id = viewer.id
+    group = crud.create_group(db, group_in)
+    if viewer is not None:
+        group.gym_id = viewer.gym_id
+        group.coach_id = viewer.id
+        if access.is_admin(viewer):
+            viewer.is_coach = True
+        db.commit()
+        db.refresh(group)
+        group.member_count = 0
+    return group
 
 @app.put("/api/groups/{group_id}", response_model=GroupResponse)
 def update_group(group_id: int, group_in: GroupUpdate, db: Session = Depends(get_db)):
@@ -508,10 +652,25 @@ def update_group(group_id: int, group_in: GroupUpdate, db: Session = Depends(get
     return group
 
 @app.delete("/api/groups/{group_id}")
-def delete_group(group_id: int, db: Session = Depends(get_db)):
-    success = crud.delete_group(db, group_id)
-    if not success:
+def delete_group(
+    group_id: int,
+    db: Session = Depends(get_db),
+    viewer: Optional[crud.User] = Depends(get_current_user),
+):
+    group = crud.get_group(db, group_id)
+    if not group:
         raise HTTPException(status_code=404, detail="Group not found")
+    if viewer is not None:
+        if access.is_admin(viewer):
+            if group.gym_id != viewer.gym_id:
+                raise HTTPException(status_code=403, detail="That team is in another gym.")
+        else:
+            access.assert_leads_team(db, viewer, group)
+    result = crud.delete_group(db, group_id)
+    if result == "missing":
+        raise HTTPException(status_code=404, detail="Group not found")
+    if result != "deleted":
+        raise HTTPException(status_code=409, detail=result)
     return {"message": "Group deleted"}
 
 class BatchGroupMembersRequest(BaseModel):
@@ -525,10 +684,21 @@ def add_batch_members(group_id: int, req: BatchGroupMembersRequest, db: Session 
     return {"message": f"Assigned {len(req.user_ids)} athletes to group"}
 
 @app.post("/api/groups/{group_id}/members/{user_id}")
-def add_group_member(group_id: int, user_id: int, db: Session = Depends(get_db)):
+def add_group_member(
+    group_id: int,
+    user_id: int,
+    db: Session = Depends(get_db),
+    viewer: Optional[crud.User] = Depends(get_current_user),
+):
+    if viewer is not None:
+        team = crud.get_group(db, group_id)
+        if access.is_admin(viewer) and team and team.gym_id == viewer.gym_id:
+            pass
+        else:
+            access.assert_leads_team(db, viewer, team)
     success = crud.add_user_to_group(db, group_id, user_id)
     if not success:
-        raise HTTPException(status_code=400, detail="Could not add member to group")
+        raise HTTPException(status_code=400, detail="An athlete belongs to exactly one team.")
     return {"message": "Member added"}
 
 @app.delete("/api/groups/{group_id}/members/{user_id}")
@@ -541,25 +711,56 @@ def remove_group_member(group_id: int, user_id: int, db: Session = Depends(get_d
 # -------------------------------------------------------------
 # Workout Assignments Endpoints
 # -------------------------------------------------------------
+def _guard_assignment_target(db: Session, viewer: Optional[crud.User], user_id: Optional[int], group_id: Optional[int]):
+    if viewer is None:
+        return
+    if not _staff(viewer):
+        raise HTTPException(status_code=403, detail="Athlete accounts do not have coach tools.")
+    if user_id:
+        access.assert_own_athlete(db, viewer, crud.get_user(db, user_id))
+    if group_id:
+        access.assert_leads_team(db, viewer, crud.get_group(db, group_id))
+
 @app.get("/api/assignments", response_model=List[WorkoutAssignmentResponse])
 def list_assignments(
     date: Optional[str] = Query(None),
     user_id: Optional[int] = Query(None),
     group_id: Optional[int] = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    viewer: Optional[crud.User] = Depends(get_current_user),
 ):
-    return crud.get_assignments(db, date=date, user_id=user_id, group_id=group_id)
+    if viewer is not None and not _staff(viewer):
+        if user_id and user_id != viewer.id:
+            raise HTTPException(status_code=403, detail="You can only view your own workouts.")
+        user_id = viewer.id
+        group_id = None
+    rows = crud.get_assignments(db, date=date, user_id=user_id, group_id=group_id)
+    return crud.scope_assignments(db, viewer, rows)
 
 @app.post("/api/assignments", response_model=WorkoutAssignmentResponse, status_code=status.HTTP_201_CREATED)
-def create_assignment(assign_in: WorkoutAssignmentCreate, db: Session = Depends(get_db)):
+def create_assignment(
+    assign_in: WorkoutAssignmentCreate,
+    db: Session = Depends(get_db),
+    viewer: Optional[crud.User] = Depends(get_current_user),
+):
     if bool(assign_in.group_id) == bool(assign_in.user_id):
         raise HTTPException(status_code=400, detail="Choose either one client or one team")
+    _guard_assignment_target(db, viewer, assign_in.user_id, assign_in.group_id)
+    if viewer is not None:
+        assign_in.assigned_by_coach_id = viewer.id
     return crud.create_assignment(db, assign_in)
 
 @app.post("/api/assignments/program", response_model=List[WorkoutAssignmentResponse], status_code=status.HTTP_201_CREATED)
-def assign_program(req: ProgramAssignmentCreate, db: Session = Depends(get_db)):
+def assign_program(
+    req: ProgramAssignmentCreate,
+    db: Session = Depends(get_db),
+    viewer: Optional[crud.User] = Depends(get_current_user),
+):
     if bool(req.group_id) == bool(req.user_id):
         raise HTTPException(status_code=400, detail="Choose either one client or one team")
+    _guard_assignment_target(db, viewer, req.user_id, req.group_id)
+    if viewer is not None:
+        req.assigned_by_coach_id = viewer.id
     result = crud.assign_program(db, req)
     if result["dated_count"] == 0:
         raise HTTPException(
@@ -581,8 +782,14 @@ def delete_assignment(assignment_id: int, db: Session = Depends(get_db)):
 # Coach Compliance & Overview Endpoints
 # -------------------------------------------------------------
 @app.get("/api/coach/compliance", response_model=CoachComplianceReport)
-def get_coach_compliance(date: str = Query(..., description="YYYY-MM-DD"), db: Session = Depends(get_db)):
-    return crud.get_coach_compliance_report(db, date)
+def get_coach_compliance(
+    date: str = Query(..., description="YYYY-MM-DD"),
+    db: Session = Depends(get_db),
+    viewer: Optional[crud.User] = Depends(get_current_user),
+):
+    if viewer is not None and not _staff(viewer):
+        raise HTTPException(status_code=403, detail="Athlete accounts do not have coach tools.")
+    return crud.get_coach_compliance_report(db, date, viewer=viewer)
 
 class PushToTomorrowRequest(BaseModel):
     user_id: int
@@ -606,6 +813,75 @@ def mark_present(req: MarkPresentRequest, db: Session = Depends(get_db)):
     if not session:
         raise HTTPException(status_code=400, detail="Could not mark session complete")
     return {"message": "Marked present and completed", "session_id": session.id}
+
+
+# -------------------------------------------------------------
+# Gym, join codes, schedule
+# -------------------------------------------------------------
+@app.get("/api/gym/context", response_model=GymContext)
+def get_gym_context(db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    return crud.gym_context(db, current_user)
+
+@app.post("/api/gym/coaches", response_model=GymMemberCreated, status_code=status.HTTP_201_CREATED)
+def add_coach(body: GymMemberCreate, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    user, password = crud.add_gym_coach(db, current_user, body.name, body.email)
+    return {"user": user, "temporary_password": password}
+
+@app.delete("/api/gym/coaches/{user_id}")
+def remove_coach(user_id: int, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    result = crud.remove_gym_coach(db, current_user, user_id)
+    return {"message": "Coach removed" if result == "deleted" else "Coach role removed"}
+
+@app.post("/api/gym/athletes", response_model=GymMemberCreated, status_code=status.HTTP_201_CREATED)
+def add_athlete(body: GymMemberCreate, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    if not body.team_id:
+        raise HTTPException(status_code=400, detail="An athlete belongs to exactly one team.")
+    user, password = crud.add_gym_athlete(db, current_user, body.name, body.email, body.team_id)
+    return {"user": user, "temporary_password": password}
+
+@app.delete("/api/gym/athletes/{user_id}")
+def remove_athlete(user_id: int, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    crud.remove_athlete(db, current_user, user_id)
+    return {"message": "Athlete removed"}
+
+@app.post("/api/gym/teams/{team_id}/move", response_model=GroupResponse)
+def move_team(team_id: int, body: MoveTeamRequest, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    return crud.move_team(db, current_user, team_id, body.coach_id)
+
+@app.post("/api/join-codes", response_model=JoinCodeResponse, status_code=status.HTTP_201_CREATED)
+def create_join_code(body: JoinCodeCreate, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    return crud.create_join_code(db, current_user, body.kind, body.team_id)
+
+@app.get("/api/join-codes", response_model=List[JoinCodeResponse])
+def get_join_codes(db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    return crud.list_join_codes(db, current_user)
+
+@app.post("/api/join-codes/redeem", response_model=UserResponse)
+def redeem_join_code(body: JoinCodeRedeem, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    return crud.redeem_join_code(db, current_user, body.code)
+
+@app.get("/api/my/schedule", response_model=List[ScheduleItem])
+def my_schedule(db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    return crud.schedule_for_athlete(db, current_user)
+
+@app.post("/api/my/note", response_model=ScheduleItem)
+def my_note(body: AthleteNoteRequest, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    session = crud.write_athlete_note(db, current_user, body.workout_id, body.note)
+    rows = crud.schedule_for_athlete(db, current_user)
+    match = next((row for row in rows if row["workout_id"] == session.workout_id), None)
+    if not match:
+        raise HTTPException(status_code=404, detail="Workout not found on your schedule.")
+    return match
+
+@app.post("/api/coach/assign", response_model=WorkoutAssignmentResponse, status_code=status.HTTP_201_CREATED)
+def coach_assign(body: CoachAssignRequest, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    if not _staff(current_user):
+        raise HTTPException(status_code=403, detail="Athlete accounts do not have coach tools.")
+    return crud.assign_workout_to_athlete(
+        db, current_user, body.athlete_id, body.title, body.scheduled_date,
+        body.exercise_name or "Back Squat", body.sets or 3, body.reps or "5",
+        body.weight or "60", body.notes or "",
+    )
 
 
 # Mount static directory for frontend assets

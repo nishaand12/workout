@@ -372,7 +372,12 @@ const state = {
     resetToken: null,
     roleChoice: "athlete",
     config: { supabase_url: "", supabase_anon_key: "", google_auth_enabled: false }
-  }
+  },
+  gymContext: null,
+  mySchedule: [],
+  notesByWorkout: {},
+  assignResult: "",
+  roleError: ""
 };
 
 function cal() {
@@ -483,6 +488,11 @@ function render() {
     root.innerHTML = renderLoginGate() + (state.toast ? `<div class="toast">${esc(state.toast)}</div>` : "");
     return;
   }
+  if (state.auth.user && state.auth.user.needs_onboarding) {
+    root.className = "";
+    root.innerHTML = renderCodeGate() + (state.toast ? `<div class="toast">${esc(state.toast)}</div>` : "");
+    return;
+  }
   const light = state.view !== "build" && state.view !== "mine";
   root.className = light ? "light" : "";
   const active = document.activeElement;
@@ -501,6 +511,64 @@ function render() {
   }
 }
 
+function heldRoles(user) {
+  if (user && Array.isArray(user.roles) && user.roles.length) return user.roles;
+  const role = !user || !user.role ? "athlete" : (user.role === "student" ? "athlete" : user.role);
+  return [role];
+}
+function land(user) {
+  state.auth.user = user;
+  state.serverUserId = user.id;
+  const roles = heldRoles(user);
+  const requested = user.role === "student" ? "athlete" : (user.role || roles[0]);
+  state.role = roles.includes(requested) ? requested : roles[0];
+  state.roleError = "";
+  if (user.needs_onboarding) {
+    state.view = "join";
+    return;
+  }
+  if (state.role === "admin") state.view = "admin";
+  else if (state.role === "coach") state.view = "squad";
+  else {
+    state.view = "mine";
+    state.actingAthlete = user.username || "me";
+    state.athleteId = user.username || "me";
+    state.openWorkout = null;
+    state.athleteOpenDate = null;
+  }
+}
+async function enterApp(data) {
+  if (data.access_token) {
+    localStorage.setItem("wourkout_token", data.access_token);
+    state.auth.token = data.access_token;
+  }
+  state.auth.isAuthenticated = true;
+  land(data.user || data);
+  if (state.auth.user.needs_onboarding) return;
+  if (state.role === "athlete") await loadMySchedule();
+  else await loadGymContext();
+}
+async function loadGymContext() {
+  state.gymContext = await api("GET", "/api/gym/context");
+}
+async function loadMySchedule() {
+  const rows = await api("GET", "/api/my/schedule");
+  state.mySchedule = rows;
+  state.athleteAssignments = rows;
+  state.athleteWorkouts = {};
+  state.notesByWorkout = {};
+  for (const row of rows) {
+    state.notesByWorkout[row.workout_id] = row.athlete_note || "";
+    if (!state.athleteWorkouts[row.scheduled_date]) {
+      state.athleteWorkouts[row.scheduled_date] = await api("GET", "/api/workouts/" + row.workout_id);
+    }
+  }
+}
+function ownAthleteSession() {
+  const user = state.auth && state.auth.user;
+  return !!(user && state.role === "athlete" && state.serverUserId === user.id && heldRoles(user).includes("athlete"));
+}
+
 function nav() {
   const isAthlete = state.role === "athlete";
   const item = (id, label, caret) => `<div class="nav-anchor"><button class="navbtn ${state.view === id || (id === "feed" && (state.view === "feed" || state.view === "journal")) ? "active" : ""}" onclick="go('${id}', event)">${label}${caret ? ' <span class="caret">▼</span>' : ""}</button>${menuFor(id)}</div>`;
@@ -511,27 +579,25 @@ function nav() {
   const roleClass = state.role || "athlete";
   const avatarBg = roleClass === "athlete" ? "#22c55e" : roleClass === "admin" ? "#ef4444" : "#3b82f6";
 
-  const athleteNav = `
-    ${item("daily", "DAILY BRIEF")}
-    ${item("feed", "FEED")}
-    ${item("mine", "MY CALENDAR")}
-    ${item("workout", "WORKOUT TOOLS", true)}
-  `;
+  const athleteNav = `${item("mine", "MY SCHEDULE")}`;
 
   const coachNav = `
-    ${item("daily", "DAILY BRIEF")}
-    ${item("feed", "FEED")}
+    ${item("squad", "ATHLETES")}
     ${item("build", "BUILD")}
     ${item("workout", "WORKOUT TOOLS", true)}
     ${item("coach", "COACH TOOLS", true)}
-    ${item("ams", "AMS")}
   `;
+  const adminNav = `${item("admin", "COACHES")}`;
+  const links = isAthlete ? athleteNav : (state.role === "admin" ? adminNav : coachNav);
+  const home = isAthlete ? "mine" : (state.role === "admin" ? "admin" : "squad");
 
   return `<header class="topnav">
-    <div class="wordmark" onclick="go('${isAthlete ? 'mine' : 'build'}')">w<span>ourkout</span></div>
-    ${isAthlete ? athleteNav : coachNav}
+    <div class="wordmark" onclick="go('${home}')">w<span>ourkout</span></div>
+    <span class="view-pill ${esc(state.role || "athlete")}">${esc((state.role || "athlete").toUpperCase())} VIEW</span>
+    ${links}
     <div class="spacer"></div>
-    ${!isAthlete ? `<button class="req" onclick="openRequest(event)">REQUEST PROGRAM</button>` : ""}
+    ${heldRoles(user).length > 1 ? `<div class="role-switch">${heldRoles(user).map((r) => `<button type="button" class="${state.role === r ? "on" : ""}" onclick="switchRole('${r}')">${esc(r)}</button>`).join("")}</div>` : ""}
+    ${!isAthlete && state.role !== "admin" ? `<button class="req" onclick="openRequest(event)">REQUEST PROGRAM</button>` : ""}
     <button class="iconbtn" title="Help" onclick="toggleNav('help', event)">?</button>
     <button class="iconbtn" title="Notifications" onclick="toggleNav('bell', event)">🔔</button>
     <div class="nav-profile">
@@ -609,6 +675,7 @@ function openRequest(ev) {
 }
 
 function rightRail() {
+  if (state.role === "athlete" || state.role === "admin" || state.view === "squad" || state.view === "admin") return "";
   const btn = (view, icon, title) => `<button title="${title}" class="${state.view === view ? "on" : ""}" onclick="goTool('${view}')">${icon}</button>`;
   return `<aside class="rail right">
     ${btn("build", "▦", "Calendar")}
@@ -632,6 +699,8 @@ function body() {
   switch (state.view) {
     case "build": return state.role === "athlete" ? mineView() : buildView();
     case "mine": return mineView();
+    case "admin": return adminView();
+    case "squad": return squadView();
     case "entry": return entryView();
     case "feed": return feedView();
     case "users": return usersView();
@@ -1400,7 +1469,9 @@ function athleteDayCol(date) {
   </div>`;
 }
 function mineView() {
-  const person = ATHLETES.find((a) => a.id === state.actingAthlete) || athlete();
+  const fromList = ATHLETES.find((a) => a.id === state.actingAthlete);
+  const person = fromList || { name: (state.auth.user && state.auth.user.name) || "Athlete" };
+  const canLeave = heldRoles(state.auth.user).some((r) => r === "coach" || r === "admin");
   const weeks = state.viewMode === "week" ? 1 : 4;
   let weeksHtml = "";
   for (let w = 0; w < weeks; w++) {
@@ -1412,11 +1483,11 @@ function mineView() {
   return `<section class="stage">
     <div class="subhead">
       <div>
-        <div class="crumbs">Athlete calendar · days your trainer saved</div>
+        <div class="crumbs">Athlete · your schedule</div>
         <div class="athlete-name">${esc(person.name)}</div>
       </div>
       <div class="sub-actions">
-        <button class="ghost" onclick="backToCoach()">Back to coach</button>
+        ${canLeave ? `<button class="ghost" onclick="backToCoach()">Back to coach</button>` : ""}
         <div class="seg">
           <button onclick="shiftWeek(-1)">‹</button>
           <button class="today-pill" onclick="jumpToday()">Today</button>
@@ -1468,7 +1539,17 @@ function athleteOpenPanel() {
     </div>
     <div class="hint" style="margin:4px 0 8px">${fmtLong(state.athleteOpenDate)}</div>
     ${body || "<p>No exercises on this day.</p>"}
+    ${ownAthleteSession() && day.workoutId ? noteForm(day.workoutId) : ""}
   </div>`;
+}
+function noteForm(workoutId) {
+  const existing = (state.notesByWorkout && state.notesByWorkout[workoutId]) || "";
+  return `<form class="note-box" onsubmit="sendAthleteNote(event, ${workoutId}); return false;">
+    <label>Note to your coach</label>
+    <textarea id="athlete-note" placeholder="How did this workout feel?">${esc(existing)}</textarea>
+    <button class="req" type="submit">Send note</button>
+    ${existing ? `<div class="hint">Sent: ${esc(existing)}</div>` : ""}
+  </form>`;
 }
 function athleteExercise(we) {
   const sets = we.prescribed_sets || 1;
@@ -2625,7 +2706,7 @@ function saveInfo() {
   render();
 }
 function fabHtml() {
-  if (state.view === "build") return "";
+  if (state.view === "build" || state.view === "admin" || state.view === "squad" || state.view === "mine" || state.role === "athlete" || state.role === "admin") return "";
   return `<button class="fab" onclick="onFab()">+</button>`;
 }
 function onFab() {
@@ -2756,6 +2837,197 @@ window.exportData = exportData;
 window.removeUser = removeUser;
 window.editUser = editUser;
 window.addNamed = addNamed;
+function adminView() {
+  const ctx = state.gymContext || { coaches: [], codes: [], teams: [], gym_name: "wourkout" };
+  const coaches = ctx.coaches || [];
+  const codes = (ctx.codes || []).filter((c) => c.kind === "gym");
+  return `<section class="stage light-page role-home" id="admin-coaches">
+    <div class="role-kicker">Admin</div>
+    <h1>Coaches in ${esc(ctx.gym_name || "this gym")}</h1>
+    <p class="lede">Add and remove coaches for this gym. Removing a coach is blocked while they still lead a team or have an athlete.</p>
+    ${state.roleError ? `<div class="banner-warn">${esc(state.roleError)}</div>` : ""}
+    <form class="inline-form" onsubmit="addCoach(event); return false;">
+      <input class="plain" id="coach-name" placeholder="Coach name" required>
+      <input class="plain" id="coach-email" type="email" placeholder="Email" required>
+      <button class="req" type="submit">Add coach</button>
+    </form>
+    <table class="data">
+      <tr><th>Coach</th><th>Email</th><th>Teams they lead</th><th></th></tr>
+      ${coaches.map((c) => `<tr>
+        <td>${esc(c.name)}</td>
+        <td>${esc(c.email)}</td>
+        <td>${esc((c.led_teams || []).join(", ") || "No team")}</td>
+        <td><button class="comment" type="button" onclick="removeCoach(${c.id})">Remove</button></td>
+      </tr>`).join("") || `<tr><td colspan="4">No coaches yet.</td></tr>`}
+    </table>
+    <h2>Gym code</h2>
+    <p class="lede">A gym code makes a new signup a coach in this gym. There is no other kind of gym code.</p>
+    <div class="code-row">
+      ${codes.map((c) => `<code class="join-code">${esc(c.code)}</code>`).join("") || "<span class='hint'>No gym code yet.</span>"}
+      <button class="req" type="button" onclick="createJoinCode('gym')">New gym code</button>
+    </div>
+  </section>`;
+}
+
+function squadView() {
+  const ctx = state.gymContext || { athletes: [], teams: [], codes: [] };
+  const athletes = ctx.athletes || [];
+  const codes = (ctx.codes || []).filter((c) => c.kind === "team");
+  const teams = (ctx.teams || []).map((t) => t.name).join(", ") || "your teams";
+  return `<section class="stage light-page role-home" id="coach-assign">
+    <div class="role-kicker">Coach</div>
+    <h1>Athletes on ${esc(teams)}</h1>
+    <p class="lede">You can assign workouts, read notes, and add or remove athletes on teams you lead. Other coaches' athletes stay hidden.</p>
+    ${state.assignResult ? `<div class="banner-ok">${esc(state.assignResult)}</div>` : ""}
+    <table class="data">
+      <tr><th>Athlete</th><th>Team</th><th>Email</th><th>Note to you</th></tr>
+      ${athletes.map((a) => `<tr><td>${esc(a.name)}</td><td>${esc(a.team_name || "")}</td><td>${esc(a.email)}</td><td>${esc(a.latest_note || "—")}</td></tr>`).join("") || `<tr><td colspan="4">No athletes on your teams.</td></tr>`}
+    </table>
+    <h2>Assign a workout</h2>
+    <form class="inline-form" onsubmit="assignWorkout(event); return false;">
+      <select class="plain" id="assign-athlete" required>
+        ${athletes.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join("")}
+      </select>
+      <input class="plain" id="assign-title" placeholder="Workout name" required>
+      <input class="plain" id="assign-date" type="date" value="2026-10-16" required>
+      <button class="req" type="submit">Assign workout</button>
+    </form>
+    <h2>Team code</h2>
+    <p class="lede">A team code makes a new signup an athlete on that team.</p>
+    <div class="code-row">
+      ${codes.map((c) => `<code class="join-code">${esc(c.code)}</code> <span class="hint">${esc(c.team_name || "")}</span>`).join(" ") || "<span class='hint'>No team code yet.</span>"}
+      ${(ctx.teams || []).map((t) => `<button class="ghost" type="button" onclick="createJoinCode('team', ${t.id})">Code for ${esc(t.name)}</button>`).join("")}
+    </div>
+  </section>`;
+}
+
+function renderCodeGate() {
+  const err = state.auth.error ? `<div class="auth-error-banner">${esc(state.auth.error)}</div>` : "";
+  return `<div class="auth-gate" id="code-gate">
+    <div class="auth-card">
+      <div class="auth-logo">w<span>ourkout</span></div>
+      <div class="auth-sub">Enter your code</div>
+      <p style="font-size:13px;color:#aaa;line-height:1.45;margin:0 0 16px">You are signed in and not in a gym yet. A gym code makes you a coach. A team code puts you on that team as an athlete.</p>
+      ${err}
+      <form class="auth-form" onsubmit="redeemCode(event); return false;">
+        <div class="auth-input-group">
+          <label>Gym or team code</label>
+          <input class="auth-input" id="join-code" placeholder="ABC123" required autofocus autocomplete="off">
+        </div>
+        <button class="auth-submit-btn" type="submit">Continue</button>
+      </form>
+      <div class="auth-footer-links" style="justify-content:center">
+        <button type="button" class="auth-link" onclick="handleLogout()">Sign out</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function addCoach(e) {
+  if (e) e.preventDefault();
+  state.roleError = "";
+  try {
+    const created = await api("POST", "/api/gym/coaches", {
+      name: document.getElementById("coach-name").value.trim(),
+      email: document.getElementById("coach-email").value.trim()
+    });
+    await loadGymContext();
+    toast(created.temporary_password ? "Coach added. Temporary password " + created.temporary_password : "Coach added");
+  } catch (err) {
+    state.roleError = err.message || "Could not add that coach";
+  }
+  render();
+}
+async function removeCoach(id) {
+  state.roleError = "";
+  try {
+    await api("DELETE", "/api/gym/coaches/" + id);
+    await loadGymContext();
+    toast("Coach removed");
+  } catch (err) {
+    state.roleError = err.message || "Could not remove that coach";
+    toast("Removal blocked");
+  }
+  render();
+}
+async function createJoinCode(kind, teamId) {
+  try {
+    await api("POST", "/api/join-codes", kind === "team" ? { kind, team_id: teamId } : { kind: "gym" });
+    await loadGymContext();
+    toast(kind === "gym" ? "Gym code created" : "Team code created");
+  } catch (err) {
+    toast(err.message || "Could not create that code");
+  }
+  render();
+}
+async function assignWorkout(e) {
+  if (e) e.preventDefault();
+  const athleteId = parseInt(document.getElementById("assign-athlete").value, 10);
+  const title = document.getElementById("assign-title").value.trim();
+  const scheduled_date = document.getElementById("assign-date").value;
+  const athlete = ((state.gymContext && state.gymContext.athletes) || []).find((a) => a.id === athleteId);
+  try {
+    await api("POST", "/api/coach/assign", {
+      athlete_id: athleteId,
+      title,
+      scheduled_date,
+      exercise_name: "Back Squat",
+      sets: 3,
+      reps: "5",
+      weight: "80"
+    });
+    state.assignResult = "Assigned “" + title + "” to " + ((athlete && athlete.name) || "your athlete") + " on " + scheduled_date + ".";
+    toast("Workout assigned");
+  } catch (err) {
+    state.assignResult = "";
+    toast(err.message || "Could not assign that workout");
+  }
+  render();
+}
+async function sendAthleteNote(e, workoutId) {
+  if (e) e.preventDefault();
+  const note = (document.getElementById("athlete-note").value || "").trim();
+  if (!note) return;
+  try {
+    const row = await api("POST", "/api/my/note", { workout_id: workoutId, note });
+    state.notesByWorkout[workoutId] = row.athlete_note || note;
+    toast("Note sent to your coach");
+  } catch (err) {
+    toast(err.message || "Could not send that note");
+  }
+  render();
+}
+async function redeemCode(e) {
+  if (e) e.preventDefault();
+  const code = (document.getElementById("join-code").value || "").trim();
+  if (!code) return;
+  state.auth.error = "";
+  try {
+    const user = await api("POST", "/api/join-codes/redeem", { code });
+    state.auth.user = user;
+    land(user);
+    if (!user.needs_onboarding) {
+      if (state.role === "athlete") await loadMySchedule();
+      else await loadGymContext();
+    }
+    toast(state.role === "coach" ? "You're a coach in this gym" : "You're an athlete on this team");
+  } catch (err) {
+    state.auth.error = err.message || "That code was not accepted";
+  }
+  render();
+}
+async function switchRole(role) {
+  try {
+    const user = await api("POST", "/api/auth/view", { role });
+    land(user);
+    if (state.role === "athlete") await loadMySchedule();
+    else await loadGymContext();
+  } catch (err) {
+    toast(err.message || "Could not switch view");
+  }
+  render();
+}
+
 function renderLoginGate() {
   const mode = state.auth.mode || "login";
   const errHtml = state.auth.error ? `<div class="auth-error-banner">${esc(state.auth.error)}</div>` : "";
@@ -2821,6 +3093,7 @@ function renderLoginGate() {
             <button type="button" class="role-pill ${state.auth.roleChoice === 'coach' ? 'selected' : ''}" onclick="state.auth.roleChoice='coach';render()">Coach</button>
             <button type="button" class="role-pill ${state.auth.roleChoice === 'admin' ? 'selected' : ''}" onclick="state.auth.roleChoice='admin';render()">Admin</button>
           </div>
+          <div class="hint" style="margin-top:6px">After sign-in, a gym or team code places you. One login can hold more than one role.</div>
         </div>
         <button class="auth-submit-btn" type="submit" ${state.auth.loading ? "disabled" : ""}>
           ${state.auth.loading ? "Creating Account..." : "Create Account"}
@@ -2912,23 +3185,8 @@ async function handleLogin(e) {
   render();
   try {
     const data = await api("POST", "/api/auth/login", { email_or_username: identity, identity, password });
-    localStorage.setItem("wourkout_token", data.access_token);
-    state.auth.token = data.access_token;
-    state.auth.user = data.user;
-    state.auth.isAuthenticated = true;
-    state.role = data.user.role || "coach";
-    state.serverUserId = data.user.id;
-    if (state.role === "athlete") {
-      state.view = "mine";
-      state.actingAthlete = data.user.username || "eric";
-      state.athleteId = data.user.username || "eric";
-    } else {
-      state.view = "build";
-    }
+    await enterApp(data);
     toast("Welcome back, " + (data.user.name || data.user.username));
-    await loadRoster();
-    await loadExercises();
-    await loadGoals();
   } catch (err) {
     state.auth.error = err.message || "Failed to sign in";
   } finally {
@@ -2958,23 +3216,8 @@ async function handleRegister(e) {
       role,
       title: role === "coach" ? "Coach" : (role === "admin" ? "Administrator" : "Athlete")
     });
-    localStorage.setItem("wourkout_token", data.access_token);
-    state.auth.token = data.access_token;
-    state.auth.user = data.user;
-    state.auth.isAuthenticated = true;
-    state.role = data.user.role || role;
-    state.serverUserId = data.user.id;
-    if (state.role === "athlete") {
-      state.view = "mine";
-      state.actingAthlete = data.user.username || "eric";
-      state.athleteId = data.user.username || "eric";
-    } else {
-      state.view = "build";
-    }
+    await enterApp(data);
     toast("Account created! Welcome, " + (data.user.name || data.user.username));
-    await loadRoster();
-    await loadExercises();
-    await loadGoals();
   } catch (err) {
     state.auth.error = err.message || "Registration failed";
   } finally {
@@ -3016,23 +3259,8 @@ async function handleGoogleDemoLogin() {
       email: "google.user@gmail.com",
       name: "Google User"
     });
-    localStorage.setItem("wourkout_token", data.access_token);
-    state.auth.token = data.access_token;
-    state.auth.user = data.user;
-    state.auth.isAuthenticated = true;
-    state.role = data.user.role || "athlete";
-    state.serverUserId = data.user.id;
-    if (state.role === "athlete") {
-      state.view = "mine";
-      state.actingAthlete = data.user.username || "eric";
-      state.athleteId = data.user.username || "eric";
-    } else {
-      state.view = "build";
-    }
+    await enterApp(data);
     toast("Welcome, " + (data.user.name || data.user.username));
-    await loadRoster();
-    await loadExercises();
-    await loadGoals();
   } catch (err) {
     state.auth.error = err.message || "Failed to sign in with Google";
   } finally {
@@ -3063,23 +3291,8 @@ async function syncSupabaseSession(accessToken) {
       access_token: accessToken,
       role: state.auth.roleChoice || "athlete"
     });
-    localStorage.setItem("wourkout_token", data.access_token);
-    state.auth.token = data.access_token;
-    state.auth.user = data.user;
-    state.auth.isAuthenticated = true;
-    state.role = data.user.role || "athlete";
-    state.serverUserId = data.user.id;
-    if (state.role === "athlete") {
-      state.view = "mine";
-      state.actingAthlete = data.user.username || "eric";
-      state.athleteId = data.user.username || "eric";
-    } else {
-      state.view = "build";
-    }
+    await enterApp(data);
     toast("Welcome, " + (data.user.name || data.user.username));
-    await loadRoster();
-    await loadExercises();
-    await loadGoals();
   } catch (err) {
     state.auth.error = err.message || "Failed to sync with Supabase session";
   } finally {
@@ -3202,18 +3415,12 @@ async function initAuth() {
     state.auth.token = token;
     try {
       const me = await api("GET", "/api/auth/me");
-      state.auth.user = me;
       state.auth.isAuthenticated = true;
-      state.role = me.role || "coach";
-      state.serverUserId = me.id;
-      if (state.role === "athlete") {
-        state.view = "mine";
-        state.actingAthlete = me.username || "eric";
-        state.athleteId = me.username || "eric";
+      land(me);
+      if (!me.needs_onboarding) {
+        if (state.role === "athlete") await loadMySchedule();
+        else await loadGymContext();
       }
-      await loadRoster();
-      await loadExercises();
-      await loadGoals();
     } catch (err) {
       console.warn("Session expired or invalid:", err);
       localStorage.removeItem("wourkout_token");
@@ -3240,6 +3447,13 @@ window.saveSupabaseAnonKey = saveSupabaseAnonKey;
 window.handleForgotPassword = handleForgotPassword;
 window.handleResetPassword = handleResetPassword;
 window.handleLogout = handleLogout;
+window.switchRole = switchRole;
+window.addCoach = addCoach;
+window.removeCoach = removeCoach;
+window.createJoinCode = createJoinCode;
+window.assignWorkout = assignWorkout;
+window.sendAthleteNote = sendAthleteNote;
+window.redeemCode = redeemCode;
 window.deleteGoalRecord = deleteGoalRecord;
 window.filterGoalsAthlete = filterGoalsAthlete;
 
