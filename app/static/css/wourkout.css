@@ -100,6 +100,8 @@ button { cursor: pointer; }
   display: flex; flex-direction: column; position: relative; padding: 8px;
 }
 .day.focus { outline: 1px solid #3d6fd6; }
+.day.read { cursor: pointer; }
+.day.read .day-title { display: block; }
 .day.drop { outline: 2px dashed #3d6fd6; }
 .day-top { display: flex; justify-content: space-between; align-items: center; color: #d7d7d7; font-size: 12px; font-weight: 700; letter-spacing: .04em; }
 .day-top .tools { display: flex; gap: 2px; }
@@ -160,7 +162,9 @@ button { cursor: pointer; }
   background: #242424; border: 1px solid #3a3a3a; border-radius: 10px; box-shadow: var(--shadow); padding: 10px 12px 12px;
 }
 .editor-h { display: flex; align-items: center; gap: 8px; }
-.editor-h .name { font-weight: 700; }
+.editor-h .name, .name-input { font-weight: 700; flex: 1; min-width: 0; background: transparent; border: 0; border-bottom: 1px solid #444; color: white; padding: 2px 4px; }
+.editor textarea { width: 100%; min-height: 72px; background: #1b1b1b; border: 1px solid #444; border-radius: 6px; padding: 6px; color: #eee; }
+.toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 10px 0; }
 .editor-h .grow { flex: 1; }
 .linkish { background: transparent; border: 0; color: #7eb6ff; font-size: 12px; padding: 4px 0; }
 .row { display: flex; align-items: center; gap: 6px; margin: 6px 0; flex-wrap: wrap; }

@@ -544,6 +544,16 @@ def add_personal_record(db: Session, record_in: PersonalRecordCreate):
     db.refresh(pr)
     return pr
 
+def update_personal_record(db: Session, record_id: int, record_in):
+    pr = db.query(PersonalRecord).filter(PersonalRecord.id == record_id).first()
+    if not pr:
+        return None
+    for field, val in record_in.model_dump(exclude_unset=True).items():
+        setattr(pr, field, val)
+    db.commit()
+    db.refresh(pr)
+    return pr
+
 # Week Planner, Bulk Copy & Calendar Queries
 def copy_week(db: Session, req: CopyWeekRequest) -> List[Workout]:
     # Find all workouts in source program & week

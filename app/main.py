@@ -16,7 +16,7 @@ from app.schemas import (
     WorkoutResponse, WorkoutDetailResponse, WorkoutCreate, WorkoutUpdate,
     WorkoutSessionResponse, WorkoutSessionDetailResponse,
     SetLogResponse, SetLogBase,
-    PersonalRecordResponse, PersonalRecordCreate,
+    PersonalRecordResponse, PersonalRecordCreate, PersonalRecordUpdate,
     CopyWeekRequest, RescheduleWorkoutRequest, CalendarDayResponse,
     AddWorkoutToDayRequest,     SaveProgramTemplateRequest,
     UserResponse, UserCreate, UserUpdate,
@@ -213,6 +213,13 @@ def list_records(db: Session = Depends(get_db)):
 @app.post("/api/records", response_model=PersonalRecordResponse, status_code=status.HTTP_201_CREATED)
 def create_record(record_in: PersonalRecordCreate, db: Session = Depends(get_db)):
     return crud.add_personal_record(db, record_in)
+
+@app.put("/api/records/{record_id}", response_model=PersonalRecordResponse)
+def update_record(record_id: int, record_in: PersonalRecordUpdate, db: Session = Depends(get_db)):
+    record = crud.update_personal_record(db, record_id, record_in)
+    if not record:
+        raise HTTPException(status_code=404, detail="Record not found")
+    return record
 
 # -------------------------------------------------------------
 # User & Authentication Endpoints

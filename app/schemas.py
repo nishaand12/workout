@@ -168,6 +168,11 @@ class PersonalRecordCreate(BaseModel):
     reps: Optional[int] = 1
     notes: Optional[str] = ""
 
+class PersonalRecordUpdate(BaseModel):
+    weight: Optional[float] = None
+    reps: Optional[int] = None
+    notes: Optional[str] = None
+
 class PersonalRecordResponse(BaseModel):
     id: int
     exercise_id: int
