@@ -374,6 +374,9 @@ class CoachComplianceReport(BaseModel):
 class ViewSwitch(BaseModel):
     role: str
 
+class GymCreate(BaseModel):
+    name: str
+
 class JoinCodeCreate(BaseModel):
     kind: str  # 'gym' or 'team'
     team_id: Optional[int] = None

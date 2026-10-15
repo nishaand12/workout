@@ -29,7 +29,7 @@ from app.schemas import (
     CoachComplianceReport,
     AuthConfigResponse, UserRegister, UserLogin, Token,
     PasswordResetRequest, PasswordResetConfirm, SupabaseAuthSync,
-    ViewSwitch, JoinCodeCreate, JoinCodeRedeem, JoinCodeResponse,
+    ViewSwitch, GymCreate, JoinCodeCreate, JoinCodeRedeem, JoinCodeResponse,
     GymContext, GymMemberCreate, GymMemberCreated, MoveTeamRequest,
     CoachAssignRequest, AthleteNoteRequest, ScheduleItem
 )
@@ -847,6 +847,10 @@ def remove_athlete(user_id: int, db: Session = Depends(get_db), current_user: cr
 @app.post("/api/gym/teams/{team_id}/move", response_model=GroupResponse)
 def move_team(team_id: int, body: MoveTeamRequest, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
     return crud.move_team(db, current_user, team_id, body.coach_id)
+
+@app.post("/api/gyms", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+def create_gym(body: GymCreate, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    return crud.create_own_gym(db, current_user, body.name)
 
 @app.post("/api/join-codes", response_model=JoinCodeResponse, status_code=status.HTTP_201_CREATED)
 def create_join_code(body: JoinCodeCreate, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):

@@ -549,6 +549,59 @@ class TrainerFlowTests(unittest.TestCase):
         self.assertTrue(any(row["title"] == f"Upper {self.stamp}" for row in again))
         self.assertTrue(all(row["title"] != f"Speed day {self.stamp}" for row in again))
 
+    def test_signed_in_user_can_create_their_own_gym(self):
+        reg = self.client.post("/api/auth/register", json={
+            "name": "Founder",
+            "email": f"founder.{self.stamp}@example.com",
+            "username": f"fd_{self.stamp[:8]}",
+            "password": "Password123!",
+            "role": "athlete",
+        })
+        self.assertEqual(reg.status_code, 201, reg.text)
+        user = reg.json()["user"]
+        self.assertTrue(user["needs_onboarding"])
+        self.assertIsNone(user["gym_id"])
+        token = reg.json()["access_token"]
+
+        blank = self.client.post("/api/gyms", json={"name": "   "}, headers=self._auth(token))
+        self.assertEqual(blank.status_code, 400, blank.text)
+
+        created = self.client.post("/api/gyms", json={"name": " Northside Athletics "}, headers=self._auth(token))
+        self.assertEqual(created.status_code, 201, created.text)
+        admin = created.json()
+        self.assertEqual(admin["gym_name"], "Northside Athletics")
+        self.assertEqual(admin["role"], "admin")
+        self.assertEqual(admin["roles"], ["admin"])
+        self.assertFalse(admin["needs_onboarding"])
+        self.assertIsNone(admin["team_id"])
+
+        again = self.client.post("/api/gyms", json={"name": "Second Gym"}, headers=self._auth(token))
+        self.assertEqual(again.status_code, 409, again.text)
+
+        gym_code = self.client.post("/api/join-codes", json={"kind": "gym"}, headers=self._auth(token))
+        self.assertEqual(gym_code.status_code, 201, gym_code.text)
+        self.assertEqual(gym_code.json()["kind"], "gym")
+        self.assertEqual(gym_code.json()["gym_id"], admin["gym_id"])
+
+        other_kind = self.client.post("/api/join-codes", json={"kind": "owner"}, headers=self._auth(token))
+        self.assertEqual(other_kind.status_code, 400, other_kind.text)
+
+        team = self.client.post("/api/groups", json={"name": f"Northside {self.stamp}"}, headers=self._auth(token))
+        self.assertEqual(team.status_code, 201, team.text)
+        self.assertEqual(team.json()["coach_id"], admin["id"])
+
+        me = self.client.get("/api/auth/me", headers=self._auth(token))
+        self.assertEqual(me.status_code, 200, me.text)
+        self.assertEqual(sorted(me.json()["roles"]), ["admin", "coach"])
+
+        own_teams = self.client.get("/api/groups", headers=self._auth(token)).json()
+        self.assertIn(team.json()["id"], [row["id"] for row in own_teams])
+
+        # An existing member cannot found a second gym.
+        admin_token, _ = self._login("admin@wourkout.app", "AdminPassword123!")
+        taken = self.client.post("/api/gyms", json={"name": "Elsewhere"}, headers=self._auth(admin_token))
+        self.assertEqual(taken.status_code, 409, taken.text)
+
 
 if __name__ == "__main__":
     unittest.main()

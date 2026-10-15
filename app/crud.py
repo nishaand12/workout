@@ -1603,6 +1603,30 @@ def _new_join_code(db: Session) -> str:
     return secrets.token_hex(4).upper()
 
 
+def create_own_gym(db: Session, user: User, name: str) -> User:
+    """A signed-in user with no gym founds one and becomes its admin."""
+    name = (name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Enter a gym name.")
+    if len(name) > 255:
+        raise HTTPException(status_code=400, detail="That gym name is too long.")
+    if user.gym_id:
+        raise HTTPException(status_code=409, detail="You already belong to a gym.")
+    gym = Gym(name=name)
+    db.add(gym)
+    db.flush()
+    user.gym_id = gym.id
+    user.is_admin = True
+    user.is_coach = False
+    user.is_athlete = False
+    user.team_id = None
+    user.role = "admin"
+    user.title = "Gym Admin"
+    db.commit()
+    db.refresh(user)
+    return user
+
+
 def create_join_code(db: Session, user: User, kind: str, team_id: Optional[int] = None) -> JoinCode:
     access.require_gym(user)
     kind = (kind or "").lower().strip()

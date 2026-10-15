@@ -2903,19 +2903,34 @@ function squadView() {
 
 function renderCodeGate() {
   const err = state.auth.error ? `<div class="auth-error-banner">${esc(state.auth.error)}</div>` : "";
+  const user = state.auth.user;
+  const noGym = !user || !user.gym_id;
+  const createGymForm = noGym ? `
+    <div class="auth-divider">or start a gym</div>
+    <form class="auth-form" id="create-gym-form" onsubmit="createGym(event); return false;">
+      <div class="auth-input-group">
+        <label>Gym name</label>
+        <input class="auth-input" id="gym-name" placeholder="Northside Athletics" required autocomplete="organization">
+      </div>
+      <button class="auth-submit-btn" id="create-gym-btn" type="submit">Create gym</button>
+    </form>` : "";
+  const blurb = noGym
+    ? "You are signed in and not in a gym yet. A gym code makes you a coach. A team code puts you on that team as an athlete. Or create a gym and become its admin."
+    : "You are signed in. A team code puts you on that team as an athlete.";
   return `<div class="auth-gate" id="code-gate">
     <div class="auth-card">
       <div class="auth-logo">w<span>ourkout</span></div>
-      <div class="auth-sub">Enter your code</div>
-      <p style="font-size:13px;color:#aaa;line-height:1.45;margin:0 0 16px">You are signed in and not in a gym yet. A gym code makes you a coach. A team code puts you on that team as an athlete.</p>
+      <div class="auth-sub">${noGym ? "Join or create a gym" : "Enter your code"}</div>
+      <p style="font-size:13px;color:#aaa;line-height:1.45;margin:0 0 16px">${blurb}</p>
       ${err}
       <form class="auth-form" onsubmit="redeemCode(event); return false;">
         <div class="auth-input-group">
           <label>Gym or team code</label>
-          <input class="auth-input" id="join-code" placeholder="ABC123" required autofocus autocomplete="off">
+          <input class="auth-input" id="join-code" placeholder="ABC123" ${noGym ? "" : "required autofocus"} autocomplete="off">
         </div>
         <button class="auth-submit-btn" type="submit">Continue</button>
       </form>
+      ${createGymForm}
       <div class="auth-footer-links" style="justify-content:center">
         <button type="button" class="auth-link" onclick="handleLogout()">Sign out</button>
       </div>
@@ -2994,6 +3009,22 @@ async function sendAthleteNote(e, workoutId) {
     toast("Note sent to your coach");
   } catch (err) {
     toast(err.message || "Could not send that note");
+  }
+  render();
+}
+async function createGym(e) {
+  if (e) e.preventDefault();
+  const name = (document.getElementById("gym-name").value || "").trim();
+  if (!name) return;
+  state.auth.error = "";
+  try {
+    const user = await api("POST", "/api/gyms", { name });
+    state.auth.user = user;
+    land(user);
+    if (!user.needs_onboarding) await loadGymContext();
+    toast("You're the admin of " + (user.gym_name || name));
+  } catch (err) {
+    state.auth.error = err.message || "Could not create that gym";
   }
   render();
 }
@@ -3093,7 +3124,7 @@ function renderLoginGate() {
             <button type="button" class="role-pill ${state.auth.roleChoice === 'coach' ? 'selected' : ''}" onclick="state.auth.roleChoice='coach';render()">Coach</button>
             <button type="button" class="role-pill ${state.auth.roleChoice === 'admin' ? 'selected' : ''}" onclick="state.auth.roleChoice='admin';render()">Admin</button>
           </div>
-          <div class="hint" style="margin-top:6px">After sign-in, a gym or team code places you. One login can hold more than one role.</div>
+          <div class="hint" style="margin-top:6px">After sign-in, enter a code or create your own gym. One login can hold more than one role.</div>
         </div>
         <button class="auth-submit-btn" type="submit" ${state.auth.loading ? "disabled" : ""}>
           ${state.auth.loading ? "Creating Account..." : "Create Account"}
@@ -3454,6 +3485,7 @@ window.createJoinCode = createJoinCode;
 window.assignWorkout = assignWorkout;
 window.sendAthleteNote = sendAthleteNote;
 window.redeemCode = redeemCode;
+window.createGym = createGym;
 window.deleteGoalRecord = deleteGoalRecord;
 window.filterGoalsAthlete = filterGoalsAthlete;
 

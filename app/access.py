@@ -73,7 +73,7 @@ def can_see_user(db: Session, viewer: User, target: User) -> bool:
 
 def require_gym(user: User) -> None:
     if not user.gym_id:
-        raise HTTPException(status_code=403, detail="Enter a gym or team code before continuing.")
+        raise HTTPException(status_code=403, detail="Create a gym, or enter a gym or team code, before continuing.")
 
 
 def require_admin(user: User) -> None:
