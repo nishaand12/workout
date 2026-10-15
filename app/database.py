@@ -6,7 +6,7 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 # Handle SQLite vs PostgreSQL/Supabase
-db_url = settings.DATABASE_URL
+db_url = settings.DATABASE_URL.strip()
 
 # Detect unconfigured placeholder password from Supabase dashboard template
 if "[YOUR-PASSWORD]" in db_url or "YOUR-PASSWORD" in db_url:
