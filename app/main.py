@@ -29,13 +29,17 @@ from app import crud
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: create tables and seed data
-    Base.metadata.create_all(bind=engine)
-    db = SessionLocal()
     try:
-        crud.seed_database_if_empty(db)
-        crud.scrub_visible_brand(db)
-    finally:
-        db.close()
+        Base.metadata.create_all(bind=engine)
+        db = SessionLocal()
+        try:
+            crud.seed_database_if_empty(db)
+            crud.scrub_visible_brand(db)
+        finally:
+            db.close()
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).error(f"Error during startup database initialization: {exc}")
     yield
 
 app = FastAPI(
