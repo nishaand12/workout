@@ -835,7 +835,7 @@ function propRow(date, it, key) {
   const label = key === "reps" ? "Reps" : PROP_LABEL[key];
   const arr = key === "reps" ? it.reps : it[key === "load" ? "loads" : key === "rest" ? "rests" : key === "tempo" ? "tempos" : key === "velocity" ? "velocities" : key === "power" ? "powers" : "pcts"];
   if (!arr) return "";
-  if (key === "reps" && !it.trackReps && it.type !== "circuit") return "";
+  if (key === "reps" && it.trackReps === false && it.type !== "circuit") return "";
   const cells = arr.map((v, i) => `<td><input data-focus="${key}-${it.id}-${i}" value="${esc(v)}" oninput="setCell('${date}','${it.id}','${key}',${i}, this.value)" onchange="render()"></td>`).join("");
   return `<tr><th>${label}</th>${cells}</tr>`;
 }
@@ -1138,9 +1138,9 @@ async function ensureExercise(name) {
   }
 }
 async function publishDay(date, opts = {}) {
-  const day = ensureDay(date);
+  const day = cal()[date];
   const person = athlete();
-  if (!day.items.length) { if (!opts.quiet) toast("Add an exercise before saving"); return; }
+  if (!day || !day.items.length) { if (!opts.quiet) toast("Add an exercise before saving"); return; }
   try {
     if (!opts.quiet) toast("Saving for " + person.name + "…");
     const coach = await ensureUser({ id: "coach", name: "wourkout Coach", email: "coach@wourkout.app" }, "coach");
@@ -2553,7 +2553,6 @@ window.exportData = exportData;
 window.removeUser = removeUser;
 window.editUser = editUser;
 window.addNamed = addNamed;
-window.renameLift = renameLift;
 window.saveInfo = saveInfo;
 window.onFab = onFab;
 window.addItem = addItem;
