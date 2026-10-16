@@ -372,6 +372,7 @@ const state = {
     success: "",
     resetToken: null,
     roleChoice: "athlete",
+    regDraft: { name: "", username: "", email: "", password: "" },
     config: { supabase_url: "", supabase_anon_key: "", google_auth_enabled: false }
   },
   gymContext: null,
@@ -3524,32 +3525,33 @@ function renderLoginGate() {
       </form>
     `;
   } else if (mode === "register") {
+    const draft = state.auth.regDraft || { name: "", username: "", email: "", password: "" };
     content = `
       <form class="auth-form" onsubmit="handleRegister(event); return false;">
         <div class="auth-input-group">
+          <label>Account Role</label>
+          <div class="role-pill-group">
+            <button type="button" class="role-pill ${state.auth.roleChoice === 'athlete' ? 'selected' : ''}" onclick="selectAuthRole('athlete')">Athlete</button>
+            <button type="button" class="role-pill ${state.auth.roleChoice === 'coach' ? 'selected' : ''}" onclick="selectAuthRole('coach')">Coach</button>
+            <button type="button" class="role-pill ${state.auth.roleChoice === 'admin' ? 'selected' : ''}" onclick="selectAuthRole('admin')">Admin</button>
+          </div>
+          <div class="hint" style="margin-top:6px">After sign-in, enter a code or create your own gym. One login can hold more than one role.</div>
+        </div>
+        <div class="auth-input-group">
           <label>Full Name</label>
-          <input class="auth-input" id="reg-name" placeholder="Alex Morgan" required>
+          <input class="auth-input" id="reg-name" placeholder="Alex Morgan" value="${esc(draft.name || "")}" oninput="updateRegDraft('name', this.value)" required>
         </div>
         <div class="auth-input-group">
           <label>Username</label>
-          <input class="auth-input" id="reg-username" placeholder="alexm" required autocomplete="username">
+          <input class="auth-input" id="reg-username" placeholder="alexm" value="${esc(draft.username || "")}" oninput="updateRegDraft('username', this.value)" required autocomplete="username">
         </div>
         <div class="auth-input-group">
           <label>Email Address</label>
-          <input class="auth-input" id="reg-email" type="email" placeholder="alex@example.com" required autocomplete="email">
+          <input class="auth-input" id="reg-email" type="email" placeholder="alex@example.com" value="${esc(draft.email || "")}" oninput="updateRegDraft('email', this.value)" required autocomplete="email">
         </div>
         <div class="auth-input-group">
           <label>Password (min. 6 characters)</label>
-          <input class="auth-input" id="reg-password" type="password" placeholder="••••••••" required minlength="6" autocomplete="new-password">
-        </div>
-        <div class="auth-input-group">
-          <label>Account Role</label>
-          <div class="role-pill-group">
-            <button type="button" class="role-pill ${state.auth.roleChoice === 'athlete' ? 'selected' : ''}" onclick="state.auth.roleChoice='athlete';render()">Athlete</button>
-            <button type="button" class="role-pill ${state.auth.roleChoice === 'coach' ? 'selected' : ''}" onclick="state.auth.roleChoice='coach';render()">Coach</button>
-            <button type="button" class="role-pill ${state.auth.roleChoice === 'admin' ? 'selected' : ''}" onclick="state.auth.roleChoice='admin';render()">Admin</button>
-          </div>
-          <div class="hint" style="margin-top:6px">After sign-in, enter a code or create your own gym. One login can hold more than one role.</div>
+          <input class="auth-input" id="reg-password" type="password" placeholder="••••••••" value="${esc(draft.password || "")}" oninput="updateRegDraft('password', this.value)" required minlength="6" autocomplete="new-password">
         </div>
         <button class="auth-submit-btn" type="submit" ${state.auth.loading ? "disabled" : ""}>
           ${state.auth.loading ? "Creating Account..." : "Create Account"}
@@ -3623,7 +3625,35 @@ function renderLoginGate() {
   `;
 }
 
+function syncRegDraftFromDom() {
+  if (!state.auth.regDraft) {
+    state.auth.regDraft = { name: "", username: "", email: "", password: "" };
+  }
+  const nameEl = document.getElementById("reg-name");
+  const usernameEl = document.getElementById("reg-username");
+  const emailEl = document.getElementById("reg-email");
+  const passwordEl = document.getElementById("reg-password");
+  if (nameEl) state.auth.regDraft.name = nameEl.value;
+  if (usernameEl) state.auth.regDraft.username = usernameEl.value;
+  if (emailEl) state.auth.regDraft.email = emailEl.value;
+  if (passwordEl) state.auth.regDraft.password = passwordEl.value;
+}
+
+function updateRegDraft(field, value) {
+  if (!state.auth.regDraft) {
+    state.auth.regDraft = { name: "", username: "", email: "", password: "" };
+  }
+  state.auth.regDraft[field] = value;
+}
+
+function selectAuthRole(role) {
+  syncRegDraftFromDom();
+  state.auth.roleChoice = role;
+  render();
+}
+
 function setAuthMode(mode) {
+  syncRegDraftFromDom();
   state.auth.mode = mode;
   state.auth.error = "";
   state.auth.success = "";
@@ -3653,10 +3683,11 @@ async function handleLogin(e) {
 
 async function handleRegister(e) {
   if (e) e.preventDefault();
-  const name = (document.getElementById("reg-name")?.value || "").trim();
-  const username = (document.getElementById("reg-username")?.value || "").trim();
-  const email = (document.getElementById("reg-email")?.value || "").trim();
-  const password = document.getElementById("reg-password")?.value || "";
+  syncRegDraftFromDom();
+  const name = (document.getElementById("reg-name")?.value || state.auth.regDraft?.name || "").trim();
+  const username = (document.getElementById("reg-username")?.value || state.auth.regDraft?.username || "").trim();
+  const email = (document.getElementById("reg-email")?.value || state.auth.regDraft?.email || "").trim();
+  const password = document.getElementById("reg-password")?.value || state.auth.regDraft?.password || "";
   const role = state.auth.roleChoice || "athlete";
   if (!name || !username || !email || !password) return;
   state.auth.loading = true;
@@ -3672,6 +3703,7 @@ async function handleRegister(e) {
       role,
       title: role === "coach" ? "Coach" : (role === "admin" ? "Administrator" : "Athlete")
     });
+    state.auth.regDraft = { name: "", username: "", email: "", password: "" };
     await enterApp(data);
     toast("Account created! Welcome, " + (data.user.name || data.user.username));
   } catch (err) {
@@ -3895,6 +3927,8 @@ window.snapshot = snapshot;
 window.toast = toast;
 window.renderLoginGate = renderLoginGate;
 window.setAuthMode = setAuthMode;
+window.selectAuthRole = selectAuthRole;
+window.updateRegDraft = updateRegDraft;
 window.handleLogin = handleLogin;
 window.handleRegister = handleRegister;
 window.handleGoogleLogin = handleGoogleLogin;
