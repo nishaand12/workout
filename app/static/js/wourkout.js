@@ -844,10 +844,23 @@ function buildView() {
 }
 function buildAthletes() {
   const list = ATHLETES.map((a) => Object.assign({}, a));
+  const ctxAthletes = (state.gymContext && state.gymContext.athletes) || [];
+  ctxAthletes.forEach((u) => {
+    const email = (u.email || "").toLowerCase();
+    const existing = list.find((a) => a.serverId === u.id || (email && (a.email || "").toLowerCase() === email));
+    if (existing) {
+      existing.serverId = u.id;
+      existing.name = u.name || existing.name;
+    } else {
+      const id = "u" + u.id;
+      list.unshift({ id, name: u.name || u.email, email: u.email || "", serverId: u.id });
+      if (!state.calendars[id]) state.calendars[id] = {};
+    }
+  });
   const user = state.auth && state.auth.user;
   if (!user || heldRoles(user).indexOf("athlete") < 0) return list;
   const email = (user.email || "").toLowerCase();
-  if (list.some((a) => (a.email || "").toLowerCase() === email)) return list;
+  if (list.some((a) => a.serverId === user.id || (a.email || "").toLowerCase() === email)) return list;
   list.unshift({
     id: "self-" + user.id,
     name: user.name || user.username || "You",
@@ -2433,25 +2446,48 @@ function usersView() {
   let main = "";
   if (state.userTab === "codes") state.userTab = "groups";
   if (state.userTab === "groups") {
-    const cards = state.groups.map((g, i) => {
-      const codes = state.joinCodes.map((c, idx) => ({ c, idx })).filter((row) => row.c.group === g);
-      const codeHtml = codes.length
-        ? codes.map(({ c, idx }) => `<div class="code-line"><code>${esc(c.code)}</code><button class="icon-a" type="button" onclick="copyJoinCode(${idx})">Copy</button><button class="icon-a" type="button" onclick="removeJoinCode(${idx})">✕</button></div>`).join("")
-        : `<div class="hint">No athlete codes yet</div>`;
-      const members = state.athletes.filter((a) => assignedGroups(a.groups).includes(g));
-      const who = members.map((a) => {
-        const name = (a.first + " " + a.last).trim();
-        return esc(name) + (a.email ? " · " + esc(a.email) : "");
-      }).join("<br>");
-      return `<article class="card"><strong>${esc(g)}</strong><div class="hint" style="margin-top:8px">${who || "No athletes"}</div><div class="group-codes"><div class="hint">Athlete codes</div>${codeHtml}<button class="req" type="button" onclick="addJoinCode(${i})">+ Code</button></div><div style="margin-top:8px"><button class="comment" type="button" onclick="editGroup(${i})">Edit</button> <button class="comment" type="button" onclick="removeGroup(${i})">Remove</button></div></article>`;
-    }).join("");
-    main = `<div class="light-page"><h1>Groups</h1>
-      <p class="hint">Athlete join codes live on each group. Create a code from that group's card.</p>
-      <form class="toolbar" onsubmit="addGroupRecord(); return false;">
-        <input class="plain" placeholder="Group name" data-focus="group-name" value="${esc(state.toolForm.group || "")}" oninput="state.toolForm.group=this.value">
-        <button class="req" type="submit">Add group</button>
-      </form>
-      <div class="grid-cards">${cards || `<p class="hint">Add a group before creating an athlete code.</p>`}</div></div>`;
+    const ctx = state.gymContext;
+    if (ctx && Array.isArray(ctx.teams)) {
+      const teams = ledTeams(ctx);
+      const allCodes = (ctx.codes || []).filter((c) => c.kind === "team");
+      const allAthletes = ctx.athletes || [];
+      const cards = teams.map((t) => {
+        const codes = allCodes.filter((c) => c.team_id === t.id);
+        const codeHtml = codes.length
+          ? codes.map((c) => `<div class="code-line"><code>${esc(c.code)}</code><button class="icon-a" type="button" onclick="copyText('${esc(c.code)}')">Copy</button><button class="icon-a" type="button" onclick="deleteServerJoinCode(${c.id})">✕</button></div>`).join("")
+          : `<div class="hint">No athlete codes yet</div>`;
+        const members = allAthletes.filter((a) => a.team_id === t.id);
+        const who = members.map((a) => esc(a.name) + (a.email ? " · " + esc(a.email) : "")).join("<br>");
+        return `<article class="card"><strong>${esc(t.name)}</strong><div class="hint" style="margin-top:8px">${who || "No athletes"}</div><div class="group-codes"><div class="hint">Athlete join codes</div>${codeHtml}<button class="req" type="button" onclick="createJoinCode('team', ${t.id})">+ Code</button></div><div style="margin-top:8px"><button class="comment" type="button" onclick="editServerGroup(${t.id}, '${esc(t.name)}')">Edit</button> <button class="comment" type="button" onclick="deleteServerGroup(${t.id})">Remove</button></div></article>`;
+      }).join("");
+      main = `<div class="light-page"><h1>Groups</h1>
+        <p class="hint">Create and manage your athlete groups and team join codes here. Athletes who redeem a group's join code are automatically placed into that group.</p>
+        <form class="toolbar" onsubmit="addGroupRecord(); return false;">
+          <input class="plain" placeholder="Group name" data-focus="group-name" value="${esc(state.toolForm.group || "")}" oninput="state.toolForm.group=this.value">
+          <button class="req" type="submit">Add group</button>
+        </form>
+        <div class="grid-cards">${cards || `<p class="hint">Add a group above to get started and generate athlete join codes.</p>`}</div></div>`;
+    } else {
+      const cards = state.groups.map((g, i) => {
+        const codes = state.joinCodes.map((c, idx) => ({ c, idx })).filter((row) => row.c.group === g);
+        const codeHtml = codes.length
+          ? codes.map(({ c, idx }) => `<div class="code-line"><code>${esc(c.code)}</code><button class="icon-a" type="button" onclick="copyJoinCode(${idx})">Copy</button><button class="icon-a" type="button" onclick="removeJoinCode(${idx})">✕</button></div>`).join("")
+          : `<div class="hint">No athlete codes yet</div>`;
+        const members = state.athletes.filter((a) => assignedGroups(a.groups).includes(g));
+        const who = members.map((a) => {
+          const name = (a.first + " " + a.last).trim();
+          return esc(name) + (a.email ? " · " + esc(a.email) : "");
+        }).join("<br>");
+        return `<article class="card"><strong>${esc(g)}</strong><div class="hint" style="margin-top:8px">${who || "No athletes"}</div><div class="group-codes"><div class="hint">Athlete codes</div>${codeHtml}<button class="req" type="button" onclick="addJoinCode(${i})">+ Code</button></div><div style="margin-top:8px"><button class="comment" type="button" onclick="editGroup(${i})">Edit</button> <button class="comment" type="button" onclick="removeGroup(${i})">Remove</button></div></article>`;
+      }).join("");
+      main = `<div class="light-page"><h1>Groups</h1>
+        <p class="hint">Athlete join codes live on each group. Create a code from that group's card.</p>
+        <form class="toolbar" onsubmit="addGroupRecord(); return false;">
+          <input class="plain" placeholder="Group name" data-focus="group-name" value="${esc(state.toolForm.group || "")}" oninput="state.toolForm.group=this.value">
+          <button class="req" type="submit">Add group</button>
+        </form>
+        <div class="grid-cards">${cards || `<p class="hint">Add a group before creating an athlete code.</p>`}</div></div>`;
+    }
   } else if (state.userTab === "upload") {
     const chosen = state.groups.includes(state.toolForm.uploadGroup) ? state.toolForm.uploadGroup : (state.groups[0] || "");
     main = `<div class="light-page"><h1>Upload Users</h1>
@@ -2580,6 +2616,51 @@ function editGroup(index) {
     }
   });
 }
+function editServerGroup(groupId, currentName) {
+  openEdit({
+    title: "Edit group",
+    fields: [{ key: "name", label: "Group name", value: currentName || "" }],
+    onSave: async (values) => {
+      const next = (values.name || "").trim();
+      if (!next) { toast("Enter a group name"); return; }
+      try {
+        await api("PUT", "/api/groups/" + groupId, { name: next });
+        state.modal = null;
+        await loadGymContext();
+        toast("Group renamed");
+      } catch (err) {
+        toast(err.message || "Could not rename group");
+      }
+      render();
+    }
+  });
+}
+async function deleteServerGroup(groupId) {
+  try {
+    await api("DELETE", "/api/groups/" + groupId);
+    await loadGymContext();
+    toast("Group removed");
+  } catch (err) {
+    toast(err.message || "Could not remove group");
+  }
+  render();
+}
+async function deleteServerJoinCode(codeId) {
+  try {
+    await api("DELETE", "/api/join-codes/" + codeId);
+    await loadGymContext();
+    toast("Code removed");
+  } catch (err) {
+    toast(err.message || "Could not remove code");
+  }
+  render();
+}
+function copyText(text) {
+  const done = () => toast("Copied");
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done).catch(done);
+  } else done();
+}
 function addNamed(kind) {
   const name = (state.toolForm[kind] || "").trim();
   if (!name) { toast("Enter a name first"); return; }
@@ -2643,6 +2724,9 @@ function copyJoinCode(index) {
 }
 async function loadRoster() {
   try {
+    if (state.auth && state.auth.token && state.auth.user && state.auth.user.gym_id) {
+      await loadGymContext();
+    }
     const users = await api("GET", "/api/users");
     users.forEach((u) => {
       const parts = (u.name || "").split(" ");
@@ -2654,7 +2738,7 @@ async function loadRoster() {
       if (!list.some((r) => r.serverId === u.id || r.email === u.email)) list.push(row);
       if (u.role !== "coach" && !ATHLETES.some((a) => a.email === u.email)) {
         const id = "u" + u.id;
-        ATHLETES.push({ id, name: u.name, email: u.email });
+        ATHLETES.push({ id, name: u.name, email: u.email, serverId: u.id });
         if (!state.calendars[id]) state.calendars[id] = {};
       }
     });
@@ -2706,10 +2790,19 @@ async function addUserRecord(ev) {
 async function addGroupRecord() {
   const name = (state.toolForm.group || "").trim();
   if (!name) { toast("Enter a group name"); return; }
-  try { await api("POST", "/api/groups", { name }); } catch (err) { console.error(err); }
-  if (!state.groups.includes(name)) state.groups.push(name);
-  state.toolForm.group = "";
-  toast("Group saved");
+  try {
+    await api("POST", "/api/groups", { name });
+    if (state.auth && state.auth.token) {
+      await refreshSignedInUser();
+      await loadGymContext();
+    }
+    if (!state.groups.includes(name)) state.groups.push(name);
+    state.toolForm.group = "";
+    toast("Group saved");
+  } catch (err) {
+    toast(err.message || "Could not create that group");
+    console.error(err);
+  }
   render();
 }
 async function saveUserEdit(row, values) {
@@ -3697,24 +3790,65 @@ function groupCards(led, athletes) {
       ${addHtml}
     </article>`;
   }).join("");
-  return `<h2>Your groups</h2>
-    <p class="lede">Add an athlete to a group you lead, or remove them from it. An athlete belongs to one group.</p>
-    <form class="inline-form" id="create-group" onsubmit="createLedGroup(event); return false;">
-      <input class="plain" id="new-group-name" placeholder="Group name" required>
-      <button class="team-action add" type="submit">Create group</button>
-    </form>
-    <div class="grid-cards" id="group-cards">${cards || `<p class="hint">Create a group to add athletes.</p>`}</div>`;
+  return `<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-top:16px">
+      <h2 style="margin:0">Your groups</h2>
+      <button class="ghost" type="button" onclick="goTool('users');state.userTab='groups';render()">Manage Groups &amp; Join Codes →</button>
+    </div>
+    <p class="lede">Assign unassigned athletes to a group you lead, or open <strong>Manage Groups &amp; Join Codes</strong> to create/rename groups and generate team join codes.</p>
+    <div class="grid-cards" id="group-cards">${cards || `<p class="hint">No groups yet. Click "Manage Groups &amp; Join Codes →" to create a group.</p>`}</div>`;
+}
+function workoutOptionLabel(w) {
+  const exInfo = w.exercise_count
+    ? `${w.exercise_count} ex${w.exercise_summary ? ": " + w.exercise_summary : ""}`
+    : "No exercises";
+  const datePart = w.scheduled_date && !w.is_template ? ` · last ${w.scheduled_date}` : "";
+  const progPart = w.program_name && w.program_name !== "wourkout" ? ` [${w.program_name}]` : "";
+  return `${w.title}${progPart} (${exInfo}${datePart})`;
 }
 function squadView() {
-  const ctx = state.gymContext || { athletes: [], teams: [], codes: [] };
+  const ctx = state.gymContext || { athletes: [], teams: [], codes: [], workouts: [] };
   const athletes = ctx.athletes || [];
-  const codes = (ctx.codes || []).filter((c) => c.kind === "team");
   const led = ledTeams(ctx);
   const teams = led.map((t) => t.name).join(", ") || "your teams";
+  const assignableAthletes = athletes.filter(
+    (a) => a.id === (state.auth.user && state.auth.user.id) || led.some((t) => t.id === a.team_id)
+  );
+  const defaultTarget = assignableAthletes.length
+    ? "user:" + assignableAthletes[0].id
+    : (led.length ? "group:" + led[0].id : "");
+  const selectedTarget = state.assignTarget || defaultTarget;
+  const targetUserId = selectedTarget.startsWith("user:") ? parseInt(selectedTarget.slice(5), 10) : null;
+  const selectedAthlete = targetUserId ? assignableAthletes.find((a) => a.id === targetUserId) : null;
+
+  const allWorkouts = ctx.workouts || [];
+  const athletePrevious = targetUserId
+    ? allWorkouts.filter((w) => !w.is_template && (w.assigned_athlete_ids || []).includes(targetUserId))
+    : [];
+  const prevIds = new Set(athletePrevious.map((w) => w.id));
+  const savedGymWorkouts = allWorkouts.filter((w) => !w.is_template && !prevIds.has(w.id));
+  const templateWorkouts = allWorkouts.filter((w) => w.is_template);
+
+  let workoutOptionsHtml = "";
+  if (athletePrevious.length) {
+    workoutOptionsHtml += `<optgroup label="Previous Workouts for ${esc((selectedAthlete && selectedAthlete.name) || "Athlete")}">
+      ${athletePrevious.map((w) => `<option value="${w.id}" ${String(state.assignWorkoutId) === String(w.id) ? "selected" : ""}>${esc(workoutOptionLabel(w))}</option>`).join("")}
+    </optgroup>`;
+  }
+  if (savedGymWorkouts.length) {
+    workoutOptionsHtml += `<optgroup label="Saved Gym Workouts">
+      ${savedGymWorkouts.map((w) => `<option value="${w.id}" ${String(state.assignWorkoutId) === String(w.id) ? "selected" : ""}>${esc(workoutOptionLabel(w))}</option>`).join("")}
+    </optgroup>`;
+  }
+  if (templateWorkouts.length) {
+    workoutOptionsHtml += `<optgroup label="Program Library Templates">
+      ${templateWorkouts.map((w) => `<option value="${w.id}" ${String(state.assignWorkoutId) === String(w.id) ? "selected" : ""}>${esc(workoutOptionLabel(w))}</option>`).join("")}
+    </optgroup>`;
+  }
+
   return `<section class="stage light-page role-home" id="coach-assign">
     <div class="role-kicker">Coach</div>
     <h1>Athletes on ${esc(teams)}</h1>
-    <p class="lede">You can assign workouts, read notes, and add or remove athletes on teams you lead. Other coaches' athletes stay hidden.</p>
+    <p class="lede">You can assign workouts, read athlete notes, and organize athletes on teams you lead. Other coaches' athletes stay hidden.</p>
     ${state.assignResult ? `<div class="banner-ok">${esc(state.assignResult)}</div>` : ""}
     ${groupCards(led, athletes)}
     <h2>Athletes</h2>
@@ -3722,22 +3856,43 @@ function squadView() {
       <tr><th>Athlete</th><th>Team</th><th>Email</th><th>Note to you</th><th>Group</th></tr>
       ${athletes.map((a) => `<tr><td>${esc(a.name)}</td><td>${esc(a.team_name || "No team")}</td><td>${esc(a.email)}</td><td>${esc(a.latest_note || "—")}</td><td>${groupControl(a, led)}</td></tr>`).join("") || `<tr><td colspan="5">No athletes on your teams.</td></tr>`}
     </table>
-    <h2>Assign a workout</h2>
-    <form class="inline-form" onsubmit="assignWorkout(event); return false;">
-      <select class="plain" id="assign-athlete" required>
-        ${athletes.filter((a) => a.id === (state.auth.user && state.auth.user.id) || led.some((t) => t.id === a.team_id)).map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join("")}
+    <h2>Quick-assign a saved workout</h2>
+    <p class="lede">Pick an athlete (or entire group) and assign one of their previous workouts, a saved gym workout, or a program template — or open the Calendar Builder to design a brand-new workout with custom exercises, sets, and reps.</p>
+    <form class="inline-form" onsubmit="assignWorkout(event); return false;" style="flex-wrap:wrap;gap:8px;align-items:center">
+      <select class="plain" id="assign-target" onchange="state.assignTarget=this.value;render()" required>
+        ${assignableAthletes.length ? `<optgroup label="Athletes">
+          ${assignableAthletes.map((a) => `<option value="user:${a.id}" ${selectedTarget === "user:" + a.id ? "selected" : ""}>${esc(a.name)}${a.team_name ? " (" + esc(a.team_name) + ")" : ""}</option>`).join("")}
+        </optgroup>` : ""}
+        ${led.length ? `<optgroup label="Entire Group">
+          ${led.map((t) => `<option value="group:${t.id}" ${selectedTarget === "group:" + t.id ? "selected" : ""}>Group: ${esc(t.name)}</option>`).join("")}
+        </optgroup>` : ""}
       </select>
-      <input class="plain" id="assign-title" placeholder="Workout name" required>
-      <input class="plain" id="assign-date" type="date" value="2026-10-16" required>
-      <button class="req" type="submit">Assign workout</button>
+      <select class="plain" id="assign-workout-id" onchange="state.assignWorkoutId=this.value" style="min-width:280px;max-width:460px" required>
+        ${workoutOptionsHtml || `<option value="">No saved workouts yet — build one in Calendar</option>`}
+      </select>
+      <input class="plain" id="assign-date" type="date" value="${esc(state.assignDate || APP_TODAY || "2026-10-16")}" onchange="state.assignDate=this.value" required>
+      <button class="req" type="submit" ${!workoutOptionsHtml ? "disabled" : ""}>Assign workout</button>
+      <button class="ghost" type="button" onclick="openAthleteInBuild()">Build New Workout in Calendar →</button>
     </form>
-    <h2>Team code</h2>
-    <p class="lede">A team code makes a new signup an athlete on that team.</p>
-    <div class="code-row">
-      ${codes.map((c) => `<code class="join-code">${esc(c.code)}</code> <span class="hint">${esc(c.team_name || "")}</span>`).join(" ") || "<span class='hint'>No team code yet.</span>"}
-      ${led.map((t) => `<button class="ghost" type="button" onclick="createJoinCode('team', ${t.id})">Code for ${esc(t.name)}</button>`).join("")}
-    </div>
   </section>`;
+}
+function openAthleteInBuild() {
+  const targetEl = document.getElementById("assign-target");
+  const dateEl = document.getElementById("assign-date");
+  const target = (targetEl && targetEl.value) || state.assignTarget || "";
+  const date = (dateEl && dateEl.value) || state.assignDate || APP_TODAY;
+  if (target.startsWith("user:")) {
+    const uidNum = parseInt(target.slice(5), 10);
+    const list = buildAthletes();
+    const match = list.find((a) => a.serverId === uidNum);
+    if (match) state.athleteId = match.id;
+  }
+  if (date) {
+    state.focusDay = date;
+    state.weekStart = sundayOf(date);
+  }
+  state.view = "build";
+  render();
 }
 
 function renderCodeGate() {
@@ -3859,21 +4014,34 @@ async function removeAthleteFromGroup(teamId, athleteId) {
 }
 async function assignWorkout(e) {
   if (e) e.preventDefault();
-  const athleteId = parseInt(document.getElementById("assign-athlete").value, 10);
-  const title = document.getElementById("assign-title").value.trim();
-  const scheduled_date = document.getElementById("assign-date").value;
-  const athlete = ((state.gymContext && state.gymContext.athletes) || []).find((a) => a.id === athleteId);
+  const targetEl = document.getElementById("assign-target");
+  const workoutEl = document.getElementById("assign-workout-id");
+  const dateEl = document.getElementById("assign-date");
+  const target = (targetEl && targetEl.value) || state.assignTarget || "";
+  const workoutId = parseInt(workoutEl && workoutEl.value, 10);
+  const scheduled_date = (dateEl && dateEl.value) || state.assignDate || APP_TODAY;
+  if (!target || !workoutId || !scheduled_date) {
+    toast("Select a target, workout, and date");
+    return;
+  }
+  const payload = { workout_id: workoutId, scheduled_date };
+  let targetLabel = "your athlete";
+  const ctx = state.gymContext || { athletes: [], teams: [], workouts: [] };
+  if (target.startsWith("group:")) {
+    payload.group_id = parseInt(target.slice(6), 10);
+    const team = (ctx.teams || []).find((t) => t.id === payload.group_id);
+    targetLabel = team ? "group " + team.name : "your group";
+  } else {
+    payload.user_id = parseInt(target.replace(/^user:/, ""), 10);
+    const athlete = (ctx.athletes || []).find((a) => a.id === payload.user_id);
+    targetLabel = (athlete && athlete.name) || "your athlete";
+  }
   try {
-    await api("POST", "/api/coach/assign", {
-      athlete_id: athleteId,
-      title,
-      scheduled_date,
-      exercise_name: "Back Squat",
-      sets: 3,
-      reps: "5",
-      weight: "80"
-    });
-    state.assignResult = "Assigned “" + title + "” to " + ((athlete && athlete.name) || "your athlete") + " on " + scheduled_date + ".";
+    const res = await api("POST", "/api/assignments", payload);
+    const workoutObj = (ctx.workouts || []).find((w) => w.id === workoutId);
+    const title = (res && res.workout_title) || (workoutObj && workoutObj.title) || "Workout";
+    await loadGymContext();
+    state.assignResult = "Assigned “" + title + "” to " + targetLabel + " on " + scheduled_date + ".";
     toast("Workout assigned");
   } catch (err) {
     state.assignResult = "";
@@ -4401,6 +4569,11 @@ window.createLedGroup = createLedGroup;
 window.addAthleteToGroup = addAthleteToGroup;
 window.removeAthleteFromGroup = removeAthleteFromGroup;
 window.assignWorkout = assignWorkout;
+window.openAthleteInBuild = openAthleteInBuild;
+window.editServerGroup = editServerGroup;
+window.deleteServerGroup = deleteServerGroup;
+window.deleteServerJoinCode = deleteServerJoinCode;
+window.copyText = copyText;
 window.sendAthleteNote = sendAthleteNote;
 window.redeemCode = redeemCode;
 window.createGym = createGym;
