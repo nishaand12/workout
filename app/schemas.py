@@ -440,6 +440,26 @@ class GymMemberCreated(BaseModel):
     user: UserResponse
     temporary_password: Optional[str] = None
 
+class BulkAthleteItem(BaseModel):
+    name: str
+    email: Optional[str] = ""
+
+class BulkAthleteUploadRequest(BaseModel):
+    team_id: int
+    athletes: List[BulkAthleteItem] = []
+
+class BulkAthleteUploadResponse(BaseModel):
+    added_count: int
+    users: List[GymMemberCreated] = []
+
+class CalendarScheduleEntry(BaseModel):
+    assignment_id: int
+    scheduled_date: str
+    user_id: Optional[int] = None
+    group_id: Optional[int] = None
+    is_group_assignment: bool = False
+    workout: WorkoutDetailResponse
+
 class MoveTeamRequest(BaseModel):
     coach_id: int
 
