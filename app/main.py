@@ -31,7 +31,8 @@ from app.schemas import (
     PasswordResetRequest, PasswordResetConfirm, SupabaseAuthSync,
     ViewSwitch, GymCreate, JoinCodeCreate, JoinCodeRedeem, JoinCodeResponse,
     GymContext, GymMemberCreate, GymMemberCreated, MoveTeamRequest,
-    CoachAssignRequest, AthleteNoteRequest, ScheduleItem
+    CoachAssignRequest, AthleteNoteRequest, ScheduleItem,
+    BulkAthleteUploadRequest, BulkAthleteUploadResponse, CalendarScheduleEntry
 )
 from app import crud
 
@@ -127,7 +128,8 @@ async def lifespan(app: FastAPI):
         db = SessionLocal()
         try:
             crud.seed_database_if_empty(db)
-            crud.seed_default_users(db)
+            if not settings.SUPABASE_URL:
+                crud.seed_default_users(db)
             crud.scrub_visible_brand(db)
         finally:
             db.close()
@@ -435,12 +437,19 @@ def list_sessions(db: Session = Depends(get_db)):
 def list_records(
     user_id: Optional[int] = Query(None, description="Filter by athlete user_id"),
     include_global: bool = Query(True, description="Include team-wide/unassigned records"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    viewer: Optional[crud.User] = Depends(get_current_user),
 ):
-    return crud.get_personal_records(db, user_id=user_id, include_global=include_global)
+    return crud.get_personal_records(db, user_id=user_id, include_global=include_global, viewer=viewer)
 
 @app.post("/api/records", response_model=PersonalRecordResponse, status_code=status.HTTP_201_CREATED)
-def create_record(record_in: PersonalRecordCreate, db: Session = Depends(get_db)):
+def create_record(
+    record_in: PersonalRecordCreate,
+    db: Session = Depends(get_db),
+    viewer: Optional[crud.User] = Depends(get_current_user),
+):
+    if viewer is not None and record_in.user_id is None:
+        record_in.user_id = viewer.id
     return crud.add_personal_record(db, record_in)
 
 @app.put("/api/records/{record_id}", response_model=PersonalRecordResponse)
@@ -917,6 +926,30 @@ def add_athlete(body: GymMemberCreate, db: Session = Depends(get_db), current_us
         raise HTTPException(status_code=400, detail="An athlete belongs to exactly one team.")
     user, password = crud.add_gym_athlete(db, current_user, body.name, body.email, body.team_id)
     return {"user": user, "temporary_password": password}
+
+@app.post("/api/gym/athletes/bulk", response_model=BulkAthleteUploadResponse, status_code=status.HTTP_201_CREATED)
+def add_athletes_bulk(
+    body: BulkAthleteUploadRequest,
+    db: Session = Depends(get_db),
+    current_user: crud.User = Depends(require_auth),
+):
+    return crud.bulk_add_gym_athletes(db, current_user, body.team_id, body.athletes)
+
+@app.get("/api/calendar/schedule", response_model=List[CalendarScheduleEntry])
+def get_calendar_schedule(
+    user_id: Optional[int] = Query(None),
+    group_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    viewer: Optional[crud.User] = Depends(get_current_user),
+):
+    return crud.get_calendar_schedule(db, viewer, user_id=user_id, group_id=group_id)
+
+@app.get("/api/gym/activity")
+def get_gym_activity(
+    db: Session = Depends(get_db),
+    current_user: crud.User = Depends(require_auth),
+):
+    return crud.get_gym_activity(db, current_user)
 
 @app.delete("/api/gym/athletes/{user_id}")
 def remove_athlete(user_id: int, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
