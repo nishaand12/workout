@@ -350,7 +350,6 @@ const state = {
   teamFilter: false,
   compose: false,
   startedAt: null,
-  requestNote: "",
   role: "coach",
   actingAthlete: null,
   serverUserId: null,
@@ -597,9 +596,6 @@ function nav() {
     ${links}
     <div class="spacer"></div>
     ${heldRoles(user).length > 1 ? `<div class="role-switch">${heldRoles(user).map((r) => `<button type="button" class="${state.role === r ? "on" : ""}" onclick="switchRole('${r}')">${esc(r)}</button>`).join("")}</div>` : ""}
-    ${!isAthlete && state.role !== "admin" ? `<button class="req" onclick="openRequest(event)">REQUEST PROGRAM</button>` : ""}
-    <button class="iconbtn" title="Help" onclick="toggleNav('help', event)">?</button>
-    <button class="iconbtn" title="Notifications" onclick="toggleNav('bell', event)">🔔</button>
     <div class="nav-profile">
       <div class="nav-avatar" style="background:${avatarBg}">${initial}</div>
       <div class="nav-user-info">
@@ -625,8 +621,6 @@ function menuFor(id) {
       ["packets", "PACKETS & SHEETS"], ["attendance", "ATTENDANCE"], ["reporting", "REPORTING"], ["payments", "PAYMENTS"]
     ].map(([v, l]) => `<button onclick="goTool('${v}')">${l}</button>`).join("")}</div>`;
   }
-  if (id === "help") return `<div class="menu" style="top:40px;right:0"><div class="help">Shift+Enter new exercise<br>Shift+I additional info<br>Ctrl/Cmd+P add property<br>Ctrl/Cmd+C copy selection<br>Ctrl/Cmd+V paste on hovered day<br>Ctrl/Cmd+Z undo</div></div>`;
-  if (id === "bell") return `<div class="menu" style="top:40px;right:0"><div class="help">Eric completed Volleyball Games<br>Leah logged Push Up · 4:40</div></div>`;
   if (id === "account") {
     const who = state.role === "athlete" ? (ATHLETES.find((a) => a.id === state.actingAthlete) || {}).name : "Coach";
     return `<div class="menu" style="top:40px;right:0;max-height:70vh;overflow:auto">
@@ -663,16 +657,6 @@ function goTool(view) {
   if (view === "goals") loadGoals();
   if (view === "reporting" || view === "attendance") loadCompliance();
 }
-function toggleNav(id, ev) {
-  ev.stopPropagation();
-  state.navMenu = state.navMenu === id ? null : id;
-  render();
-}
-function openRequest(ev) {
-  ev.stopPropagation();
-  state.modal = { type: "request" };
-  render();
-}
 
 function rightRail() {
   if (state.role === "athlete" || state.role === "admin" || state.view === "squad" || state.view === "admin") return "";
@@ -705,7 +689,6 @@ function body() {
     case "feed": return feedView();
     case "users": return usersView();
     case "exercises": return liftsView();
-    case "ams": return amsView();
     case "daily": return dailyView();
     case "weightroom": return weightroomView();
     case "whiteboard": return boardView();
@@ -788,7 +771,7 @@ function dayCol(date) {
       </span>
     </div>
     <div class="week-label">${esc(day.weekLabel || "")}</div>
-    <input class="day-title ${day.title ? "" : "placeholder"}" data-focus="title-${date}" value="${esc(day.title)}" placeholder="Add Workout Name" onchange="renameDay('${date}', this.value)">
+    <button type="button" class="day-title ${day.title ? "" : "placeholder"}" onclick="editWorkoutDay('${date}', event)">${esc(day.title || "Add Workout Name")}</button>
     ${day.savedWorkoutId ? `<div class="saved-pill">Saved for ${esc((ATHLETES.find((a) => a.id === day.savedFor) || {}).name || "athlete")}</div>` : ""}
     <div class="row" style="margin-top:0">
       <input type="checkbox" title="Select all" ${sel.length && sel.length === day.items.length ? "checked" : ""} onclick="toggleAll('${date}', this.checked);event.stopPropagation()">
@@ -860,20 +843,91 @@ function addItem(date, it) {
   }
   day.items.push(it);
   state.searchDay = null;
-  state.editor = { day: date, id: it.id };
+  state.editor = null;
   state.focusDay = date;
   refreshFutureCopies(date);
   noteHist("Added " + it.name);
-  render();
+  openEditor(date, it.id);
 }
 
 function openEditor(date, id, ev) {
   if (ev) ev.stopPropagation();
-  state.editor = { day: date, id };
+  const it = findItem(date, id);
+  if (!it) return;
   state.focusDay = date;
   state.searchDay = null;
+  state.editor = null;
   state.propMenu = false;
-  render();
+  openEdit({
+    title: "Edit workout",
+    date,
+    id,
+    fields: workoutItemFields(it),
+    onSave: (values) => saveWorkoutItem(date, id, values)
+  });
+}
+function workoutItemFields(it) {
+  const fields = [{ key: "name", label: "Exercise name", value: it.name || "" }];
+  if (it.type === "break") return fields;
+  if (it.type === "video") {
+    fields.push({ key: "videoUrl", label: "Video URL", value: it.videoUrl || "" });
+    return fields;
+  }
+  if (it.type === "rest") {
+    fields.push({ key: "seconds", label: "Seconds", value: String((it.reps && it.reps[0]) || 60) });
+    return fields;
+  }
+  if (it.type === "questionnaire") {
+    fields.push({ key: "questions", label: "Questions", value: (it.questions || []).join("\n"), multiline: true });
+    return fields;
+  }
+  if (it.type === "circuit") {
+    fields.push({ key: "stations", label: "Stations", value: it.detail || "", multiline: true });
+    fields.push({ key: "sets", label: "Rounds", value: String(it.sets || 1) });
+    fields.push({ key: "note", label: "Additional info", value: it.note || "", multiline: true, maxlength: 255 });
+    return fields;
+  }
+  const n = Math.max(1, it.sets || 1);
+  fields.push({ key: "sets", label: "Sets", value: String(n) });
+  for (let i = 0; i < n; i++) {
+    const which = n > 1 ? ", set " + (i + 1) : "";
+    fields.push({ key: "reps-" + i, label: "Reps" + which, value: String((it.reps && it.reps[i]) ?? "") });
+    fields.push({ key: "load-" + i, label: "Load (kg)" + which, value: String((it.loads && it.loads[i]) ?? "") });
+  }
+  fields.push({ key: "note", label: "Additional info", value: it.note || "", multiline: true, maxlength: 255 });
+  return fields;
+}
+function saveWorkoutItem(date, id, values) {
+  const it = findItem(date, id);
+  if (!it) return;
+  const name = (values.name || "").trim();
+  if (!name) { toast("Name the exercise"); return; }
+  snapshot();
+  it.name = name;
+  if (it.type === "video") {
+    it.videoUrl = values.videoUrl || "";
+  } else if (it.type === "rest") {
+    const seconds = String(values.seconds || "60");
+    it.reps = [seconds];
+    it.note = seconds + "s";
+  } else if (it.type === "questionnaire") {
+    it.questions = String(values.questions || "").split("\n").map((line) => line.trim()).filter(Boolean);
+  } else if (it.type === "circuit") {
+    it.detail = values.stations || "";
+    resizeSets(it, parseInt(values.sets, 10) || 1);
+    it.note = String(values.note || "").slice(0, 255);
+  } else if (it.type !== "break") {
+    const sets = parseInt(values.sets, 10) || it.sets || 1;
+    resizeSets(it, sets);
+    for (let i = 0; i < it.sets; i++) {
+      if (values["reps-" + i] != null) it.reps[i] = values["reps-" + i];
+      if (values["load-" + i] != null) it.loads[i] = values["load-" + i];
+    }
+    it.note = String(values.note || "").slice(0, 255);
+  }
+  refreshFutureCopies(date);
+  state.modal = null;
+  toast("Workout saved");
 }
 function editorHead(date, it, day) {
   const index = day.items.findIndex((x) => x.id === it.id);
@@ -1051,12 +1105,45 @@ function duplicateItem(date, id) {
   render();
 }
 function editDetail(date, id) {
-  state.modal = { type: "detail", date, id, text: findItem(date, id).detail };
-  render();
+  const it = findItem(date, id);
+  if (!it) return;
+  openEdit({
+    title: "Edit description",
+    date,
+    id,
+    fields: [{ key: "text", label: "Description", value: it.detail || "", multiline: true }],
+    onSave: (values) => {
+      it.detail = values.text || "";
+      refreshFutureCopies(date);
+      state.modal = null;
+      render();
+    }
+  });
 }
 function openInfo(date, id) {
-  state.modal = { type: "info", date, id, text: findItem(date, id).note || "" };
-  render();
+  const it = findItem(date, id);
+  if (!it) return;
+  openEdit({
+    title: "Edit additional info",
+    hint: "This will appear for only this assignment (Limit 255 Characters).",
+    date,
+    id,
+    fields: [{ key: "text", label: "Additional info", value: it.note || "", multiline: true, maxlength: 255 }],
+    onSave: () => saveInfo()
+  });
+}
+function editWorkoutDay(date, ev) {
+  if (ev) ev.stopPropagation();
+  const day = ensureDay(date);
+  openEdit({
+    title: "Edit workout",
+    fields: [{ key: "title", label: "Workout name", value: day.title || "" }],
+    onSave: (values) => {
+      renameDay(date, values.title || "");
+      state.modal = null;
+      render();
+    }
+  });
 }
 function renameDay(date, value) {
   snapshot();
@@ -1757,10 +1844,11 @@ function previewDetail(day, it) {
   if (it.type === "questionnaire") {
     return it.questions.map((q, i) => `<div class="q">${i + 1}. ${esc(q)}</div>`).join("") + `<button class="complete" onclick="completeItem('${state.preview.date}','${it.id}')">Complete</button>`;
   }
-  const rows = Array.from({ length: it.sets || 1 }, (_, i) => `<tr><td>${i + 1}</td><td><input value="${esc(it.loads[i] || "")}" onchange="setCell('${state.preview.date}','${it.id}','load',${i}, this.value)"></td><td><input value="${esc(it.reps[i] || "")}" onchange="setCell('${state.preview.date}','${it.id}','reps',${i}, this.value)"></td></tr>`).join("");
+  const rows = Array.from({ length: it.sets || 1 }, (_, i) => `<tr><td>${i + 1}</td><td>${esc(it.loads[i] || "")}</td><td>${esc(it.reps[i] || "")}</td></tr>`).join("");
   return `<div class="ex-sub">${esc(scriptLine(it))}</div>
     ${it.detail ? `<div class="detail">${esc(it.detail)}</div>` : ""}
     <table class="sets"><tr><th>SET</th><th>WEIGHT (KG)</th><th>REPS</th></tr>${rows}</table>
+    <button class="comment" type="button" onclick="openEditor('${state.preview.date}','${it.id}')">Edit</button>
     <div class="tabs">
       <button onclick="toast('Opted out of ${esc(it.name)}')">OPT OUT</button>
       <button onclick="state.view='feed';state.feedMode='journal';render()">JOURNAL</button>
@@ -1958,8 +2046,15 @@ function feedCard(c, i) {
   </article>`;
 }
 function commentOn(i) {
-  state.modal = { type: "comment", i, text: state.comments[i] || "" };
-  render();
+  openEdit({
+    title: "Edit comment",
+    fields: [{ key: "text", label: "Comment", value: state.comments[i] || "", multiline: true }],
+    onSave: (values) => {
+      state.comments[i] = values.text || "";
+      state.modal = null;
+      toast("Comment saved");
+    }
+  });
 }
 function journalView() {
   return `<section class="stage light-page">
@@ -2007,7 +2102,7 @@ function usersView() {
         <input class="plain" placeholder="Group name" data-focus="group-name" value="${esc(state.toolForm.group || "")}" oninput="state.toolForm.group=this.value">
         <button class="req" type="submit">Add group</button>
       </form>
-      <div class="grid-cards">${state.groups.map((g, i) => `<article class="card"><input class="plain" value="${esc(g)}" onchange="renameGroup(${i}, this.value)"><div style="margin-top:8px"><button class="comment" onclick="state.groups.splice(${i},1);render()">Remove</button></div></article>`).join("")}</div></div>`;
+      <div class="grid-cards">${state.groups.map((g, i) => `<article class="card"><strong>${esc(g)}</strong><div style="margin-top:8px"><button class="comment" onclick="editGroup(${i})">Edit</button> <button class="comment" onclick="state.groups.splice(${i},1);render()">Remove</button></div></article>`).join("")}</div></div>`;
   } else if (state.userTab === "codes") {
     main = `<div class="light-page"><h1>Easy-Join Codes</h1><table class="data"><tr><th>Code</th><th>Group</th><th></th></tr>${state.joinCodes.map((c, i) => `<tr><td>${esc(c.code)}</td><td>${esc(c.group)}</td><td><button class="icon-a" onclick="navigator.clipboard.writeText('${esc(c.code)}');toast('Copied')">Copy</button> <button class="icon-a" onclick="state.joinCodes.splice(${i},1);render()">✕</button></td></tr>`).join("")}</table>
       <button class="req" style="margin-top:12px" onclick="state.joinCodes.push({code:'NEW'+Math.floor(Math.random()*90+10), group: state.groups[0]});render()">+ Code</button></div>`;
@@ -2078,8 +2173,29 @@ async function removeUser(id) {
 }
 function editUser(id) {
   const row = state.coaches.concat(state.athletes).find((r) => r.id === id);
-  state.modal = { type: "user", row };
-  render();
+  if (!row) return;
+  openEdit({
+    title: "Edit user",
+    fields: [
+      { key: "first", label: "First name", value: row.first || "" },
+      { key: "last", label: "Last name", value: row.last || "" },
+      { key: "email", label: "Email", value: row.email || "", type: "email" }
+    ],
+    onSave: (values) => saveUserEdit(row, values)
+  });
+}
+function editGroup(index) {
+  openEdit({
+    title: "Edit group",
+    fields: [{ key: "name", label: "Group name", value: state.groups[index] || "" }],
+    onSave: (values) => {
+      const next = (values.name || "").trim();
+      if (!next) { toast("Enter a group name"); return; }
+      state.groups[index] = next;
+      state.modal = null;
+      toast("Group renamed");
+    }
+  });
 }
 function addNamed(kind) {
   const name = (state.toolForm[kind] || "").trim();
@@ -2169,19 +2285,28 @@ async function addGroupRecord() {
   toast("Group saved");
   render();
 }
-async function saveUserEdit() {
-  const r = state.modal && state.modal.row;
-  if (!r) return;
-  const name = (r.first + " " + r.last).trim();
-  if (r.serverId) {
-    try { await api("PUT", "/api/users/" + r.serverId, { name, email: r.email }); }
+async function saveUserEdit(row, values) {
+  if (!row || !values) return;
+  const first = (values.first || "").trim();
+  const last = (values.last || "").trim();
+  const email = (values.email || "").trim();
+  if (!first || !email) { toast("First name and email are required"); return; }
+  const name = (first + " " + last).trim();
+  if (row.serverId) {
+    try { await api("PUT", "/api/users/" + row.serverId, { name, email }); }
     catch (err) { toast("Could not save user"); console.error(err); return; }
   }
-  const athlete = ATHLETES.find((a) => a.id === r.id || a.email === r.email);
-  if (athlete) athlete.name = name;
+  const previousEmail = row.email;
+  row.first = first;
+  row.last = last;
+  row.email = email;
+  const athlete = ATHLETES.find((a) => a.id === row.id || a.email === previousEmail || a.email === email);
+  if (athlete) {
+    athlete.name = name;
+    athlete.email = email;
+  }
   state.modal = null;
   toast("User saved");
-  render();
 }
 
 function exBucket(category) {
@@ -2189,6 +2314,33 @@ function exBucket(category) {
   if (c.indexOf("circuit") >= 0) return "Circuits";
   if (c.indexOf("question") >= 0) return "Questionnaires";
   return "Lifts";
+}
+function categoryChoice(category) {
+  const bucket = exBucket(category);
+  if (bucket === "Circuits") return "Circuit";
+  if (bucket === "Questionnaires") return "Questionnaire";
+  return "Strength";
+}
+function editExercise(id) {
+  const row = state.serverExercises.find((e) => e.id === id);
+  if (!row) return;
+  openEdit({
+    title: "Edit exercise",
+    fields: [
+      { key: "name", label: "Name", value: row.name || "" },
+      { key: "category", label: "Category", value: categoryChoice(row.category), options: ["Strength", "Circuit", "Questionnaire"] }
+    ],
+    onSave: async (values) => {
+      const name = (values.name || "").trim();
+      if (!name) { toast("Name the exercise"); return; }
+      row.name = name;
+      row.category = values.category || "Strength";
+      const ok = await saveExerciseName(id);
+      if (!ok) return;
+      state.modal = null;
+      render();
+    }
+  });
 }
 function exerciseRows() {
   const q = state.liftQ.toLowerCase();
@@ -2215,9 +2367,9 @@ function liftsView() {
       <input class="plain" style="width:100%;margin:8px 0" placeholder="Search" data-focus="lift-q" value="${esc(state.liftQ)}" oninput="state.liftQ=this.value;render()">
       <table class="data"><tr><th>Name</th><th>Category</th><th></th></tr>
         ${rows.map((l) => server ? `<tr>
-          <td><input class="plain" value="${esc(l.name)}" oninput="rememberExercise(${l.id}, 'name', this.value)" onchange="saveExerciseName(${l.id})"></td>
-          <td><select class="plain" onchange="rememberExercise(${l.id}, 'category', this.value);saveExerciseName(${l.id})">${["Strength", "Circuit", "Questionnaire"].map((c) => `<option ${exBucket(l.category) === exBucket(c) ? "selected" : ""}>${c}</option>`).join("")}</select></td>
-          <td><button class="icon-a" onclick="hideExercise(${l.id})">Hide</button></td>
+          <td>${esc(l.name)}</td>
+          <td>${esc(categoryChoice(l.category))}</td>
+          <td><button class="icon-a" onclick="editExercise(${l.id})">Edit</button> <button class="icon-a" onclick="hideExercise(${l.id})">Hide</button></td>
         </tr>` : `<tr><td>${esc(l.name)}</td><td>${esc(l.type)}</td><td></td></tr>`).join("")}
       </table>
       ${rows.length ? "" : `<p class="hint">No ${esc(state.managing.toLowerCase())} yet.</p>`}
@@ -2263,16 +2415,17 @@ async function addExerciseRecord() {
 }
 async function saveExerciseName(id) {
   const row = state.serverExercises.find((e) => e.id === id);
-  if (!row || !String(row.name || "").trim()) return;
+  if (!row || !String(row.name || "").trim()) return false;
   try {
     const updated = await api("PUT", "/api/exercises/" + id, { name: row.name.trim(), category: row.category || "Strength" });
     row.name = updated.name;
     row.category = updated.category;
     toast("Exercise saved");
-    render();
+    return true;
   } catch (err) {
     toast("Could not save exercise");
     console.error(err);
+    return false;
   }
 }
 function hideExercise(id) {
@@ -2281,23 +2434,6 @@ function hideExercise(id) {
   render();
 }
 
-function amsView() {
-  const cards = [
-    ["Wearables Dashboard", "Quickly review biometric data collected by wearable devices"],
-    ["Load Monitoring Dashboard", "Compare athlete weight-room load to questionnaire responses"],
-    ["KPI Tracker", "Share athlete workout data with outside stakeholders"],
-    ["Body Heatmap", "Monitor athletes experiencing any pain or soreness"],
-    ["Habit Tracker", "Create, assign, and monitor habits for users"],
-    ["Volume Tracker", "View detailed exercise volume data for groups and individuals"]
-  ];
-  return `<section class="stage light-page">
-    <div class="ams-hero"><h2>Fewer Clicks, More Coaching</h2><div class="badge-ams">That's wourkout AMS.</div></div>
-    <div class="hint" style="margin-bottom:8px">Core subscription <button class="req" onclick="toast('Core subscription requested')">PURCHASE CORE SUBSCRIPTION</button></div>
-    <div class="ams-grid">${cards.map(([t, d]) => `<article class="ams-card"><div class="chartfake"></div><div class="lock">🔒</div><strong>${t}</strong><p>${d}</p></article>`).join("")}</div>
-    <h3>Add ons</h3>
-    <div class="panel">Nutrition logging and parent reporting are available as add-ons. <button class="ghost" style="color:#222" onclick="toast('Add-on saved to the request')">Notify me</button></div>
-  </section>`;
-}
 function dailyView() {
   const date = "2026-10-14";
   const cards = ATHLETES.map((a) => {
@@ -2316,8 +2452,23 @@ function boardView() {
 function maxesView() {
   const rows = state.prs[state.athleteId] || (state.prs[state.athleteId] = []);
   return `<section class="stage light-page"><h1>Maxes / PRs · ${esc(athlete().name)}</h1>
-    <table class="data"><tr><th>Lift</th><th>Kg</th></tr>${rows.map((r, i) => `<tr><td>${esc(r[0])}</td><td><input class="plain" value="${esc(r[1])}" onchange="state.prs['${state.athleteId}'][${i}][1]=this.value"></td></tr>`).join("")}</table>
+    <table class="data"><tr><th>Lift</th><th>Kg</th><th></th></tr>${rows.map((r, i) => `<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td><button class="comment" onclick="editPr(${i})">Edit</button></td></tr>`).join("")}</table>
     <button class="req" style="margin-top:8px" onclick="const n=prompt('Lift'); if(n){state.prs['${state.athleteId}'].push([n,'']);render()}">+ PR</button></section>`;
+}
+function editPr(index) {
+  const rows = state.prs[state.athleteId] || [];
+  const row = rows[index];
+  if (!row) return;
+  openEdit({
+    title: "Edit PR",
+    hint: row[0] || "",
+    fields: [{ key: "kg", label: "Kg", value: row[1] || "" }],
+    onSave: (values) => {
+      row[1] = values.kg || "";
+      state.modal = null;
+      toast("PR saved");
+    }
+  });
 }
 function boardLeader() {
   const scores = ATHLETES.map((a) => {
@@ -2341,8 +2492,9 @@ function calendarsView() {
       <button class="req" type="submit">Add calendar</button>
     </form>
     <div class="grid-cards">${ATHLETES.map((a) => `<article class="card">
-      <input class="plain" value="${esc(a.name)}" onchange="renameCalendar('${a.id}', this.value)">
+      <strong>${esc(a.name)}</strong>
       <div class="hint">${Object.keys(state.calendars[a.id] || {}).length} programmed days · ${esc(a.email)}</div>
+      <button class="comment" onclick="editCalendar('${a.id}')">Edit</button>
       <button class="comment" onclick="state.athleteId='${a.id}';state.view='build';render()">Open calendar</button>
     </article>`).join("")}</div></section>`;
 }
@@ -2359,6 +2511,20 @@ function addCalendar() {
   state.toolForm.calEmail = "";
   toast("Calendar added");
   render();
+}
+function editCalendar(id) {
+  const person = ATHLETES.find((a) => a.id === id);
+  if (!person) return;
+  openEdit({
+    title: "Edit calendar",
+    fields: [{ key: "name", label: "Athlete name", value: person.name || "" }],
+    onSave: (values) => {
+      const next = (values.name || "").trim();
+      if (!next) { toast("Name the athlete"); return; }
+      state.modal = null;
+      renameCalendar(id, next);
+    }
+  });
 }
 function renameCalendar(id, name) {
   const next = (name || "").trim();
@@ -2405,7 +2571,7 @@ function goalsView() {
           <strong>${esc((r.exercise && r.exercise.name) || "Goal")}</strong>
           <button class="icon-a" title="Delete Goal" onclick="deleteGoalRecord(${r.id})">🗑</button>
         </div>
-        <div class="row" style="margin:8px 0"><input class="plain" value="${esc(r.weight)}" oninput="rememberGoal(${r.id}, this.value)" onchange="saveGoalWeight(${r.id})"> kg</div>
+        <div class="row" style="margin:8px 0"><strong>${esc(r.weight)}</strong> kg <button class="comment" onclick="editGoal(${r.id})">Edit</button></div>
         <div><span class="goal-assignee-tag ${r.user ? '' : 'team'}">👤 ${esc(athleteName)}</span></div>
         <div class="hint" style="margin-top:6px">${esc(r.notes || "")}</div>
       </article>`;
@@ -2427,17 +2593,33 @@ function rememberGoal(id, value) {
   const rec = state.serverRecords.find((r) => r.id === id);
   if (rec) rec.weight = value;
 }
-async function saveGoalWeight(id) {
+function editGoal(id) {
   const rec = state.serverRecords.find((r) => r.id === id);
   if (!rec) return;
+  openEdit({
+    title: "Edit goal",
+    fields: [{ key: "weight", label: "Weight (kg)", value: rec.weight == null ? "" : String(rec.weight) }],
+    onSave: async (values) => {
+      rec.weight = values.weight;
+      const ok = await saveGoalWeight(id);
+      if (!ok) return;
+      state.modal = null;
+      render();
+    }
+  });
+}
+async function saveGoalWeight(id) {
+  const rec = state.serverRecords.find((r) => r.id === id);
+  if (!rec) return false;
   try {
     const updated = await api("PUT", "/api/records/" + id, { weight: parseFloat(rec.weight) || 0 });
     rec.weight = updated.weight;
     toast("Goal updated");
-    render();
+    return true;
   } catch (err) {
     toast("Could not update that goal");
     console.error(err);
+    return false;
   }
 }
 async function loadGoals(userId) {
@@ -2504,10 +2686,29 @@ function docsView() {
       <button class="req" type="submit">Add link</button>
     </form>
     <div class="grid-cards">${state.docs.map((d, i) => `<article class="card">
-      <input class="plain" value="${esc(d.name)}" onchange="state.docs[${i}].name=this.value;toast('Document saved')">
-      <input class="plain" value="${esc(d.url)}" onchange="state.docs[${i}].url=this.value;toast('Document saved')" style="margin-top:6px">
-      <div style="margin-top:8px"><a href="${esc(d.url)}" target="_blank">Open</a> <button class="comment" onclick="state.docs.splice(${i},1);render()">Remove</button></div>
+      <strong>${esc(d.name)}</strong>
+      <div class="hint">${esc(d.url)}</div>
+      <div style="margin-top:8px"><a href="${esc(d.url)}" target="_blank">Open</a> <button class="comment" onclick="editDoc(${i})">Edit</button> <button class="comment" onclick="state.docs.splice(${i},1);render()">Remove</button></div>
     </article>`).join("")}</div></section>`;
+}
+function editDoc(index) {
+  const doc = state.docs[index];
+  if (!doc) return;
+  openEdit({
+    title: "Edit document",
+    fields: [
+      { key: "name", label: "Name", value: doc.name || "" },
+      { key: "url", label: "URL", value: doc.url || "" }
+    ],
+    onSave: (values) => {
+      const name = (values.name || "").trim();
+      if (!name) { toast("Name the document"); return; }
+      doc.name = name;
+      doc.url = (values.url || "").trim() || "#";
+      state.modal = null;
+      toast("Document saved");
+    }
+  });
 }
 function addDoc() {
   const name = (state.toolForm.docName || "").trim();
@@ -2525,7 +2726,20 @@ function packetsView() {
       <input class="plain" placeholder="Packet name" data-focus="packet-name" value="${esc(state.toolForm.packet || "")}" oninput="state.toolForm.packet=this.value">
       <button class="req" type="submit">Add packet</button>
     </form>
-    <div class="grid-cards">${state.packets.map((p, i) => `<article class="card"><input class="plain" value="${esc(p)}" onchange="state.packets[${i}]=this.value;toast('Packet saved')"><div style="margin-top:8px"><button class="comment" onclick="state.packets.splice(${i},1);render()">Remove</button></div></article>`).join("")}</div></section>`;
+    <div class="grid-cards">${state.packets.map((p, i) => `<article class="card"><strong>${esc(p)}</strong><div style="margin-top:8px"><button class="comment" onclick="editPacket(${i})">Edit</button> <button class="comment" onclick="state.packets.splice(${i},1);render()">Remove</button></div></article>`).join("")}</div></section>`;
+}
+function editPacket(index) {
+  openEdit({
+    title: "Edit packet",
+    fields: [{ key: "name", label: "Packet name", value: state.packets[index] || "" }],
+    onSave: (values) => {
+      const name = (values.name || "").trim();
+      if (!name) { toast("Name the packet"); return; }
+      state.packets[index] = name;
+      state.modal = null;
+      toast("Packet saved");
+    }
+  });
 }
 function addPacket() {
   const name = (state.toolForm.packet || "").trim();
@@ -2548,9 +2762,22 @@ function attendanceView() {
       return `<article class="card">
         <label class="chk"><input type="checkbox" ${state.attendance[key] ? "checked" : ""} onchange="state.attendance['${key}']=this.checked;render()"> ${esc(a.name)}</label>
         <div class="hint">${esc(title)}</div>
-        <input class="plain" placeholder="Note" value="${esc(state.attendance[key + ":note"] || "")}" onchange="state.attendance['${key}:note']=this.value;toast('Attendance saved')">
+        <div class="hint">${esc(state.attendance[key + ":note"] || "No note")}</div>
+        <button class="comment" onclick="editAttendance('${a.id}')">Edit note</button>
       </article>`;
     }).join("")}</div></section>`;
+}
+function editAttendance(athleteId) {
+  const key = state.entryDate + ":" + athleteId + ":note";
+  openEdit({
+    title: "Edit attendance note",
+    fields: [{ key: "note", label: "Note", value: state.attendance[key] || "", multiline: true }],
+    onSave: (values) => {
+      state.attendance[key] = values.note || "";
+      state.modal = null;
+      toast("Attendance saved");
+    }
+  });
 }
 async function loadCompliance() {
   try {
@@ -2578,10 +2805,25 @@ function reportingView() {
       <input class="plain" placeholder="Report note" data-focus="report-note" value="${esc(state.toolForm.report || "")}" oninput="state.toolForm.report=this.value">
       <button class="req" type="submit">Add note</button>
     </form>
-    ${state.reports.map((r, i) => `<article class="card"><input class="plain" value="${esc(r.text)}" onchange="state.reports[${i}].text=this.value;toast('Note saved')"><button class="comment" onclick="state.reports.splice(${i},1);render()">Remove</button></article>`).join("")}
+    ${state.reports.map((r, i) => `<article class="card"><p>${esc(r.text)}</p><button class="comment" onclick="editReport(${i})">Edit</button> <button class="comment" onclick="state.reports.splice(${i},1);render()">Remove</button></article>`).join("")}
     <table class="data" style="margin-top:12px"><tr><th>Date</th><th>Athlete</th><th>Workout</th><th>Exercises</th><th></th></tr>
       ${rows.slice(0, 40).map((r) => `<tr><td>${esc(r.date)}</td><td>${esc(r.athlete)}</td><td>${esc(r.title)}</td><td>${r.count}</td><td><button class="comment" onclick="openReportDay('${r.athleteId}','${r.date}')">Open</button></td></tr>`).join("")}
     </table></section>`;
+}
+function editReport(index) {
+  const report = state.reports[index];
+  if (!report) return;
+  openEdit({
+    title: "Edit note",
+    fields: [{ key: "text", label: "Note", value: report.text || "", multiline: true }],
+    onSave: (values) => {
+      const text = (values.text || "").trim();
+      if (!text) { toast("Write a note"); return; }
+      report.text = text;
+      state.modal = null;
+      toast("Note saved");
+    }
+  });
 }
 function addReport() {
   const text = (state.toolForm.report || "").trim();
@@ -2607,11 +2849,32 @@ function paymentsView() {
       <button class="req" type="submit">Add invoice</button>
     </form>
     ${state.invoices.length ? state.invoices.map((inv, i) => `<article class="card">
-      <input class="plain" value="${esc(inv.who || "")}" onchange="state.invoices[${i}].who=this.value;toast('Invoice saved')">
-      <input class="plain" value="${esc(inv.amount || "")}" onchange="state.invoices[${i}].amount=this.value;toast('Invoice saved')" style="margin-top:6px">
-      <input class="plain" value="${esc(inv.note || "")}" onchange="state.invoices[${i}].note=this.value;toast('Invoice saved')" style="margin-top:6px">
-      <div style="margin-top:8px"><button class="comment" onclick="state.invoices.splice(${i},1);render()">Remove</button></div>
+      <strong>${esc(inv.who || "Athlete")}</strong>
+      <div>${esc(inv.amount || "")}</div>
+      <div class="hint">${esc(inv.note || "")}</div>
+      <div style="margin-top:8px"><button class="comment" onclick="editInvoice(${i})">Edit</button> <button class="comment" onclick="state.invoices.splice(${i},1);render()">Remove</button></div>
     </article>`).join("") : "<p>No invoices</p>"}</section>`;
+}
+function editInvoice(index) {
+  const inv = state.invoices[index];
+  if (!inv) return;
+  openEdit({
+    title: "Edit invoice",
+    fields: [
+      { key: "who", label: "Athlete", value: inv.who || "" },
+      { key: "amount", label: "Amount", value: inv.amount || "" },
+      { key: "note", label: "Note", value: inv.note || "" }
+    ],
+    onSave: (values) => {
+      const amount = (values.amount || "").trim();
+      if (!amount) { toast("Enter an amount"); return; }
+      inv.who = (values.who || "").trim();
+      inv.amount = amount;
+      inv.note = (values.note || "").trim();
+      state.modal = null;
+      toast("Invoice saved");
+    }
+  });
 }
 function addInvoice() {
   const amount = (state.toolForm.payAmount || "").trim();
@@ -2623,17 +2886,72 @@ function addInvoice() {
   render();
 }
 
+function openEdit(opts) {
+  state.modal = {
+    type: "edit",
+    title: opts.title,
+    hint: opts.hint || "",
+    date: opts.date,
+    id: opts.id,
+    fields: (opts.fields || []).map((f) => ({
+      key: f.key,
+      label: f.label,
+      value: f.value == null ? "" : String(f.value),
+      multiline: !!f.multiline,
+      maxlength: f.maxlength || 0,
+      type: f.type || "text",
+      options: f.options || null
+    })),
+    onSave: opts.onSave
+  };
+  render();
+}
+function setEditField(key, value) {
+  const m = state.modal;
+  if (!m || m.type !== "edit" || !m.fields) return;
+  const field = m.fields.find((f) => f.key === key);
+  if (field) field.value = value;
+}
+function closeEdit() {
+  state.modal = null;
+  render();
+}
+async function saveEdit() {
+  const m = state.modal;
+  if (!m || m.type !== "edit" || typeof m.onSave !== "function") return;
+  document.querySelectorAll(".edit-modal [data-edit-key]").forEach((el) => {
+    const field = m.fields.find((f) => f.key === el.dataset.editKey);
+    if (field) field.value = el.value;
+  });
+  const values = {};
+  m.fields.forEach((f) => { values[f.key] = f.value; });
+  await m.onSave(values);
+}
+function editModalHtml(m) {
+  const hint = m.hint ? `<div class="sub">${esc(m.hint)}</div>` : "";
+  const fields = (m.fields || []).map((f) => {
+    const max = f.maxlength ? ` maxlength="${f.maxlength}"` : "";
+    const key = esc(f.key);
+    let control;
+    if (f.options) {
+      const options = f.options.slice();
+      if (f.value && options.indexOf(f.value) < 0) options.unshift(f.value);
+      control = `<select class="field" data-edit-key="${key}" data-focus="edit-${key}" onchange="setEditField('${key}', this.value)">${options.map((opt) => `<option value="${esc(opt)}" ${opt === f.value ? "selected" : ""}>${esc(opt)}</option>`).join("")}</select>`;
+    } else if (f.multiline) {
+      control = `<textarea data-edit-key="${key}" data-focus="edit-${key}"${max} oninput="setEditField('${key}', this.value)">${esc(f.value)}</textarea>`;
+    } else {
+      control = `<input class="field" type="${esc(f.type || "text")}" data-edit-key="${key}" data-focus="edit-${key}" value="${esc(f.value)}"${max} oninput="setEditField('${key}', this.value)">`;
+    }
+    return `<label class="edit-field"><span>${esc(f.label)}</span>${control}</label>`;
+  }).join("");
+  return `<div class="modal-back" onclick="if(event.target===this) closeEdit()"><div class="modal edit-modal" onclick="event.stopPropagation()"><h3>${esc(m.title)}</h3>${hint}${fields}<button class="full save" type="button" onclick="saveEdit()">SAVE</button><button class="full" type="button" onclick="closeEdit()">CANCEL</button></div></div>`;
+}
 function modalHtml() {
   const m = state.modal;
   if (!m) return "";
+  if (m.type === "edit") return editModalHtml(m);
   if (m.type === "delete") {
     return `<div class="modal-back" onclick="state.modal=null;render()"><div class="modal" onclick="event.stopPropagation()"><h3>You are about to delete (${m.ids.length}) workout item${m.ids.length > 1 ? "s" : ""}</h3><button class="full red" onclick="confirmDelete()">DELETE</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
-  }
-  if (m.type === "info") {
-    return `<div class="modal-back"><div class="modal" onclick="event.stopPropagation()"><div class="split"><h3>${esc(findItem(m.date, m.id).name)}</h3><span>${fmtLong(m.date)}</span></div><div>Additional Info</div><div class="sub">This will appear for only this assignment (Limit 255 Characters)</div><textarea data-focus="info" maxlength="255" oninput="state.modal.text=this.value">${esc(m.text)}</textarea><button class="full primary" onclick="saveInfo()">SAVE</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
-  }
-  if (m.type === "detail") {
-    return `<div class="modal-back"><div class="modal"><h3>Description</h3><textarea data-focus="detail" oninput="state.modal.text=this.value">${esc(m.text)}</textarea><button class="full primary" onclick="findItem(state.modal.date, state.modal.id).detail=state.modal.text;refreshFutureCopies(state.modal.date);state.modal=null;render()">SAVE</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
   }
   if (m.type === "copy") {
     return `<div class="modal-back"><div class="modal" onclick="event.stopPropagation()"><div class="split"><h3>${m.mode === "move" ? "Move" : "Copy"}</h3><button class="iconbtn" onclick="state.modal=null;render()">✕</button></div>
@@ -2661,18 +2979,8 @@ function modalHtml() {
     const link = location.origin + "/?day=" + m.date + "&athlete=" + state.athleteId;
     return `<div class="modal-back"><div class="modal"><h3>Share Workout</h3><input class="field" value="${esc(link)}" readonly><button class="full primary" onclick="navigator.clipboard.writeText('${link}');toast('Link copied')">Copy link</button><button class="full" onclick="state.modal=null;render()">Close</button></div></div>`;
   }
-  if (m.type === "comment") {
-    return `<div class="modal-back"><div class="modal"><h3>Add a Comment</h3><textarea data-focus="cmt" oninput="state.modal.text=this.value">${esc(m.text)}</textarea><button class="full primary" onclick="state.comments[${m.i}]=state.modal.text;state.modal=null;toast('Comment added');render()">SAVE</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
-  }
-  if (m.type === "request") {
-    return `<div class="modal-back"><div class="modal"><h3>Request a program</h3><textarea data-focus="req" placeholder="Who is it for, and which weeks?" oninput="state.requestNote=this.value"></textarea><button class="full red" onclick="toast('Program request sent');state.modal=null;render()">SEND</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
-  }
   if (m.type === "create") {
     return `<div class="modal-back"><div class="modal"><h3>Create New Exercise</h3><input class="field" data-focus="new-ex" placeholder="Exercise name" oninput="state.modal.name=this.value"><button class="full primary" onclick="const n=(state.modal.name||'').trim(); if(!n)return; CATALOG.push({name:n,type:'lift'}); state.lifts.push({id:uid(),name:n,type:'Lifts',tags:'N/A'}); addItem(state.modal.date, fromCatalog({name:n,type:'lift'})); state.modal=null;">CREATE</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
-  }
-  if (m.type === "user") {
-    const r = m.row;
-    return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render();}"><div class="modal"><h3>Edit user</h3><input class="field" value="${esc(r.first)}" oninput="state.modal.row.first=this.value"><input class="field" value="${esc(r.last)}" oninput="state.modal.row.last=this.value" style="margin-top:6px"><input class="field" value="${esc(r.email)}" oninput="state.modal.row.email=this.value" style="margin-top:6px"><button class="full primary" onclick="saveUserEdit()">SAVE</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
   }
   if (m.type === "journal") {
     return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render();}"><div class="modal"><h3>Journal entry</h3><input class="field" placeholder="Title" data-focus="jtitle" oninput="state.modal.title=this.value"><textarea data-focus="jbody" oninput="state.modal.body=this.value"></textarea><button class="full primary" onclick="state.journal.unshift({title:state.modal.title||'Note', body:state.modal.body||'', date: fmtLong('2026-10-14')}); state.feedMode='journal'; state.modal=null; render()">SAVE</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
@@ -2698,9 +3006,12 @@ function modalHtml() {
 }
 function saveInfo() {
   const m = state.modal;
+  if (!m) return;
   const it = findItem(m.date, m.id);
+  if (!it) return;
+  const field = (m.fields || []).find((f) => f.key === "text");
   snapshot();
-  it.note = (m.text || "").slice(0, 255);
+  it.note = String((field && field.value) || "").slice(0, 255);
   refreshFutureCopies(m.date);
   state.modal = null;
   render();
@@ -2774,8 +3085,10 @@ document.addEventListener("keydown", (ev) => {
 
 window.go = go;
 window.goTool = goTool;
-window.toggleNav = toggleNav;
-window.openRequest = openRequest;
+window.openEdit = openEdit;
+window.saveEdit = saveEdit;
+window.closeEdit = closeEdit;
+window.setEditField = setEditField;
 window.switchAthlete = switchAthlete;
 window.shiftWeek = shiftWeek;
 window.jumpToday = jumpToday;
