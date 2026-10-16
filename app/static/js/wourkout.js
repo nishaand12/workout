@@ -1309,6 +1309,18 @@ function saveDay(date) {
   publishDay(date);
 }
 
+function errorText(payload, raw) {
+  const errJson = payload && typeof payload === "object" ? payload : null;
+  if (!errJson) return raw || "";
+  if (typeof errJson.detail === "string") return errJson.detail;
+  if (Array.isArray(errJson.detail)) {
+    return errJson.detail.map((d) => (d && d.msg) ? d.msg : (typeof d === "object" ? JSON.stringify(d) : String(d))).join(", ");
+  }
+  if (errJson.detail && typeof errJson.detail === "object") return JSON.stringify(errJson.detail);
+  if (errJson.message) return errJson.message;
+  return JSON.stringify(errJson);
+}
+
 async function api(method, url, body) {
   const headers = {};
   if (body) headers["Content-Type"] = "application/json";
@@ -1320,31 +1332,21 @@ async function api(method, url, body) {
     headers: Object.keys(headers).length ? headers : undefined,
     body: body ? JSON.stringify(body) : undefined
   });
+  // Read the body once. A failed res.json() already consumes the stream, and a
+  // second res.text() throws "Body is disturbed or locked".
+  const raw = await res.text();
+  let payload = null;
+  if (raw) {
+    try { payload = JSON.parse(raw); } catch (_) { payload = null; }
+  }
   if (res.status === 401 && !url.includes("/api/auth/login") && !url.includes("/api/auth/register")) {
     handleLogout("Your session has expired. Please log in again.");
     throw new Error("Unauthorized");
   }
   if (!res.ok) {
-    let errText = "";
-    try {
-      const errJson = await res.json();
-      if (typeof errJson.detail === "string") {
-        errText = errJson.detail;
-      } else if (Array.isArray(errJson.detail)) {
-        errText = errJson.detail.map((d) => (d && d.msg) ? d.msg : (typeof d === "object" ? JSON.stringify(d) : String(d))).join(", ");
-      } else if (errJson.detail && typeof errJson.detail === "object") {
-        errText = JSON.stringify(errJson.detail);
-      } else if (errJson.message) {
-        errText = errJson.message;
-      } else {
-        errText = JSON.stringify(errJson);
-      }
-    } catch (_) {
-      errText = await res.text();
-    }
-    throw new Error(errText || String(res.status));
+    throw new Error(errorText(payload, raw) || String(res.status));
   }
-  return res.json();
+  return payload;
 }
 async function ensureUser(person, role) {
   if (state.serverUsers[person.id]) return state.serverUsers[person.id];

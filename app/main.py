@@ -38,56 +38,75 @@ from app import crud
 logger = logging.getLogger(__name__)
 
 def ensure_schema_migrations():
-    """Safely add new columns to existing SQLite or Postgres tables if missing."""
+    """Add columns create_all will not add onto tables that already exist.
+
+    Postgres rejects an integer default on a boolean column, and it rejects
+    COALESCE of a boolean with an integer. Either statement aborts the
+    transaction and rolls back every earlier ALTER,
+    so the next login SELECT asks for role columns that were never created.
+    Each statement commits on its own, and boolean defaults use FALSE/TRUE.
+    """
     try:
         inspector = inspect(engine)
         tables = inspector.get_table_names()
-        with engine.begin() as conn:
-            if "users" in tables:
-                cols = [c["name"] for c in inspector.get_columns("users")]
-                if "password_hash" not in cols:
-                    conn.execute(text("ALTER TABLE users ADD COLUMN password_hash VARCHAR(255)"))
-                if "supabase_uid" not in cols:
-                    conn.execute(text("ALTER TABLE users ADD COLUMN supabase_uid VARCHAR(128)"))
-                if "username" not in cols:
-                    conn.execute(text("ALTER TABLE users ADD COLUMN username VARCHAR(100)"))
-                if "is_active" not in cols:
-                    conn.execute(text("ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT TRUE"))
-                if "is_admin" not in cols:
-                    conn.execute(text("ALTER TABLE users ADD COLUMN is_admin BOOLEAN DEFAULT 0"))
-                if "is_coach" not in cols:
-                    conn.execute(text("ALTER TABLE users ADD COLUMN is_coach BOOLEAN DEFAULT 0"))
-                if "is_athlete" not in cols:
-                    conn.execute(text("ALTER TABLE users ADD COLUMN is_athlete BOOLEAN DEFAULT 0"))
-                if "gym_id" not in cols:
-                    conn.execute(text("ALTER TABLE users ADD COLUMN gym_id INTEGER"))
-                if "team_id" not in cols:
-                    conn.execute(text("ALTER TABLE users ADD COLUMN team_id INTEGER"))
-                conn.execute(text("UPDATE users SET is_admin = COALESCE(is_admin, 0)"))
-                conn.execute(text("UPDATE users SET is_coach = COALESCE(is_coach, 0)"))
-                conn.execute(text("UPDATE users SET is_athlete = COALESCE(is_athlete, 0)"))
-
-            if "groups" in tables:
-                gcols = [c["name"] for c in inspector.get_columns("groups")]
-                if "gym_id" not in gcols:
-                    conn.execute(text("ALTER TABLE groups ADD COLUMN gym_id INTEGER"))
-
-            if "workouts" in tables:
-                wcols = [c["name"] for c in inspector.get_columns("workouts")]
-                if "gym_id" not in wcols:
-                    conn.execute(text("ALTER TABLE workouts ADD COLUMN gym_id INTEGER"))
-
-            if "workout_sessions" in tables:
-                scols = [c["name"] for c in inspector.get_columns("workout_sessions")]
-                if "athlete_note" not in scols:
-                    conn.execute(text("ALTER TABLE workout_sessions ADD COLUMN athlete_note TEXT DEFAULT ''"))
-
-            if "personal_records" in tables:
-                cols = [c["name"] for c in inspector.get_columns("personal_records")]
-                if "user_id" not in cols:
-                    conn.execute(text("ALTER TABLE personal_records ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE CASCADE"))
     except Exception as exc:
         logger.warning(f"Schema migration notice: {exc}")
+        return
+
+    statements = []
+    if "users" in tables:
+        cols = {c["name"] for c in inspector.get_columns("users")}
+        additions = (
+            ("password_hash", "VARCHAR(255)"),
+            ("supabase_uid", "VARCHAR(128)"),
+            ("username", "VARCHAR(100)"),
+            ("is_active", "BOOLEAN DEFAULT TRUE"),
+            ("is_admin", "BOOLEAN DEFAULT FALSE"),
+            ("is_coach", "BOOLEAN DEFAULT FALSE"),
+            ("is_athlete", "BOOLEAN DEFAULT FALSE"),
+            ("gym_id", "INTEGER"),
+            ("team_id", "INTEGER"),
+        )
+        for name, ddl in additions:
+            if name not in cols:
+                statements.append(f"ALTER TABLE users ADD COLUMN {name} {ddl}")
+        statements.extend((
+            "UPDATE users SET is_admin = COALESCE(is_admin, FALSE)",
+            "UPDATE users SET is_coach = COALESCE(is_coach, FALSE)",
+            "UPDATE users SET is_athlete = COALESCE(is_athlete, FALSE)",
+            "UPDATE users SET is_admin = TRUE WHERE LOWER(COALESCE(role, '')) = 'admin' AND is_admin = FALSE",
+            "UPDATE users SET is_coach = TRUE WHERE LOWER(COALESCE(role, '')) = 'coach' AND is_coach = FALSE",
+            "UPDATE users SET is_athlete = TRUE WHERE LOWER(COALESCE(role, '')) IN ('athlete', 'student') AND is_athlete = FALSE",
+        ))
+
+    if "groups" in tables:
+        gcols = {c["name"] for c in inspector.get_columns("groups")}
+        if "gym_id" not in gcols:
+            statements.append("ALTER TABLE groups ADD COLUMN gym_id INTEGER")
+
+    if "workouts" in tables:
+        wcols = {c["name"] for c in inspector.get_columns("workouts")}
+        if "gym_id" not in wcols:
+            statements.append("ALTER TABLE workouts ADD COLUMN gym_id INTEGER")
+
+    if "workout_sessions" in tables:
+        scols = {c["name"] for c in inspector.get_columns("workout_sessions")}
+        if "athlete_note" not in scols:
+            statements.append("ALTER TABLE workout_sessions ADD COLUMN athlete_note TEXT DEFAULT ''")
+
+    if "personal_records" in tables:
+        cols = {c["name"] for c in inspector.get_columns("personal_records")}
+        if "user_id" not in cols:
+            statements.append(
+                "ALTER TABLE personal_records ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE CASCADE"
+            )
+
+    for statement in statements:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(statement))
+        except Exception as exc:
+            logger.warning(f"Schema migration notice: {exc}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
