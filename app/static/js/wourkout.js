@@ -348,6 +348,8 @@ const state = {
   teamMode: "feed",
   teamGroup: "",
   teamFilter: false,
+  boardAthlete: "",
+  boardDate: "",
   compose: false,
   startedAt: null,
   requestNote: "",
@@ -2007,12 +2009,29 @@ function usersView() {
         <input class="plain" placeholder="Group name" data-focus="group-name" value="${esc(state.toolForm.group || "")}" oninput="state.toolForm.group=this.value">
         <button class="req" type="submit">Add group</button>
       </form>
-      <div class="grid-cards">${state.groups.map((g, i) => `<article class="card"><input class="plain" value="${esc(g)}" onchange="renameGroup(${i}, this.value)"><div style="margin-top:8px"><button class="comment" onclick="state.groups.splice(${i},1);render()">Remove</button></div></article>`).join("")}</div></div>`;
+      <div class="grid-cards">${state.groups.map((g, i) => {
+        const members = state.athletes.filter((a) => assignedGroups(a.groups).includes(g));
+        const who = members.map((a) => {
+          const name = (a.first + " " + a.last).trim();
+          return esc(name) + (a.email ? " · " + esc(a.email) : "");
+        }).join("<br>");
+        return `<article class="card"><input class="plain" value="${esc(g)}" onchange="renameGroup(${i}, this.value)"><div class="hint" style="margin-top:8px">${who || "No athletes"}</div><div style="margin-top:8px"><button class="comment" onclick="state.groups.splice(${i},1);render()">Remove</button></div></article>`;
+      }).join("")}</div></div>`;
   } else if (state.userTab === "codes") {
     main = `<div class="light-page"><h1>Easy-Join Codes</h1><table class="data"><tr><th>Code</th><th>Group</th><th></th></tr>${state.joinCodes.map((c, i) => `<tr><td>${esc(c.code)}</td><td>${esc(c.group)}</td><td><button class="icon-a" onclick="navigator.clipboard.writeText('${esc(c.code)}');toast('Copied')">Copy</button> <button class="icon-a" onclick="state.joinCodes.splice(${i},1);render()">✕</button></td></tr>`).join("")}</table>
       <button class="req" style="margin-top:12px" onclick="state.joinCodes.push({code:'NEW'+Math.floor(Math.random()*90+10), group: state.groups[0]});render()">+ Code</button></div>`;
   } else if (state.userTab === "upload") {
-    main = `<div class="light-page"><h1>Upload Users</h1><p>Paste one name per line.</p><textarea id="uploadBox" class="plain" style="width:100%;min-height:120px"></textarea><button class="req" onclick="importUsers()">Import</button></div>`;
+    const chosen = state.groups.includes(state.toolForm.uploadGroup) ? state.toolForm.uploadGroup : (state.groups[0] || "");
+    main = `<div class="light-page"><h1>Upload Users</h1>
+      <p>Paste one person per line. If a line includes an email, that email is kept.</p>
+      <div class="toolbar">
+        <label>Group <select id="uploadGroup" class="plain" onchange="state.toolForm.uploadGroup=this.value">
+          ${state.groups.map((g) => `<option value="${esc(g)}" ${g === chosen ? "selected" : ""}>${esc(g)}</option>`).join("")}
+        </select></label>
+      </div>
+      <textarea id="uploadBox" class="plain" style="width:100%;min-height:140px" placeholder="Sam Lee&#10;Jo Kim, jo@gym.com"></textarea>
+      <button class="req" style="margin-top:10px" onclick="importUsers()">Import</button>
+    </div>`;
   } else if (state.userTab === "export") {
     main = `<div class="light-page"><h1>Export Data</h1><p>Download calendars and roster as JSON.</p><button class="req" onclick="exportData()">Download</button></div>`;
   } else {
@@ -2042,14 +2061,42 @@ function usersView() {
     <div style="display:flex;flex-direction:column;min-width:0;background:#eee">${main}</div>
   </div></section>`;
 }
+function assignedGroups(value) {
+  return String(value || "").split(",").map((part) => part.trim()).filter(Boolean);
+}
+function parseRosterLine(line) {
+  const raw = String(line || "").trim();
+  if (!raw) return null;
+  const found = raw.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  const email = found ? found[0] : "";
+  let name = raw;
+  if (email) name = raw.replace(email, " ").replace(/[<>(),]/g, " ");
+  name = name.replace(/\s+/g, " ").trim();
+  if (!name && email) name = email.split("@")[0];
+  if (!name) return null;
+  const parts = name.split(" ");
+  return { first: parts[0], last: parts.slice(1).join(" "), email };
+}
 function importUsers() {
-  const text = document.getElementById("uploadBox").value;
-  text.split("\n").map((l) => l.trim()).filter(Boolean).forEach((line) => {
-    const [first, ...rest] = line.split(" ");
-    state.athletes.push({ id: uid(), first, last: rest.join(" ") || "Athlete", email: first.toLowerCase() + "@example.com", activity: "N/A", groups: "Eric's Athletes", cals: "All" });
+  const box = document.getElementById("uploadBox");
+  const select = document.getElementById("uploadGroup");
+  const group = ((select && select.value) || state.toolForm.uploadGroup || "").trim();
+  if (!group) { toast("Choose a group"); return; }
+  const people = (box ? box.value : "").split("\n").map(parseRosterLine).filter(Boolean);
+  if (!people.length) { toast("Paste at least one name"); return; }
+  people.forEach((person) => {
+    const id = uid();
+    const name = (person.first + " " + person.last).trim();
+    state.athletes.push({
+      id, first: person.first, last: person.last, email: person.email,
+      activity: "N/A", groups: group, cals: "All"
+    });
+    ATHLETES.push({ id, name, email: person.email });
+    state.calendars[id] = {};
   });
-  state.userTab = "athletes";
-  toast("Users imported");
+  state.toolForm.uploadGroup = group;
+  state.userTab = "groups";
+  toast(people.length + " athlete" + (people.length === 1 ? "" : "s") + " added to " + group);
   render();
 }
 function exportData() {
@@ -2310,8 +2357,24 @@ function weightroomView() {
   return `<section class="stage light-page"><h1>Weightroom</h1><p class="hint">Who is on the floor today</p><div class="grid-cards">${ATHLETES.slice(0, 4).map((a) => `<article class="card"><strong>${esc(a.name)}</strong><div class="hint">Logging · Week 5</div><button class="comment" onclick="state.entryAthlete='${a.id}';goTool('entry')">Open</button></article>`).join("")}</div></section>`;
 }
 function boardView() {
-  const day = ensureDay(state.entryDate, "eric");
-  return `<section class="stage light-page"><h1>Whiteboard</h1><p>${fmtLong(state.entryDate)} · Eric Van Zeumeren</p><div class="panel" style="font-size:22px">${day.items.map((it) => `<div>${esc(it.letter || "")} ${esc(it.name)} <span class="hint">${esc(scriptLine(it))}</span></div>`).join("") || "Nothing programmed"}</div></section>`;
+  if (!state.boardAthlete || !ATHLETES.some((a) => a.id === state.boardAthlete)) {
+    state.boardAthlete = ATHLETES.some((a) => a.id === state.athleteId) ? state.athleteId : (ATHLETES[0] ? ATHLETES[0].id : "");
+  }
+  if (!state.boardDate) state.boardDate = state.entryDate || "2026-10-13";
+  const person = ATHLETES.find((a) => a.id === state.boardAthlete) || { id: "", name: "Athlete" };
+  const day = (state.calendars[person.id] || {})[state.boardDate];
+  const items = day && day.items ? day.items : [];
+  return `<section class="stage light-page" id="whiteboard">
+    <h1>Whiteboard</h1>
+    <div class="toolbar">
+      <select class="plain" aria-label="Athlete" onchange="state.boardAthlete=this.value;render()">
+        ${ATHLETES.map((a) => `<option value="${esc(a.id)}" ${a.id === person.id ? "selected" : ""}>${esc(a.name)}</option>`).join("")}
+      </select>
+      <input class="plain" type="date" aria-label="Day" value="${esc(state.boardDate)}" onchange="if(this.value){state.boardDate=this.value;render()}">
+    </div>
+    <p>${fmtLong(state.boardDate)} · ${esc(person.name)}</p>
+    <div class="panel" style="font-size:22px">${items.map((it) => `<div>${esc(it.letter || "")} ${esc(it.name)} <span class="hint">${esc(scriptLine(it))}</span></div>`).join("") || "Nothing programmed"}</div>
+  </section>`;
 }
 function maxesView() {
   const rows = state.prs[state.athleteId] || (state.prs[state.athleteId] = []);
