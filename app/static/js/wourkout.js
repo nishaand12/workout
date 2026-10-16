@@ -771,7 +771,7 @@ function dayCol(date) {
       </span>
     </div>
     <div class="week-label">${esc(day.weekLabel || "")}</div>
-    <input class="day-title ${day.title ? "" : "placeholder"}" data-focus="title-${date}" value="${esc(day.title)}" placeholder="Add Workout Name" onchange="renameDay('${date}', this.value)">
+    <button type="button" class="day-title ${day.title ? "" : "placeholder"}" onclick="editWorkoutDay('${date}', event)">${esc(day.title || "Add Workout Name")}</button>
     ${day.savedWorkoutId ? `<div class="saved-pill">Saved for ${esc((ATHLETES.find((a) => a.id === day.savedFor) || {}).name || "athlete")}</div>` : ""}
     <div class="row" style="margin-top:0">
       <input type="checkbox" title="Select all" ${sel.length && sel.length === day.items.length ? "checked" : ""} onclick="toggleAll('${date}', this.checked);event.stopPropagation()">
@@ -843,20 +843,91 @@ function addItem(date, it) {
   }
   day.items.push(it);
   state.searchDay = null;
-  state.editor = { day: date, id: it.id };
+  state.editor = null;
   state.focusDay = date;
   refreshFutureCopies(date);
   noteHist("Added " + it.name);
-  render();
+  openEditor(date, it.id);
 }
 
 function openEditor(date, id, ev) {
   if (ev) ev.stopPropagation();
-  state.editor = { day: date, id };
+  const it = findItem(date, id);
+  if (!it) return;
   state.focusDay = date;
   state.searchDay = null;
+  state.editor = null;
   state.propMenu = false;
-  render();
+  openEdit({
+    title: "Edit workout",
+    date,
+    id,
+    fields: workoutItemFields(it),
+    onSave: (values) => saveWorkoutItem(date, id, values)
+  });
+}
+function workoutItemFields(it) {
+  const fields = [{ key: "name", label: "Exercise name", value: it.name || "" }];
+  if (it.type === "break") return fields;
+  if (it.type === "video") {
+    fields.push({ key: "videoUrl", label: "Video URL", value: it.videoUrl || "" });
+    return fields;
+  }
+  if (it.type === "rest") {
+    fields.push({ key: "seconds", label: "Seconds", value: String((it.reps && it.reps[0]) || 60) });
+    return fields;
+  }
+  if (it.type === "questionnaire") {
+    fields.push({ key: "questions", label: "Questions", value: (it.questions || []).join("\n"), multiline: true });
+    return fields;
+  }
+  if (it.type === "circuit") {
+    fields.push({ key: "stations", label: "Stations", value: it.detail || "", multiline: true });
+    fields.push({ key: "sets", label: "Rounds", value: String(it.sets || 1) });
+    fields.push({ key: "note", label: "Additional info", value: it.note || "", multiline: true, maxlength: 255 });
+    return fields;
+  }
+  const n = Math.max(1, it.sets || 1);
+  fields.push({ key: "sets", label: "Sets", value: String(n) });
+  for (let i = 0; i < n; i++) {
+    const which = n > 1 ? ", set " + (i + 1) : "";
+    fields.push({ key: "reps-" + i, label: "Reps" + which, value: String((it.reps && it.reps[i]) ?? "") });
+    fields.push({ key: "load-" + i, label: "Load (kg)" + which, value: String((it.loads && it.loads[i]) ?? "") });
+  }
+  fields.push({ key: "note", label: "Additional info", value: it.note || "", multiline: true, maxlength: 255 });
+  return fields;
+}
+function saveWorkoutItem(date, id, values) {
+  const it = findItem(date, id);
+  if (!it) return;
+  const name = (values.name || "").trim();
+  if (!name) { toast("Name the exercise"); return; }
+  snapshot();
+  it.name = name;
+  if (it.type === "video") {
+    it.videoUrl = values.videoUrl || "";
+  } else if (it.type === "rest") {
+    const seconds = String(values.seconds || "60");
+    it.reps = [seconds];
+    it.note = seconds + "s";
+  } else if (it.type === "questionnaire") {
+    it.questions = String(values.questions || "").split("\n").map((line) => line.trim()).filter(Boolean);
+  } else if (it.type === "circuit") {
+    it.detail = values.stations || "";
+    resizeSets(it, parseInt(values.sets, 10) || 1);
+    it.note = String(values.note || "").slice(0, 255);
+  } else if (it.type !== "break") {
+    const sets = parseInt(values.sets, 10) || it.sets || 1;
+    resizeSets(it, sets);
+    for (let i = 0; i < it.sets; i++) {
+      if (values["reps-" + i] != null) it.reps[i] = values["reps-" + i];
+      if (values["load-" + i] != null) it.loads[i] = values["load-" + i];
+    }
+    it.note = String(values.note || "").slice(0, 255);
+  }
+  refreshFutureCopies(date);
+  state.modal = null;
+  toast("Workout saved");
 }
 function editorHead(date, it, day) {
   const index = day.items.findIndex((x) => x.id === it.id);
@@ -1059,6 +1130,19 @@ function openInfo(date, id) {
     id,
     fields: [{ key: "text", label: "Additional info", value: it.note || "", multiline: true, maxlength: 255 }],
     onSave: () => saveInfo()
+  });
+}
+function editWorkoutDay(date, ev) {
+  if (ev) ev.stopPropagation();
+  const day = ensureDay(date);
+  openEdit({
+    title: "Edit workout",
+    fields: [{ key: "title", label: "Workout name", value: day.title || "" }],
+    onSave: (values) => {
+      renameDay(date, values.title || "");
+      state.modal = null;
+      render();
+    }
   });
 }
 function renameDay(date, value) {
@@ -1760,10 +1844,11 @@ function previewDetail(day, it) {
   if (it.type === "questionnaire") {
     return it.questions.map((q, i) => `<div class="q">${i + 1}. ${esc(q)}</div>`).join("") + `<button class="complete" onclick="completeItem('${state.preview.date}','${it.id}')">Complete</button>`;
   }
-  const rows = Array.from({ length: it.sets || 1 }, (_, i) => `<tr><td>${i + 1}</td><td><input value="${esc(it.loads[i] || "")}" onchange="setCell('${state.preview.date}','${it.id}','load',${i}, this.value)"></td><td><input value="${esc(it.reps[i] || "")}" onchange="setCell('${state.preview.date}','${it.id}','reps',${i}, this.value)"></td></tr>`).join("");
+  const rows = Array.from({ length: it.sets || 1 }, (_, i) => `<tr><td>${i + 1}</td><td>${esc(it.loads[i] || "")}</td><td>${esc(it.reps[i] || "")}</td></tr>`).join("");
   return `<div class="ex-sub">${esc(scriptLine(it))}</div>
     ${it.detail ? `<div class="detail">${esc(it.detail)}</div>` : ""}
     <table class="sets"><tr><th>SET</th><th>WEIGHT (KG)</th><th>REPS</th></tr>${rows}</table>
+    <button class="comment" type="button" onclick="openEditor('${state.preview.date}','${it.id}')">Edit</button>
     <div class="tabs">
       <button onclick="toast('Opted out of ${esc(it.name)}')">OPT OUT</button>
       <button onclick="state.view='feed';state.feedMode='journal';render()">JOURNAL</button>
