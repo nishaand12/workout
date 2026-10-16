@@ -8,28 +8,9 @@ const PROP_LABEL = {
   load: "Load (kg)", rest: "Rest (s)", tempo: "Tempo", velocity: "Velocity",
   power: "Peak Power", pct: "%1RM"
 };
-const ATHLETES = [
-  { id: "eric", name: "Eric Van Zeumeren", email: "ericvanzeumeren@gmail.com" },
-  { id: "leah", name: "Leah Van Zeumeren", email: "leah@example.com" },
-  { id: "greg", name: "Greg Riedstra", email: "greg@example.com" },
-  { id: "michelle", name: "Michelle Louwagie", email: "michelle@example.com" },
-  { id: "fanenter", name: "Fanenter Akende", email: "fanenter@example.com" },
-  { id: "ella", name: "Ella Ambrose", email: "ella@example.com" },
-  { id: "ethan", name: "Ethan Anjema", email: "ethan@example.com" },
-  { id: "grayson", name: "Grayson Axford", email: "grayson@example.com" },
-  { id: "rory", name: "Coach Rory", email: "rory@rpgtrainingsystems.com" }
-];
-const COACHES = [
-  ["Connor", "Arsenault", "connor.arsenault7@gmail.com", "10/13/26 · 09:15"],
-  ["Jennifer", "Brace", "admin@rpgtrainingsystems.com", "12/17/24 · 12:48"],
-  ["Adriana", "Frendo", "afrendo@uwo.ca", "N/A"],
-  ["Lucy", "Hancock", "lucyhancock2002@gmail.com", "N/A"],
-  ["Coach", "Rory", "rory@rpgtrainingsystems.com", "10/13/26 · 05:13"],
-  ["Liv", "Sands", "livjsands@gmail.com", "05/08/26 · 11:43"],
-  ["Kiean", "Silva", "kiean.silva@hotmail.com", "07/15/26 · 16:05"],
-  ["Eric", "Van Zeumeren", "ericvanzeumeren@gmail.com", "10/13/26 · 09:59"]
-];
-const GROUPS = ["Eric's Athletes", "FCVB - 16U Icarus", "FCVB - 17U Helios", "FCVB - B Hyperion", "FCVB 17U Boys", "Football Combine Prep Program (2026)"];
+const ATHLETES = [];
+const COACHES = [];
+const GROUPS = [];
 const CATALOG = [
   { name: "Session Break", type: "break" },
   { name: "Rest Time", type: "rest" },
@@ -45,9 +26,7 @@ const CATALOG = [
   { name: "45 Degree Back Extension", type: "lift" },
   { name: "General Health and Wellness", type: "questionnaire" },
   { name: "General Dynamic Mobility", type: "circuit" },
-  { name: "General Dynamic Mobility - Leah", type: "circuit" },
   { name: "Sprint Development - Base", type: "circuit" },
-  { name: "Warm Up - Eric", type: "circuit" },
   { name: "Rudiment Plyos - A (100)", type: "circuit" },
   { name: "Drop In Acceleration", type: "lift" },
   { name: "Hop (Medium Tier)", type: "lift" },
@@ -134,7 +113,7 @@ function blankDay(date, extra = {}) {
   };
 }
 
-const APP_TODAY = "2026-10-15";
+const APP_TODAY = new Date().toISOString().slice(0, 10);
 
 function weekName(date) {
   const start = sundayOf(date);
@@ -174,124 +153,14 @@ function fmtShort(date) {
   return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
 }
 
-function ericCalendar() {
-  const cal = {};
-  const put = (date, title, recurring, items) => {
-    cal[date] = blankDay(date, { title, recurring, items, savedFor: "eric" });
-  };
-  put("2026-09-28", "Week 3 Lower", 1, [
-    lift("Back Squat", "A", 5, 5, "Super slow squats"),
-    lift("Pull Up", "A", 4, 6),
-    lift("GHR Sit Up", "B", 3, 8),
-    lift("BB Overhead Press", "C", 4, 6),
-    lift("Med Ball Granny Toss", "C", 3, 5)
-  ]);
-  put("2026-09-29", "Week 3", 1, [
-    item({ name: "Warm Up - Eric", type: "circuit", letter: "A", detail: "Knee Extension Isometric - 4x35s", sets: 1, reps: [1], completionOnly: true, trackReps: false }),
-    item({ name: "Rudiment Plyos - A (100)", type: "circuit", letter: "A", detail: "Complete 1 round - Leap (Light Tier)", sets: 1, reps: [1], completionOnly: true, trackReps: false }),
-    lift("Drop In Acceleration", "B", 3, 10, "20 meters"),
-    lift("Block Power Clean", "C", 5, 3, "", ["60", "70", "80", "85", "90"]),
-    lift("Front Squat", "D", 3, 8, "", ["100", "110", "120"]),
-    lift("Deadlift", "E", 3, 5),
-    lift("Single Leg Calf Raise", "F", 3, 12)
-  ]);
-  put("2026-09-30", "", 1, [
-    lift("Back Squat", "A", 5, 3, "Super slow"),
-    lift("Seated Cable Row", "B", 4, 8),
-    lift("Bench Press", "C", 4, 6),
-    lift("Side Bend", "C", 3, 10),
-    lift("Ring Row", "D", 3, 8)
-  ]);
-  put("2026-10-01", "", 1, [
-    item({ name: "Sprint Development - Base", type: "circuit", letter: "A", detail: SPRINT_DETAIL, sets: 1, reps: [1], completionOnly: true, trackReps: false }),
-    lift("Hip Stability (Quad-Iso)", "B", 3, 8),
-    lift("Pause French Press", "C", 3, 8)
-  ]);
-  put("2026-10-02", "", 1, [
-    item({ name: "Sprint Development - Base", type: "circuit", letter: "A", detail: SPRINT_DETAIL, sets: 1, reps: [1], completionOnly: true, trackReps: false }),
-    lift("Approach Jump Warm Up", "B", 3, 5),
-    lift("Dunking/Basketball", "C", 4, 4)
-  ]);
-  put("2026-10-05", "Week 4", 1, [
-    lift("Back Squat", "A", 5, 5, "Super slow squats"),
-    item({ name: "Rudiment Plyos - A (100)", type: "circuit", letter: "B", detail: "Complete 1 round", sets: 1, reps: [1], completionOnly: true, trackReps: false }),
-    lift("Drop In Acceleration", "C", 3, 10, "20 meters"),
-    lift("Block Power Clean", "D", 3, 3, "", ["60", "70", "80"]),
-    lift("Front Squat", "E", 3, 8, "", ["180", "200", "220"]),
-    lift("Clean Pull", "F", 4, 3, "working up to 140kg", ["100", "120", "130", "140"]),
-    lift("Single Leg Calf Raise", "F", 3, 8, "", ["40", "40", "40"])
-  ]);
-  put("2026-10-06", "Week 4", 1, [
-    lift("Back Squat", "A", 4, 5),
-    item({ name: "Sprint Development - Base", type: "circuit", letter: "B", detail: SPRINT_DETAIL, sets: 1, reps: [1], completionOnly: true, trackReps: false }),
-    lift("Bench Press", "C", 4, 6),
-    lift("DB Incline Bench Press", "D", 3, 8)
-  ]);
-  put("2026-10-07", "Week 4", 1, [
-    lift("Power Clean", "C", 5, 2),
-    lift("Clean Grip High Pull", "D", 4, 3),
-    lift("Back Squat", "E", 4, 4),
-    lift("RFE Split Squat", "E", 3, 6),
-    lift("Single Leg Calf Raise", "F", 3, 8, "safety bar")
-  ]);
-  put("2026-10-12", "Week 5", 1, [
-    item({ name: "Warm Up - Eric", type: "circuit", letter: "A", detail: "Knee Extension Isometric - 4x35s Dynamic", sets: 1, reps: [1], completionOnly: true, trackReps: false }),
-    item({ name: "Rudiment Plyos - A (100)", type: "circuit", letter: "A", detail: "Complete 1 round - Leap (Light Tier)", sets: 1, reps: [1], completionOnly: true, trackReps: false }),
-    lift("Drop In Acceleration", "B", 3, 10, "20 meters"),
-    lift("Hop (Medium Tier)", "C", 3, 10, "Walk into the first reps"),
-    lift("Block Power Clean", "C", 6, 2, "Warm Up sets", ["60", "70", "80", "85", "90", "95"]),
-    lift("Front Squat", "E", 5, 4, "Controlled down, fast up"),
-    lift("Clean Pull", "F", 5, 4, "working up to 140kg"),
-    lift("Single Leg Calf Raise", "F", 3, 12)
-  ]);
-  put("2026-10-13", "Week 5", 1, [
-    item({ name: "Warm Up - Eric", type: "circuit", letter: "A", detail: "Knee Extension Isometric - 4x35s", sets: 1, reps: [1], completionOnly: true, trackReps: false }),
-    lift("Band Overhead Tricep Extension", "A", 3, 15),
-    item({ name: "Jump Circuit - Conditioning 1", type: "circuit", letter: "A", detail: "Complete 1 round - 20 seconds on, 20 seconds off", sets: 1, reps: [1], completionOnly: true, trackReps: false }),
-    lift("Pull Up", "B", 3, 8),
-    lift("Cable Wood Chop (high-low)", "B", 3, 8),
-    lift("Bench Press", "C", 4, 6, "Work up to a heavy final set"),
-    lift("Side Plank w. Leg Raise", "C", 3, 10),
-    lift("DB Incline Bench Press", "D", 3, 8, "AMAP"),
-    lift("Ring Row", "D", 3, 10, "AMAP"),
-    lift("Tricep Roll Backs", "E", 3, 8),
-    lift("DB Bicep Curl", "E", 3, 8)
-  ]);
-  put("2026-10-14", "Volleyball", 1, [lift("Volleyball Games", "A", 1, 1)]);
-  put("2026-10-15", "Upper Body/General Conditioning", 1, [
-    item({ name: "General Health and Wellness", type: "questionnaire", letter: "A", sets: 1, reps: [1], questions: QUESTIONS.slice(), requireResponse: true, trackReps: false }),
-    item({ name: "General Dynamic Mobility", type: "circuit", letter: "B", detail: MOBILITY_DETAIL, sets: 1, reps: [1], completionOnly: true, trackReps: false }),
-    item({ name: "Sprint Development - Base", type: "circuit", letter: "C", detail: SPRINT_DETAIL, sets: 1, reps: [1], completionOnly: true, trackReps: false })
-  ]);
-  put("2026-10-16", "Max Approach Jumps/Potential LB Strength", 1, []);
-  put("2026-10-17", "Potential LB Strength", 0, []);
-  put("2026-10-18", "LB Strength", 0, []);
-  put("2026-10-19", "LB Strength", 0, []);
-  put("2026-10-20", "Rest", 0, []);
-  put("2026-10-21", "Volleyball", 0, []);
-  return cal;
-}
-
-function leahCalendar() {
-  const cal = {};
-  cal["2026-10-13"] = blankDay("2026-10-13", {
-    title: "Upper accessory",
-    recurring: 1,
-    savedFor: "leah",
-    items: [lift("DB Bicep Curl", "A", 3, 10), lift("Push Up", "B", 3, 12), lift("Sit Up and Reach", "C", 3, 10)]
-  });
-  cal["2026-10-01"] = blankDay("2026-10-01", { title: "Push", savedFor: "leah", items: [lift("Push Up", "A", 4, 10)] });
-  return cal;
-}
-
 const state = {
   view: "build",
-  athleteId: "eric",
-  weekStart: "2026-10-04",
+  athleteId: "",
+  weekStart: sundayOf(APP_TODAY),
   viewMode: "month",
-  calendars: { eric: ericCalendar(), leah: leahCalendar() },
-  focusDay: "2026-10-15",
-  hoverDay: "2026-10-15",
+  calendars: {},
+  focusDay: APP_TODAY,
+  hoverDay: APP_TODAY,
   searchDay: null,
   searchQ: "",
   editor: null,
@@ -312,7 +181,7 @@ const state = {
   navMenu: null,
   navOpen: false,
   entryAthlete: null,
-  entryDate: "2026-10-13",
+  entryDate: APP_TODAY,
   entryOpen: false,
   logs: {},
   feedMode: "athletes",
@@ -322,19 +191,19 @@ const state = {
   comments: {},
   posts: [],
   journal: [],
-  userTab: "coaches",
+  userTab: "athletes",
   userQ: "",
   userSort: "last",
-  coaches: COACHES.map((c, i) => ({ id: "c" + i, first: c[0], last: c[1], email: c[2], activity: c[3], groups: "All", cals: "All" })),
-  athletes: ATHLETES.map((a) => ({ id: a.id, first: a.name.split(" ")[0], last: a.name.split(" ").slice(1).join(" "), email: a.email, activity: "10/13/26 · 09:00", groups: "Eric's Athletes", cals: "All" })),
-  groups: GROUPS.slice(),
-  joinCodes: [{ code: "FALCONS26", group: "Eric's Athletes" }, { code: "HELIOS17", group: "FCVB - 17U Helios" }],
+  coaches: [],
+  athletes: [],
+  groups: [],
+  joinCodes: [],
   lifts: CATALOG.filter((c) => c.type !== "break").map((c, i) => ({ id: "l" + i, name: c.name, type: c.type === "lift" ? "Lifts" : c.type === "circuit" ? "Circuits" : c.type === "questionnaire" ? "Questionnaires" : "Lifts", tags: "N/A" })),
   liftQ: "",
   managing: "Lifts",
-  goals: ["Back Squat 200kg", "Clean 140kg"],
-  docs: [{ name: "Week 5 warm-up video", url: "https://example.com/warmup" }],
-  packets: ["Combine testing sheet"],
+  goals: [],
+  docs: [],
+  packets: [],
   attendance: {},
   invoices: [],
   reports: [],
@@ -343,9 +212,7 @@ const state = {
   toolForm: {},
   recurPick: 4,
   evals: [],
-  prs: {
-    eric: [["Back Squat", "180"], ["Power Clean", "100"], ["Front Squat", "150"], ["Bench Press", "110"]]
-  },
+  prs: {},
   teamMode: "feed",
   teamGroup: "",
   teamFilter: false,
@@ -377,6 +244,7 @@ const state = {
     config: { supabase_url: "", supabase_anon_key: "", google_auth_enabled: false }
   },
   gymContext: null,
+  gymActivity: null,
   mySchedule: [],
   notesByWorkout: {},
   assignResult: "",
@@ -552,9 +420,162 @@ async function enterApp(data) {
   if (state.role === "athlete") await loadMySchedule();
   else await loadGymContext();
 }
+function workoutToDayItems(workout) {
+  if (!workout || !Array.isArray(workout.exercises)) return [];
+  return workout.exercises.slice().sort((a, b) => (a.order_index || 0) - (b.order_index || 0)).map((we) => {
+    const notes = String(we.notes || "");
+    const lines = notes.split("\n");
+    const tagged = (label) => {
+      const line = lines.find((row) => row.indexOf(label + ":") === 0) || "";
+      return line ? line.slice(label.length + 1).split(",") : [];
+    };
+    const skip = { Rests: 1, Tempos: 1, Velocities: 1, Powers: 1, Pcts: 1 };
+    const plainLines = lines.filter((line) => !skip[line.split(":")[0]] && line.trim() !== "");
+    const rests = tagged("Rests");
+    if (!rests.length && we.rest_seconds) rests.push(String(we.rest_seconds));
+    const sets = we.prescribed_sets || 1;
+    const reps = String(we.target_reps || "1").split(",");
+    const loads = String(we.target_weight || "").split(",");
+    const cat = String((we.exercise && we.exercise.category) || "").toLowerCase();
+    const type = cat.includes("question") ? "questionnaire" : (cat.includes("circuit") || plainLines.length > 1 ? "circuit" : "lift");
+    return item({
+      id: "wx" + we.id,
+      weId: we.id,
+      name: (we.exercise && we.exercise.name) || "Exercise",
+      letter: we.superset_group || "A",
+      type,
+      sets,
+      reps,
+      loads,
+      rests: rests.length ? rests : Array(sets).fill(""),
+      tempos: tagged("Tempos"),
+      velocities: tagged("Velocities"),
+      powers: tagged("Powers"),
+      pcts: tagged("Pcts"),
+      detail: type === "circuit" ? plainLines.join("\n") : "",
+      note: type === "circuit" ? "" : plainLines.join(" · "),
+      questions: type === "questionnaire" ? (plainLines.length ? plainLines : QUESTIONS.slice()) : []
+    });
+  });
+}
+
+async function loadCalendarSchedule(targetId) {
+  if (!targetId || targetId === "none") return;
+  const person = buildAthletes().find((a) => a.id === targetId);
+  if (!person) return;
+  let query = "";
+  if (person.isGroup && person.groupId) {
+    query = "?group_id=" + encodeURIComponent(person.groupId);
+  } else if (person.serverId) {
+    query = "?user_id=" + encodeURIComponent(person.serverId);
+  } else {
+    return;
+  }
+  try {
+    const entries = await api("GET", "/api/calendar/schedule" + query);
+    if (!state.calendars[targetId]) state.calendars[targetId] = {};
+    const calObj = state.calendars[targetId];
+    (entries || []).forEach((entry) => {
+      if (!entry.workout || !entry.scheduled_date) return;
+      const w = entry.workout;
+      calObj[entry.scheduled_date] = blankDay(entry.scheduled_date, {
+        title: w.title || "Workout",
+        weekLabel: w.description || weekName(entry.scheduled_date),
+        items: workoutToDayItems(w),
+        savedFor: targetId,
+        savedWorkoutId: w.id,
+        assignmentId: entry.assignment_id
+      });
+    });
+    render();
+  } catch (err) {
+    console.error("Failed to load calendar schedule:", err);
+  }
+}
+
+function syncFromGymContext() {
+  const ctx = state.gymContext;
+  if (!ctx) return;
+  ATHLETES.length = 0;
+  state.athletes = [];
+  state.coaches = [];
+  state.groups = (ctx.teams || []).map((t) => t.name);
+  (ctx.athletes || []).forEach((u) => {
+    const id = "u" + u.id;
+    const parts = String(u.name || u.email || "Athlete").trim().split(/\s+/);
+    const first = parts[0] || u.name || "Athlete";
+    const last = parts.slice(1).join(" ");
+    ATHLETES.push({
+      id,
+      name: u.name || u.email,
+      email: u.email || "",
+      serverId: u.id,
+      team_id: u.team_id,
+      team_name: u.team_name || ""
+    });
+    state.athletes.push({
+      id,
+      serverId: u.id,
+      first,
+      last,
+      email: u.email || "",
+      activity: u.latest_note ? "Logged note" : "Enrolled",
+      groups: u.team_name || "—",
+      team_id: u.team_id,
+      cals: "1",
+      role: "athlete"
+    });
+    if (!state.calendars[id]) state.calendars[id] = {};
+  });
+  (ctx.coaches || []).forEach((c) => {
+    const id = "c" + c.id;
+    const parts = String(c.name || c.email || "Coach").trim().split(/\s+/);
+    state.coaches.push({
+      id,
+      serverId: c.id,
+      first: parts[0] || c.name || "Coach",
+      last: parts.slice(1).join(" "),
+      email: c.email || "",
+      activity: "Active",
+      groups: (c.led_teams || []).join(", ") || "—",
+      cals: "All",
+      role: "coach"
+    });
+  });
+  (ctx.teams || []).forEach((t) => {
+    const gid = "group:" + t.id;
+    if (!state.calendars[gid]) state.calendars[gid] = {};
+  });
+  const targets = buildAthletes();
+  if (!state.athleteId || !targets.some((t) => t.id === state.athleteId)) {
+    const firstReal = targets.find((t) => t.id !== "none");
+    state.athleteId = firstReal ? firstReal.id : "";
+  }
+  if (!state.entryAthlete && ATHLETES.length) {
+    state.entryAthlete = ATHLETES[0].id;
+  }
+}
+
 async function loadGymContext() {
   state.gymContext = await api("GET", "/api/gym/context");
+  syncFromGymContext();
+  if (state.athleteId && state.athleteId !== "none") {
+    loadCalendarSchedule(state.athleteId);
+  }
+  if (!state.serverExercises.length) {
+    loadExercises();
+  }
 }
+
+async function loadGymActivity() {
+  try {
+    state.gymActivity = await api("GET", "/api/gym/activity");
+    render();
+  } catch (err) {
+    console.error("Failed to load gym activity:", err);
+  }
+}
+
 async function loadMySchedule() {
   const rows = await api("GET", "/api/my/schedule");
   state.mySchedule = rows;
@@ -721,6 +742,8 @@ function go(view, ev) {
   if (view === "feed" && state.role === "athlete") state.view = "journal";
   closeFloats();
   render();
+  if (view === "build" && state.athleteId && state.athleteId !== "none") loadCalendarSchedule(state.athleteId);
+  if (view === "maxes") loadGoals();
 }
 function goTool(view) {
   state.navMenu = null;
@@ -742,6 +765,7 @@ function goTool(view) {
     state.view = next;
     closeFloats();
     render();
+    if (next === "maxes") loadGoals();
     return;
   }
   if (view === "journal") { state.view = "feed"; state.feedMode = "journal"; }
@@ -749,10 +773,14 @@ function goTool(view) {
   else state.view = view;
   closeFloats();
   render();
+  if (view === "build" && state.athleteId && state.athleteId !== "none") loadCalendarSchedule(state.athleteId);
   if (view === "users" || view === "calendars") loadRoster();
   if (view === "exercises") loadExercises();
-  if (view === "goals") loadGoals();
-  if (view === "reporting" || view === "attendance") loadCompliance();
+  if (view === "goals" || view === "maxes") loadGoals();
+  if (view === "reporting" || view === "attendance") { loadCompliance(); loadGymActivity(); }
+  if (view === "feed" || view === "journal" || view === "leaderboard" || view === "weightroom") loadGymActivity();
+  if (view === "entry" && state.entryAthlete) loadCalendarSchedule(state.entryAthlete);
+  if (view === "whiteboard" && state.boardAthlete) loadCalendarSchedule(state.boardAthlete);
 }
 
 function rightRail() {
@@ -814,18 +842,20 @@ function buildView() {
     for (let i = 0; i < 7; i++) cols += dayCol(addDays(start, i));
     weeksHtml += `<div class="week">${cols}</div>`;
   }
+  const currentTarget = athlete();
+  const saveLabel = currentTarget.isGroup ? "Save for group" : "Save for athlete";
   return leftRail() + (state.sidebar ? sidebarHtml() : "") + (state.preview ? previewHtml() : "") +
     `<section class="stage">
       <div class="subhead">
         <div>
-          <div class="crumbs">Calendars / ${esc(athlete().name)}</div>
+          <div class="crumbs">Calendars / ${esc(currentTarget.name)}</div>
           <div class="athlete-pick">
-            <button type="button" class="athlete-name" id="build-athlete" onclick="toggleAthleteMenu(event)">${esc(athlete().name)} ▾</button>
+            <button type="button" class="athlete-name" id="build-athlete" onclick="toggleAthleteMenu(event)">${esc(currentTarget.name)} ▾</button>
             ${state.athleteMenu ? `<div class="menu athlete-menu" id="build-athlete-menu">${buildAthletes().map((a) => `<button type="button" class="${a.id === state.athleteId ? "on" : ""}" onclick="switchAthlete('${esc(a.id)}')">${a.id === state.athleteId ? "✓ " : ""}${esc(a.name)}</button>`).join("")}</div>` : ""}
           </div>
         </div>
         <div class="sub-actions">
-          <button class="ghost" onclick="saveFocused()">Save for athlete</button>
+          <button class="ghost" onclick="saveFocused()">${saveLabel}</button>
           <button class="ghost" onclick="openAsAthlete(state.athleteId)">Open as athlete</button>
           <button class="ghost" onclick="undo()">↺ UNDO</button>
           <div class="seg">
@@ -843,40 +873,75 @@ function buildView() {
     </section>`;
 }
 function buildAthletes() {
-  const list = ATHLETES.map((a) => Object.assign({}, a));
-  const ctxAthletes = (state.gymContext && state.gymContext.athletes) || [];
+  const list = [];
+  const ctx = state.gymContext;
+  if (ctx && Array.isArray(ctx.teams)) {
+    ledTeams(ctx).forEach((t) => {
+      const gid = "group:" + t.id;
+      list.push({
+        id: gid,
+        name: "Group: " + t.name,
+        email: "",
+        groupId: t.id,
+        isGroup: true
+      });
+      if (!state.calendars[gid]) state.calendars[gid] = {};
+    });
+  }
+  const ctxAthletes = (ctx && ctx.athletes) || [];
   ctxAthletes.forEach((u) => {
-    const email = (u.email || "").toLowerCase();
-    const existing = list.find((a) => a.serverId === u.id || (email && (a.email || "").toLowerCase() === email));
-    if (existing) {
-      existing.serverId = u.id;
-      existing.name = u.name || existing.name;
-    } else {
-      const id = "u" + u.id;
-      list.unshift({ id, name: u.name || u.email, email: u.email || "", serverId: u.id });
+    const id = "u" + u.id;
+    if (!list.some((a) => a.serverId === u.id)) {
+      list.push({
+        id,
+        name: u.name || u.email,
+        email: u.email || "",
+        serverId: u.id,
+        team_id: u.team_id,
+        team_name: u.team_name || ""
+      });
       if (!state.calendars[id]) state.calendars[id] = {};
     }
   });
-  const user = state.auth && state.auth.user;
-  if (!user || heldRoles(user).indexOf("athlete") < 0) return list;
-  const email = (user.email || "").toLowerCase();
-  if (list.some((a) => a.serverId === user.id || (a.email || "").toLowerCase() === email)) return list;
-  list.unshift({
-    id: "self-" + user.id,
-    name: user.name || user.username || "You",
-    email: user.email || "",
-    serverId: user.id,
-    self: true
+  ATHLETES.forEach((a) => {
+    if (!list.some((x) => x.id === a.id || (a.serverId && x.serverId === a.serverId))) {
+      list.push(Object.assign({}, a));
+    }
   });
+  const user = state.auth && state.auth.user;
+  if (user && heldRoles(user).indexOf("athlete") >= 0) {
+    const email = (user.email || "").toLowerCase();
+    if (!list.some((a) => a.serverId === user.id || (email && (a.email || "").toLowerCase() === email))) {
+      list.push({
+        id: "u" + user.id,
+        name: user.name || user.username || "You",
+        email: user.email || "",
+        serverId: user.id,
+        self: true
+      });
+    }
+  }
+  if (!list.length) {
+    return [{ id: "none", name: "No athletes or groups yet", email: "" }];
+  }
   return list;
 }
-function athlete() { return buildAthletes().find((a) => a.id === state.athleteId) || buildAthletes()[0]; }
+function athlete() {
+  const list = buildAthletes();
+  return list.find((a) => a.id === state.athleteId) || list[0];
+}
 function toggleAthleteMenu(ev) {
   if (ev) ev.stopPropagation();
   state.athleteMenu = !state.athleteMenu;
   render();
 }
-function switchAthlete(id) { state.athleteId = id; state.athleteMenu = false; state.editor = null; render(); }
+function switchAthlete(id) {
+  state.athleteId = id;
+  state.athleteMenu = false;
+  state.editor = null;
+  render();
+  loadCalendarSchedule(id);
+}
 function shiftWeek(n) { state.weekStart = addDays(state.weekStart, n * 7); render(); }
 function jumpToday() { state.weekStart = sundayOf(APP_TODAY); state.focusDay = APP_TODAY; render(); }
 
@@ -1389,7 +1454,12 @@ async function unpublishDate(row) {
   }
   if (!row.savedFor) return;
   const person = buildAthletes().find((a) => a.id === row.savedFor);
-  if (!person) return;
+  if (!person || person.id === "none") return;
+  if (person.isGroup && person.groupId) {
+    const existing = await api("GET", "/api/assignments?group_id=" + person.groupId + "&date=" + row.date);
+    for (const item of existing) await api("DELETE", "/api/assignments/" + item.id);
+    return;
+  }
   const user = person.self && state.auth && state.auth.user ? state.auth.user : await ensureUser(person, "student");
   const existing = await api("GET", "/api/assignments?user_id=" + user.id + "&date=" + row.date);
   for (const item of existing) await api("DELETE", "/api/assignments/" + item.id);
@@ -1436,7 +1506,7 @@ function colorMenu(date) {
   return `<div class="pop" style="right:8px;top:28px;width:160px"><div class="row">${colors.map((c) => `<button onclick="setColor('${date}','${c}')" style="width:22px;height:22px;border-radius:50%;border:0;background:${c}"></button>`).join("")}</div></div>`;
 }
 function setColor(date, c) { snapshot(); ensureDay(date).color = c; state.colorMenu = null; render(); }
-function saveFocused() { saveDay(state.focusDay || "2026-10-15"); }
+function saveFocused() { saveDay(state.focusDay || APP_TODAY); }
 function saveDay(date) {
   state.dayMenu = null;
   publishDay(date);
@@ -1482,6 +1552,7 @@ async function api(method, url, body) {
   return payload;
 }
 async function ensureUser(person, role) {
+  if (person && person.serverId) return { id: person.serverId, name: person.name, email: person.email };
   if (state.serverUsers[person.id]) return state.serverUsers[person.id];
   const users = await api("GET", "/api/users");
   const email = (person.email || (person.id + "@wourkout.app")).toLowerCase();
@@ -1518,6 +1589,7 @@ function taggedList(label, arr) {
 async function publishDay(date, opts = {}) {
   const day = cal()[date];
   const person = athlete();
+  if (!person || person.id === "none") { if (!opts.quiet) toast("Create a group or athlete first"); return; }
   if (!day || !day.items.length) { if (!opts.quiet) toast("Add an exercise before saving"); return; }
   try {
     if (!opts.quiet) toast("Saving for " + person.name + "…");
@@ -1526,9 +1598,16 @@ async function publishDay(date, opts = {}) {
       const coach = await ensureUser({ id: "coach", name: "wourkout Coach", email: "coach@wourkout.app" }, "coach");
       coachId = coach.id;
     }
-    const user = person.self && state.auth && state.auth.user
-      ? state.auth.user
-      : await ensureUser(person, "student");
+    let targetUserId = null;
+    let targetGroupId = null;
+    if (person.isGroup && person.groupId) {
+      targetGroupId = person.groupId;
+    } else {
+      const user = person.self && state.auth && state.auth.user
+        ? state.auth.user
+        : await ensureUser(person, "student");
+      targetUserId = user.id;
+    }
     const exercises = [];
     for (const it of day.items) {
       if (!it.name || it.type === "break") continue;
@@ -1559,20 +1638,25 @@ async function publishDay(date, opts = {}) {
       description: day.weekLabel || "",
       exercises
     };
-    const existing = await api("GET", "/api/assignments?user_id=" + user.id + "&date=" + date);
+    const assignQuery = targetGroupId
+      ? ("/api/assignments?group_id=" + targetGroupId + "&date=" + date)
+      : ("/api/assignments?user_id=" + targetUserId + "&date=" + date);
+    const existing = await api("GET", assignQuery);
     let workout;
     if (existing.length) {
       workout = await api("PUT", "/api/workouts/" + existing[0].workout_id, payload);
       day.assignmentId = existing[0].id;
     } else {
       workout = await api("POST", "/api/workouts", payload);
-      const assignment = await api("POST", "/api/assignments", {
+      const assignPayload = {
         workout_id: workout.id,
         assigned_by_coach_id: coachId,
-        user_id: user.id,
         scheduled_date: date,
         notes: "Saved from Build"
-      });
+      };
+      if (targetGroupId) assignPayload.group_id = targetGroupId;
+      else assignPayload.user_id = targetUserId;
+      const assignment = await api("POST", "/api/assignments", assignPayload);
       day.assignmentId = assignment.id;
     }
     day.savedWorkoutId = workout.id;
@@ -1583,6 +1667,9 @@ async function publishDay(date, opts = {}) {
       for (const copyDate of copies) {
         try { await publishDay(copyDate, { quiet: true }); } catch (err) { console.error(err); }
       }
+    }
+    if (!opts.quiet && state.auth && state.auth.token) {
+      loadGymContext();
     }
     noteHist("Saved " + fmtDay(date) + " for " + person.name);
     if (!opts.quiet) toast("Saved for " + person.name);
@@ -1605,7 +1692,25 @@ function backToCoach() {
   render();
 }
 async function openAsAthlete(localId) {
-  const person = buildAthletes().find((a) => a.id === localId) || athlete();
+  let person = buildAthletes().find((a) => a.id === localId) || athlete();
+  if (person && person.isGroup) {
+    const member = ATHLETES.find((a) => a.team_id === person.groupId) || ATHLETES[0];
+    if (member) {
+      person = member;
+    } else if (state.auth && state.auth.user) {
+      person = {
+        id: "u" + state.auth.user.id,
+        name: state.auth.user.name || state.auth.user.username || "Athlete",
+        email: state.auth.user.email || "",
+        serverId: state.auth.user.id,
+        self: true
+      };
+    }
+  }
+  if (!person || person.id === "none") {
+    toast("Add an athlete to preview their schedule");
+    return;
+  }
   dismissToast();
   state.navMenu = null;
   state.actingAthlete = person.id;
@@ -1624,13 +1729,16 @@ async function openAsAthlete(localId) {
     } else {
       const user = await ensureUser(person, "student");
       state.serverUserId = user.id;
-      state.athleteAssignments = await api("GET", "/api/assignments?user_id=" + user.id);
+      const entries = await api("GET", "/api/calendar/schedule?user_id=" + user.id);
+      state.athleteAssignments = entries.map((e) => ({
+        id: e.assignment_id,
+        workout_id: e.workout_id,
+        scheduled_date: e.scheduled_date
+      }));
       state.athleteWorkouts = {};
-      for (const row of state.athleteAssignments) {
-        try {
-          state.athleteWorkouts[row.scheduled_date] = await api("GET", "/api/workouts/" + row.workout_id);
-        } catch (err) {
-          console.error(err);
+      for (const entry of entries) {
+        if (entry.workout && entry.scheduled_date) {
+          state.athleteWorkouts[entry.scheduled_date] = entry.workout;
         }
       }
     }
@@ -2138,7 +2246,7 @@ function sidebarHtml() {
   }));
   return `<aside class="sidebar">
     <div class="crumbs">Collections / ${esc(athlete().name)}</div>
-    <select class="ghost" style="width:100%" onchange="switchAthlete(this.value)">${ATHLETES.map((a) => `<option value="${a.id}" ${a.id === state.athleteId ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select>
+    <select class="ghost" style="width:100%" onchange="switchAthlete(this.value)">${buildAthletes().map((a) => `<option value="${esc(a.id)}" ${a.id === state.athleteId ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select>
     <h4>Saved on this calendar</h4>
     ${recent.slice(0, 8).map((it) => `<button class="side-item" onclick="goTool('entry');state.entryAthlete=state.athleteId;render()">${esc(it.name)}<small>${esc(scriptLine(it))}</small></button>`).join("")}
     ${state.historyOpen ? `<h4>Action history</h4>${state.history.map((h) => `<div class="history">${esc(h.t)} ${esc(h.text)}</div>`).join("") || '<div class="hint">No actions yet</div>'}` : ""}
@@ -2159,27 +2267,28 @@ function undo() {
 function entryView() {
   if (state.role === "athlete") return athleteEntryView();
   const who = state.entryAthlete;
-  const athleteObj = ATHLETES.find((a) => a.id === who);
-  const day = who ? ensureDay(state.entryDate, who) : null;
+  const athleteObj = ATHLETES.find((a) => a.id === who) || buildAthletes().find((a) => a.id === who && !a.isGroup);
+  const activeWho = athleteObj ? athleteObj.id : null;
+  const day = activeWho ? ensureDay(state.entryDate, activeWho) : null;
   const week = sundayOf(state.entryDate);
   const days = Array.from({ length: 7 }, (_, i) => addDays(week, i));
-  const summary = summarize(who, state.entryDate);
+  const summary = summarize(activeWho, state.entryDate);
   return `<section class="stage light-page">
     <h1 style="font-size:18px;color:#666;font-weight:600">Workout Entry</h1>
     <div class="entry-wrap">
       <div>
-        ${who ? `<div class="panel athlete-mini">
-            <div class="bigav">${esc(athleteObj.name.slice(0, 1))}</div>
+        ${athleteObj ? `<div class="panel athlete-mini">
+            <div class="bigav">${esc((athleteObj.name || "A").slice(0, 1))}</div>
             <strong>${esc(athleteObj.name)}</strong>
             <div><button class="switch" onclick="state.entryOpen=!state.entryOpen;render()">SWITCH ATHLETE</button></div>
             ${state.entryOpen ? athletePicker() : ""}
             <button class="blackbtn" onclick="goTool('exercises')">Program Library</button>
             <button class="blackbtn" onclick="window.print()">Print Workout</button>
-            <button class="blackbtn" onclick="state.view='build';state.athleteId='${who}';state.weekStart=sundayOf('${state.entryDate}');render()">Go to Calendar</button>
+            <button class="blackbtn" onclick="state.view='build';state.athleteId='${esc(activeWho)}';state.weekStart=sundayOf('${state.entryDate}');render()">Go to Calendar</button>
           </div>` : `<div class="panel">${athletePicker()}</div>`}
       </div>
       <div class="panel">
-        ${who ? `<div class="weekstrip">
+        ${athleteObj ? `<div class="weekstrip">
             <button class="iconbtn" style="color:#333" onclick="state.entryDate=addDays(state.entryDate,-7);render()">‹</button>
             <div style="text-align:center"><div>${fmtLong(state.entryDate).replace(/,.*/, "")}</div>
               <div>${days.map((d) => `<button class="d ${d === state.entryDate ? "on" : ""}" onclick="state.entryDate='${d}';render()">${new Date(d + "T12:00:00").getDate()}</button>`).join("")}</div>
@@ -2187,7 +2296,7 @@ function entryView() {
             <button class="iconbtn" style="color:#333" onclick="state.entryDate=addDays(state.entryDate,7);render()">›</button>
           </div>
           <h3>${esc(day.title || "Workout")}</h3>
-          ${day.items.map((it) => entryItem(who, state.entryDate, it)).join("") || '<div class="empty">No exercises this day</div>'}` : `<div class="empty"><div><div class="book">◎</div><div>Please Select An Athlete</div></div></div>`}
+          ${day.items.map((it) => entryItem(activeWho, state.entryDate, it)).join("") || '<div class="empty">No exercises this day</div>'}` : `<div class="empty"><div><div class="book">◎</div><div>Please Select An Athlete</div></div></div>`}
       </div>
       <div>
         <div class="panel"><strong>Session Summary</strong><div class="kpis" style="margin-top:8px">
@@ -2252,7 +2361,7 @@ function athleteEntryView() {
 }
 function athletePicker() {
   return `<input class="plain" placeholder="Search" style="width:100%;margin:8px 0" data-focus="ath-search" oninput="state.athQ=this.value;render()">
-    ${ATHLETES.filter((a) => !state.athQ || a.name.toLowerCase().includes(state.athQ.toLowerCase())).map((a) => `<button class="opt" style="color:#222" onclick="pickAthlete('${a.id}')"><span class="dotav">${esc(a.name[0])}</span> ${esc(a.name)}</button>`).join("")}
+    ${ATHLETES.filter((a) => !state.athQ || a.name.toLowerCase().includes(state.athQ.toLowerCase())).map((a) => `<button class="opt" style="color:#222" onclick="pickAthlete('${a.id}')"><span class="dotav">${esc(a.name[0])}</span> ${esc(a.name)}</button>`).join("") || `<div class="hint" style="padding:8px 0">No athletes yet. Add athletes in Manage Users.</div>`}
     <label class="chk"><input type="checkbox" ${state.showHidden ? "checked" : ""} onchange="state.showHidden=this.checked"> View workouts hidden from athletes</label>`;
 }
 function pickAthlete(id) {
@@ -2261,6 +2370,7 @@ function pickAthlete(id) {
   state.athleteId = id;
   if (!state.startedAt) state.startedAt = Date.now();
   render();
+  loadCalendarSchedule(id);
 }
 function entryItem(aid, date, it) {
   const key = aid + ":" + date + ":" + it.id;
@@ -2347,21 +2457,20 @@ function fmtDur(ms) {
   return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
 }
 
-const FEED = [
-  ["Greg Riedstra", "Dumbbell Swing", "October 8, 2026", "All good. Took a minute to get the hip push instead of knees"],
-  ["Coach Rory", "Front Squat", "October 7, 2026", ""],
-  ["Michelle Louwagie", "Deep Squat Jump", "October 7, 2026", "My trainer said so"],
-  ["Eric Van Zeumeren", "Drop In Acceleration", "October 5, 2026", "3.29* best 20m time"],
-  ["Leah Van Zeumeren", "Sit Up and Reach", "October 1, 2026", "4:40"],
-  ["Leah Van Zeumeren", "Push Up", "October 1, 2026", "4:40"],
-  ["Michelle Louwagie", "Cable Hip Abduction", "September 29, 2026", "Fed up with this shit"],
-  ["Coach Rory", "Machine Shoulder Press", "September 19, 2026", ""],
-  ["Michelle Louwagie", "Stair Climber", "September 11, 2026", "8 mins, build @ lvl 4"]
-];
+const FEED = [];
 function feedView() {
   if (state.feedMode === "journal") return journalView();
   if (state.feedMode === "team") return teamView();
-  const cards = FEED.filter((row) => {
+  const sessions = (state.gymActivity && state.gymActivity.sessions) || [];
+  const rawFeed = sessions.length
+    ? sessions.map((s) => [
+        s.athlete_name || "Athlete",
+        s.workout_title || "Workout",
+        s.date || "",
+        s.athlete_note || s.notes || (s.tonnage ? `Completed session · ${s.tonnage} kg tonnage` : `Status: ${s.status || "logged"}`)
+      ])
+    : FEED;
+  const cards = rawFeed.filter((row) => {
     if (state.feedWho !== "all" && row[0] !== state.feedWho) return false;
     if (state.feedQ && !row.join(" ").toLowerCase().includes(state.feedQ.toLowerCase())) return false;
     return true;
@@ -2377,14 +2486,14 @@ function feedView() {
         <input class="plain" placeholder="Search Athletes" data-focus="feed-q" value="${esc(state.feedQ)}" oninput="state.feedQ=this.value;render()">
       </div>
     </div>
-    <div class="grid-cards">${cards.map((c, i) => feedCard(c, i)).join("")}</div>
+    ${cards.length ? `<div class="grid-cards">${cards.map((c, i) => feedCard(c, i)).join("")}</div>` : `<div class="empty"><div><div class="book">✎</div><div>No athlete workout activity or notes logged yet.</div></div></div>`}
   </section>`;
 }
 function setFeedMode(v) { state.feedMode = v; render(); }
 function feedCard(c, i) {
   const extra = state.comments[i] ? `<div class="hint">Coach: ${esc(state.comments[i])}</div>` : "";
   return `<article class="card">
-    <div class="who"><span class="dotav">${esc(c[0][0])}</span><div><strong>${esc(c[0])}</strong><div class="hint">${esc(c[2])}</div></div></div>
+    <div class="who"><span class="dotav">${esc((c[0] || "A")[0])}</span><div><strong>${esc(c[0])}</strong><div class="hint">${esc(c[2])}</div></div></div>
     <div class="exname">${esc(c[1])}</div>
     <div class="quote">${esc(c[3] || "")}</div>
     ${extra}
@@ -2443,12 +2552,12 @@ function usersView() {
   const q = state.userQ.toLowerCase();
   const filtered = rows.filter((r) => (r.first + r.last + r.email).toLowerCase().includes(q));
   const tab = (id, label) => `<button class="${state.userTab === id ? "on" : ""}" onclick="state.userTab='${id}';render()">${label}</button>`;
+  const ctx = state.gymContext;
+  const teams = ctx && Array.isArray(ctx.teams) ? ledTeams(ctx) : [];
   let main = "";
   if (state.userTab === "codes") state.userTab = "groups";
   if (state.userTab === "groups") {
-    const ctx = state.gymContext;
     if (ctx && Array.isArray(ctx.teams)) {
-      const teams = ledTeams(ctx);
       const allCodes = (ctx.codes || []).filter((c) => c.kind === "team");
       const allAthletes = ctx.athletes || [];
       const cards = teams.map((t) => {
@@ -2489,25 +2598,51 @@ function usersView() {
         <div class="grid-cards">${cards || `<p class="hint">Add a group before creating an athlete code.</p>`}</div></div>`;
     }
   } else if (state.userTab === "upload") {
-    const chosen = state.groups.includes(state.toolForm.uploadGroup) ? state.toolForm.uploadGroup : (state.groups[0] || "");
-    main = `<div class="light-page"><h1>Upload Users</h1>
-      <p>Paste one person per line. If a line includes an email, that email is kept.</p>
-      <div class="toolbar">
-        <label>Group <select id="uploadGroup" class="plain" onchange="state.toolForm.uploadGroup=this.value">
-          ${state.groups.map((g) => `<option value="${esc(g)}" ${g === chosen ? "selected" : ""}>${esc(g)}</option>`).join("")}
-        </select></label>
-      </div>
-      <textarea id="uploadBox" class="plain" style="width:100%;min-height:140px" placeholder="Sam Lee&#10;Jo Kim, jo@gym.com"></textarea>
-      <button class="req" style="margin-top:10px" onclick="importUsers()">Import</button>
-    </div>`;
+    if (teams.length) {
+      const chosenId = teams.some((t) => String(t.id) === String(state.toolForm.uploadTeamId))
+        ? String(state.toolForm.uploadTeamId)
+        : String(teams[0].id);
+      main = `<div class="light-page"><h1>Upload Users</h1>
+        <p>Paste one athlete per line (e.g. <code>Sam Lee</code> or <code>Jo Kim, jo@gym.com</code>). Athletes are created in the database and assigned directly to the selected group.</p>
+        <div class="toolbar">
+          <label>Group <select id="uploadGroup" class="plain" onchange="state.toolForm.uploadTeamId=this.value">
+            ${teams.map((t) => `<option value="${t.id}" ${String(t.id) === chosenId ? "selected" : ""}>${esc(t.name)}</option>`).join("")}
+          </select></label>
+        </div>
+        <textarea id="uploadBox" class="plain" style="width:100%;min-height:140px" placeholder="Sam Lee&#10;Jo Kim, jo@gym.com"></textarea>
+        <button class="req" style="margin-top:10px" onclick="importUsers()">Import Athletes</button>
+      </div>`;
+    } else if (state.groups.length) {
+      const chosen = state.groups.includes(state.toolForm.uploadGroup) ? state.toolForm.uploadGroup : (state.groups[0] || "");
+      main = `<div class="light-page"><h1>Upload Users</h1>
+        <p>Paste one person per line. If a line includes an email, that email is kept.</p>
+        <div class="toolbar">
+          <label>Group <select id="uploadGroup" class="plain" onchange="state.toolForm.uploadGroup=this.value">
+            ${state.groups.map((g) => `<option value="${esc(g)}" ${g === chosen ? "selected" : ""}>${esc(g)}</option>`).join("")}
+          </select></label>
+        </div>
+        <textarea id="uploadBox" class="plain" style="width:100%;min-height:140px" placeholder="Sam Lee&#10;Jo Kim, jo@gym.com"></textarea>
+        <button class="req" style="margin-top:10px" onclick="importUsers()">Import</button>
+      </div>`;
+    } else {
+      main = `<div class="light-page"><h1>Upload Users</h1>
+        <p class="hint">Create a group first so uploaded athletes can be placed into your group.</p>
+        <button class="req" type="button" onclick="state.userTab='groups';render()">Go to Groups →</button>
+      </div>`;
+    }
   } else if (state.userTab === "export") {
     main = `<div class="light-page"><h1>Export Data</h1><p>Download calendars and roster as JSON.</p><button class="req" onclick="exportData()">Download</button></div>`;
   } else {
-    main = `<form class="toolbar" onsubmit="addUserRecord(event); return false;" style="padding:10px 12px 0">
+    const selectedRole = state.toolForm.role || (state.userTab === "coaches" ? "coach" : "student");
+    const chosenTeamId = teams.some((t) => String(t.id) === String(state.toolForm.userTeamId))
+      ? String(state.toolForm.userTeamId)
+      : (teams[0] ? String(teams[0].id) : "");
+    main = `<form class="toolbar" onsubmit="addUserRecord(event); return false;" style="padding:10px 12px 0;flex-wrap:wrap">
       <input class="plain" placeholder="First" data-focus="user-first" value="${esc(state.toolForm.first || "")}" oninput="state.toolForm.first=this.value">
       <input class="plain" placeholder="Last" data-focus="user-last" value="${esc(state.toolForm.last || "")}" oninput="state.toolForm.last=this.value">
       <input class="plain" placeholder="Email" data-focus="user-email" value="${esc(state.toolForm.email || "")}" oninput="state.toolForm.email=this.value">
-      <select class="plain" onchange="state.toolForm.role=this.value"><option value="student">Athlete</option><option value="coach" ${state.toolForm.role === "coach" ? "selected" : ""}>Coach</option></select>
+      <select class="plain" onchange="state.toolForm.role=this.value;render()"><option value="student" ${selectedRole !== "coach" ? "selected" : ""}>Athlete</option><option value="coach" ${selectedRole === "coach" ? "selected" : ""}>Coach</option></select>
+      ${selectedRole !== "coach" && teams.length ? `<select class="plain" id="user-team-id" onchange="state.toolForm.userTeamId=this.value">${teams.map((t) => `<option value="${t.id}" ${String(t.id) === chosenTeamId ? "selected" : ""}>Group: ${esc(t.name)}</option>`).join("")}</select>` : ""}
       <button class="req" type="submit">Add user</button>
     </form>
     <div class="redbar"><span>${state.userTab === "coaches" ? "Coaches" : "Athletes"}</span>
@@ -2515,7 +2650,7 @@ function usersView() {
       <input class="plain" placeholder="Search for User" data-focus="user-q" value="${esc(state.userQ)}" oninput="state.userQ=this.value;render()">
       <button class="ghost" onclick="render()">Search</button></span></div>
       <div class="tablewrap"><table class="data"><tr><th></th><th>FIRST</th><th>LAST</th><th>EMAIL</th><th>ASSIGNED GROUPS</th><th>ASSIGNED CALS</th><th>LAST ACTIVITY</th><th></th></tr>
-      ${filtered.sort((a, b) => a[state.userSort].localeCompare(b[state.userSort])).map((r) => `<tr><td><span class="dotav">${esc(r.first[0])}</span></td><td>${esc(r.first)}</td><td>${esc(r.last)}</td><td>${esc(r.email)}</td><td>${esc(r.groups)}</td><td>${esc(r.cals)}</td><td style="color:${r.activity === "N/A" ? "#c90" : "#1a7f37"}">${esc(r.activity)}</td><td><button class="icon-a" onclick="editUser('${r.id}')">✎</button> <button class="icon-a" onclick="removeUser('${r.id}')">🗑</button></td></tr>`).join("")}
+      ${filtered.sort((a, b) => (a[state.userSort] || "").localeCompare(b[state.userSort] || "")).map((r) => `<tr><td><span class="dotav">${esc((r.first || "U")[0])}</span></td><td>${esc(r.first)}</td><td>${esc(r.last)}</td><td>${esc(r.email)}</td><td>${esc(r.groups)}</td><td>${esc(r.cals)}</td><td style="color:${r.activity === "N/A" ? "#c90" : "#1a7f37"}">${esc(r.activity)}</td><td><button class="icon-a" onclick="editUser('${r.id}')">✎</button> <button class="icon-a" onclick="removeUser('${r.id}')">🗑</button></td></tr>`).join("") || `<tr><td colspan="8" style="text-align:center;color:#777;padding:18px">No ${state.userTab === "coaches" ? "coaches" : "athletes"} found. Use "Upload Users" or the form above to add people.</td></tr>`}
       </table></div>`;
   }
   return `<section class="stage" style="display:flex;flex-direction:column;min-height:calc(100vh - 48px)"><div class="users" style="flex:1">
@@ -2545,26 +2680,56 @@ function parseRosterLine(line) {
   const parts = name.split(" ");
   return { first: parts[0], last: parts.slice(1).join(" "), email };
 }
-function importUsers() {
+async function importUsers() {
   const box = document.getElementById("uploadBox");
   const select = document.getElementById("uploadGroup");
-  const group = ((select && select.value) || state.toolForm.uploadGroup || "").trim();
-  if (!group) { toast("Choose a group"); return; }
+  const rawVal = ((select && select.value) || state.toolForm.uploadTeamId || state.toolForm.uploadGroup || "").trim();
+  if (!rawVal) { toast("Choose a group"); return; }
   const people = (box ? box.value : "").split("\n").map(parseRosterLine).filter(Boolean);
   if (!people.length) { toast("Paste at least one name"); return; }
+
+  const ctx = state.gymContext;
+  const teams = ctx && Array.isArray(ctx.teams) ? ledTeams(ctx) : [];
+  const teamObj = teams.find((t) => String(t.id) === rawVal || t.name === rawVal);
+
+  if (teamObj && state.auth && state.auth.token) {
+    try {
+      const payload = {
+        team_id: teamObj.id,
+        athletes: people.map((p) => ({
+          name: (p.first + " " + p.last).trim(),
+          email: p.email || null
+        }))
+      };
+      const res = await api("POST", "/api/gym/athletes/bulk", payload);
+      await loadGymContext();
+      if (box) box.value = "";
+      state.toolForm.uploadTeamId = String(teamObj.id);
+      state.userTab = "athletes";
+      const count = (res && res.created && res.created.length) || people.length;
+      toast(count + " athlete" + (count === 1 ? "" : "s") + " added to " + teamObj.name);
+      render();
+      return;
+    } catch (err) {
+      toast(err.message || "Could not import athletes");
+      console.error(err);
+      return;
+    }
+  }
+
   people.forEach((person) => {
     const id = uid();
     const name = (person.first + " " + person.last).trim();
     state.athletes.push({
       id, first: person.first, last: person.last, email: person.email,
-      activity: "N/A", groups: group, cals: "All"
+      activity: "N/A", groups: rawVal, cals: "All"
     });
     ATHLETES.push({ id, name, email: person.email });
     state.calendars[id] = {};
   });
-  state.toolForm.uploadGroup = group;
+  state.toolForm.uploadGroup = rawVal;
   state.userTab = "groups";
-  toast(people.length + " athlete" + (people.length === 1 ? "" : "s") + " added to " + group);
+  toast(people.length + " athlete" + (people.length === 1 ? "" : "s") + " added to " + rawVal);
   render();
 }
 function exportData() {
@@ -2576,12 +2741,26 @@ function exportData() {
 }
 async function removeUser(id) {
   const row = state.coaches.concat(state.athletes).find((c) => c.id === id);
-  const serverId = row ? row.serverId : (String(id).startsWith("srv") ? parseInt(String(id).slice(3)) : (String(id).startsWith("u") ? parseInt(String(id).slice(1)) : null));
+  const serverId = row ? row.serverId : (String(id).startsWith("srv") ? parseInt(String(id).slice(3), 10) : (String(id).startsWith("u") || String(id).startsWith("c") ? parseInt(String(id).slice(1), 10) : null));
   if (serverId) {
     try {
-      await api("DELETE", "/api/users/" + serverId);
+      if (state.auth && state.auth.token && state.auth.user && state.auth.user.gym_id) {
+        if (row && row.role === "coach") {
+          await api("DELETE", "/api/gym/coaches/" + serverId);
+        } else {
+          await api("DELETE", "/api/gym/athletes/" + serverId);
+        }
+        await loadGymContext();
+        toast("User removed");
+        render();
+        return;
+      } else {
+        await api("DELETE", "/api/users/" + serverId);
+      }
     } catch (e) {
+      toast(e.message || "Could not remove user");
       console.warn("Failed to delete user on server:", e);
+      return;
     }
   }
   state.coaches = state.coaches.filter((c) => c.id !== id);
@@ -2726,6 +2905,8 @@ async function loadRoster() {
   try {
     if (state.auth && state.auth.token && state.auth.user && state.auth.user.gym_id) {
       await loadGymContext();
+      render();
+      return;
     }
     const users = await api("GET", "/api/users");
     users.forEach((u) => {
@@ -2763,17 +2944,40 @@ async function addUserRecord(ev) {
   const first = (state.toolForm.first || "").trim();
   const last = (state.toolForm.last || "").trim();
   const email = (state.toolForm.email || "").trim();
-  const role = state.toolForm.role || "student";
+  const role = state.toolForm.role || (state.userTab === "coaches" ? "coach" : "student");
   if (!first || !email) { toast("First name and email are required"); return; }
+  const fullName = (first + " " + last).trim();
   try {
+    if (state.auth && state.auth.token && state.auth.user && state.auth.user.gym_id) {
+      if (role === "coach") {
+        await api("POST", "/api/gym/coaches", { name: fullName, email });
+      } else {
+        const teams = ledTeams(state.gymContext);
+        const teamEl = document.getElementById("user-team-id");
+        const teamId = parseInt((teamEl && teamEl.value) || state.toolForm.userTeamId || (teams[0] && teams[0].id), 10);
+        if (!teamId) {
+          toast("Create a group first in the Groups tab");
+          return;
+        }
+        await api("POST", "/api/gym/athletes", { name: fullName, email, team_id: teamId });
+      }
+      await loadGymContext();
+      state.toolForm.first = "";
+      state.toolForm.last = "";
+      state.toolForm.email = "";
+      state.userTab = role === "coach" ? "coaches" : "athletes";
+      toast("User added");
+      render();
+      return;
+    }
     const user = await api("POST", "/api/users", {
-      name: (first + " " + last).trim(), email, role, title: role === "coach" ? "Coach" : "Athlete"
+      name: fullName, email, role, title: role === "coach" ? "Coach" : "Athlete"
     });
     const row = { id: "srv" + user.id, serverId: user.id, first, last, email, activity: "Just added", groups: "—", cals: "All", role };
     (role === "coach" ? state.coaches : state.athletes).push(row);
     if (role !== "coach") {
       const id = "u" + user.id;
-      ATHLETES.push({ id, name: (first + " " + last).trim(), email });
+      ATHLETES.push({ id, name: fullName, email, serverId: user.id });
       state.calendars[id] = {};
     }
     state.toolForm.first = "";
@@ -2783,7 +2987,7 @@ async function addUserRecord(ev) {
     toast("User added");
     render();
   } catch (err) {
-    toast("Could not add that user");
+    toast(err.message || "Could not add that user");
     console.error(err);
   }
 }
@@ -2955,18 +3159,19 @@ function hideExercise(id) {
 }
 
 function dailyView() {
-  const date = "2026-10-14";
+  const date = APP_TODAY;
   const cards = ATHLETES.map((a) => {
     const day = (state.calendars[a.id] || {})[date];
-    return `<article class="card"><div class="who"><span class="dotav">${esc(a.name[0])}</span><strong>${esc(a.name)}</strong></div><div class="exname">${day ? esc(day.title || "Workout") : "No session"}</div><p>${day ? day.items.length + " exercises" : "Rest / unassigned"}</p><button class="comment" onclick="state.entryAthlete='${a.id}';state.entryDate='${date}';goTool('entry')">Open entry</button></article>`;
+    return `<article class="card"><div class="who"><span class="dotav">${esc((a.name || "A")[0])}</span><strong>${esc(a.name)}</strong></div><div class="exname">${day ? esc(day.title || "Workout") : "No session"}</div><p>${day ? day.items.length + " exercises" : "Rest / unassigned"}</p><button class="comment" onclick="state.entryAthlete='${a.id}';state.entryDate='${date}';goTool('entry')">Open entry</button></article>`;
   }).join("");
-  return `<section class="stage light-page"><h1>Daily Brief</h1><p class="hint">Wednesday, October 14, 2026</p><div class="grid-cards">${cards}</div></section>`;
+  return `<section class="stage light-page"><h1>Daily Brief</h1><p class="hint">${fmtLong(date)}</p><div class="grid-cards">${cards || `<p class="hint">No athletes enrolled yet.</p>`}</div></section>`;
 }
 function weightroomView() {
-  return `<section class="stage light-page"><h1>Weightroom</h1><p class="hint">Who is on the floor today</p><div class="grid-cards">${ATHLETES.slice(0, 4).map((a) => `<article class="card"><strong>${esc(a.name)}</strong><div class="hint">Logging · Week 5</div><button class="comment" onclick="state.entryAthlete='${a.id}';goTool('entry')">Open</button></article>`).join("")}</div></section>`;
+  const cards = ATHLETES.map((a) => `<article class="card"><strong>${esc(a.name)}</strong><div class="hint">${esc(a.team_name || "Athlete")} · ${esc(weekName(APP_TODAY))}</div><button class="comment" onclick="state.entryAthlete='${a.id}';goTool('entry')">Open</button></article>`).join("");
+  return `<section class="stage light-page"><h1>Weightroom</h1><p class="hint">Who is on the floor today</p><div class="grid-cards">${cards || `<p class="hint">No athletes enrolled yet. Add athletes in Manage Users → Upload Users.</p>`}</div></section>`;
 }
 function boardView() {
-  if (!state.boardDate) state.boardDate = state.entryDate || "2026-10-13";
+  if (!state.boardDate) state.boardDate = state.entryDate || APP_TODAY;
   if (state.role === "athlete") {
     const name = viewedAthleteName();
     const day = savedDay(state.boardDate);
@@ -2980,17 +3185,19 @@ function boardView() {
       <div class="panel" style="font-size:22px">${items.map((it) => `<div>${esc(it.letter || "")} ${esc(it.name)} <span class="hint">${esc(scriptLine(it))}</span></div>`).join("") || "Nothing programmed"}</div>
     </section>`;
   }
-  if (!state.boardAthlete || !ATHLETES.some((a) => a.id === state.boardAthlete)) {
-    state.boardAthlete = ATHLETES.some((a) => a.id === state.athleteId) ? state.athleteId : (ATHLETES[0] ? ATHLETES[0].id : "");
+  const targets = buildAthletes().filter((t) => t.id !== "none");
+  if (!state.boardAthlete || !targets.some((a) => a.id === state.boardAthlete)) {
+    state.boardAthlete = targets.some((a) => a.id === state.athleteId) ? state.athleteId : (targets[0] ? targets[0].id : "");
+    if (state.boardAthlete) loadCalendarSchedule(state.boardAthlete);
   }
-  const person = ATHLETES.find((a) => a.id === state.boardAthlete) || { id: "", name: "Athlete" };
+  const person = targets.find((a) => a.id === state.boardAthlete) || { id: "", name: "Athlete" };
   const day = (state.calendars[person.id] || {})[state.boardDate];
   const items = day && day.items ? day.items : [];
   return `<section class="stage light-page" id="whiteboard">
     <h1>Whiteboard</h1>
     <div class="toolbar">
-      <select class="plain" aria-label="Athlete" onchange="state.boardAthlete=this.value;render()">
-        ${ATHLETES.map((a) => `<option value="${esc(a.id)}" ${a.id === person.id ? "selected" : ""}>${esc(a.name)}</option>`).join("")}
+      <select class="plain" aria-label="Athlete" onchange="state.boardAthlete=this.value;loadCalendarSchedule(this.value);render()">
+        ${targets.map((a) => `<option value="${esc(a.id)}" ${a.id === person.id ? "selected" : ""}>${esc(a.name)}</option>`).join("") || `<option value="">No athletes or groups</option>`}
       </select>
       <input class="plain" type="date" aria-label="Day" value="${esc(state.boardDate)}" onchange="if(this.value){state.boardDate=this.value;render()}">
     </div>
@@ -3002,73 +3209,101 @@ function maxesKey() {
   return state.role === "athlete" ? ("own:" + ownAthleteId()) : state.athleteId;
 }
 function maxesView() {
-  const key = maxesKey();
-  const rows = state.prs[key] || (state.prs[key] = []);
-  const name = state.role === "athlete" ? viewedAthleteName() : athlete().name;
+  const rows = state.serverRecords || [];
+  const name = state.role === "athlete" ? viewedAthleteName() : (athlete() && athlete().name) || "Gym";
   return `<section class="stage light-page" id="maxes"><h1>Maxes / PRs · ${esc(name)}</h1>
-    <table class="data"><tr><th>Lift</th><th>Kg</th><th></th></tr>${rows.map((r, i) => `<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td><button class="comment" onclick="editPr(${i})">Edit</button></td></tr>`).join("") || `<tr><td colspan="3">No personal records yet.</td></tr>`}</table>
-    <button class="req" style="margin-top:8px" onclick="addPr()">+ PR</button></section>`;
+    <form class="toolbar" onsubmit="addGoalRecord(); return false;">
+      <input class="plain" placeholder="Lift (e.g. Back Squat)" data-focus="pr-name" value="${esc(state.toolForm.goalName || "")}" oninput="state.toolForm.goalName=this.value">
+      <input class="plain" placeholder="Kg (e.g. 180)" data-focus="pr-kg" value="${esc(state.toolForm.goalWeight || "")}" oninput="state.toolForm.goalWeight=this.value">
+      <button class="req" type="submit">+ PR</button>
+    </form>
+    <table class="data"><tr><th>Lift</th><th>Kg</th><th>Athlete</th><th></th></tr>${rows.map((r) => `<tr><td>${esc((r.exercise && r.exercise.name) || "Lift")}</td><td>${esc(r.weight)}</td><td>${esc((r.user && r.user.name) || signedInName())}</td><td><button class="comment" onclick="editGoal(${r.id})">Edit</button> <button class="comment" onclick="deleteGoalRecord(${r.id})">Delete</button></td></tr>`).join("") || `<tr><td colspan="4">No personal records yet.</td></tr>`}</table>
+  </section>`;
 }
 function addPr() {
-  const name = prompt("Lift");
-  if (!name) return;
-  const key = maxesKey();
-  state.prs[key] = state.prs[key] || [];
-  state.prs[key].push([name, ""]);
-  render();
-}
-function editPr(index) {
-  const rows = state.prs[maxesKey()] || [];
-  const row = rows[index];
-  if (!row) return;
   openEdit({
-    title: "Edit PR",
-    hint: row[0] || "",
-    fields: [{ key: "kg", label: "Kg", value: row[1] || "" }],
-    onSave: (values) => {
-      row[1] = values.kg || "";
+    title: "Add Personal Record",
+    fields: [
+      { key: "name", label: "Lift name", value: "" },
+      { key: "kg", label: "Weight (kg)", value: "" }
+    ],
+    onSave: async (values) => {
+      state.toolForm.goalName = (values.name || "").trim();
+      state.toolForm.goalWeight = (values.kg || "").trim();
       state.modal = null;
-      toast("PR saved");
+      await addGoalRecord();
     }
   });
 }
+function editPr(index) {
+  const rec = (state.serverRecords || [])[index];
+  if (rec) {
+    editGoal(rec.id);
+  }
+}
 function boardLeader() {
-  const scores = ATHLETES.map((a) => {
+  const dbRows = (state.gymActivity && state.gymActivity.leaderboard) || [];
+  const scoreMap = new Map();
+  dbRows.forEach((r) => {
+    scoreMap.set(r.name, (scoreMap.get(r.name) || 0) + (r.tonnage || 0));
+  });
+  ATHLETES.forEach((a) => {
     let t = 0;
     Object.entries(state.logs).forEach(([k, log]) => {
       if (!k.startsWith(a.id + ":")) return;
       Object.values(log.cells || {}).forEach((c) => { if (c.done) t += (+c.r || 0) * (+c.w || 0); });
     });
-    return [a.name, t];
-  }).sort((a, b) => b[1] - a[1]);
-  return `<section class="stage light-page"><h1>Leaderboard</h1><table class="data"><tr><th>#</th><th>Athlete</th><th>Tonnage</th></tr>${scores.map((s, i) => `<tr><td>${i + 1}</td><td>${esc(s[0])}</td><td>${s[1]}</td></tr>`).join("")}</table></section>`;
+    scoreMap.set(a.name, (scoreMap.get(a.name) || 0) + t);
+  });
+  const scores = Array.from(scoreMap.entries()).sort((a, b) => b[1] - a[1]);
+  return `<section class="stage light-page"><h1>Leaderboard</h1><table class="data"><tr><th>#</th><th>Athlete</th><th>Tonnage (kg)</th></tr>${scores.map((s, i) => `<tr><td>${i + 1}</td><td>${esc(s[0])}</td><td>${Math.round(s[1])}</td></tr>`).join("") || `<tr><td colspan="3">No athletes or logged sessions yet.</td></tr>`}</table></section>`;
 }
 function evalView() {
   return `<section class="stage light-page"><h1>Evaluations</h1>${state.evals.map((e) => `<article class="card">${esc(e)}</article>`).join("") || '<div class="empty">No evaluations yet</div>'}<button class="req" onclick="const n=prompt('Evaluation note'); if(n){state.evals.push(n);render()}">+ Evaluation</button></section>`;
 }
 function calendarsView() {
+  const targets = buildAthletes().filter((t) => t.id !== "none");
   return `<section class="stage light-page"><h1>Manage Calendars</h1>
     <form class="toolbar" onsubmit="addCalendar(); return false;">
       <input class="plain" placeholder="Athlete name" data-focus="cal-name" value="${esc(state.toolForm.calName || "")}" oninput="state.toolForm.calName=this.value">
-      <input class="plain" placeholder="Email" data-focus="cal-email" value="${esc(state.toolForm.calEmail || "")}" oninput="state.toolForm.calEmail=this.value">
-      <button class="req" type="submit">Add calendar</button>
+      <input class="plain" placeholder="Email (optional)" data-focus="cal-email" value="${esc(state.toolForm.calEmail || "")}" oninput="state.toolForm.calEmail=this.value">
+      <button class="req" type="submit">Add athlete calendar</button>
     </form>
-    <div class="grid-cards">${ATHLETES.map((a) => `<article class="card">
+    <div class="grid-cards">${targets.map((a) => `<article class="card">
       <strong>${esc(a.name)}</strong>
-      <div class="hint">${Object.keys(state.calendars[a.id] || {}).length} programmed days · ${esc(a.email)}</div>
-      <button class="comment" onclick="editCalendar('${a.id}')">Edit</button>
-      <button class="comment" onclick="state.athleteId='${a.id}';state.view='build';render()">Open calendar</button>
-    </article>`).join("")}</div></section>`;
+      <div class="hint">${Object.keys(state.calendars[a.id] || {}).length} programmed days${a.email ? " · " + esc(a.email) : ""}</div>
+      ${!a.isGroup ? `<button class="comment" onclick="editCalendar('${a.id}')">Edit</button>` : ""}
+      <button class="comment" onclick="switchAthlete('${esc(a.id)}');state.view='build';render()">Open calendar</button>
+    </article>`).join("") || `<p class="hint">No calendars yet. Create a group or upload athletes in Manage Users.</p>`}</div></section>`;
 }
-function addCalendar() {
+async function addCalendar() {
   const name = (state.toolForm.calName || "").trim();
-  const email = (state.toolForm.calEmail || "").trim() || (name.toLowerCase().replace(/[^a-z0-9]+/g, "") + "@example.com");
+  const email = (state.toolForm.calEmail || "").trim();
   if (!name) { toast("Name the athlete"); return; }
-  if (ATHLETES.some((a) => a.email === email)) { toast("That email already has a calendar"); return; }
+  const teams = ledTeams(state.gymContext);
+  if (teams.length && state.auth && state.auth.token) {
+    try {
+      await api("POST", "/api/gym/athletes/bulk", {
+        team_id: teams[0].id,
+        athletes: [{ name, email: email || null }]
+      });
+      await loadGymContext();
+      state.toolForm.calName = "";
+      state.toolForm.calEmail = "";
+      toast("Athlete & calendar created");
+      render();
+      return;
+    } catch (err) {
+      toast(err.message || "Could not add athlete calendar");
+      return;
+    }
+  }
+  const fallbackEmail = email || (name.toLowerCase().replace(/[^a-z0-9]+/g, "") + "@wourkout.app");
+  if (ATHLETES.some((a) => a.email === fallbackEmail)) { toast("That email already has a calendar"); return; }
   const id = "cal" + uid();
-  ATHLETES.push({ id, name, email });
+  ATHLETES.push({ id, name, email: fallbackEmail });
   state.calendars[id] = {};
-  state.athletes.push({ id, first: name.split(" ")[0], last: name.split(" ").slice(1).join(" "), email, activity: "N/A", groups: "—", cals: "1" });
+  state.athletes.push({ id, first: name.split(" ")[0], last: name.split(" ").slice(1).join(" "), email: fallbackEmail, activity: "N/A", groups: "—", cals: "1" });
   state.toolForm.calName = "";
   state.toolForm.calEmail = "";
   toast("Calendar added");
@@ -3088,11 +3323,17 @@ function editCalendar(id) {
     }
   });
 }
-function renameCalendar(id, name) {
+async function renameCalendar(id, name) {
   const next = (name || "").trim();
   if (!next) return;
   const person = ATHLETES.find((a) => a.id === id);
-  if (person) person.name = next;
+  if (person) {
+    person.name = next;
+    if (person.serverId) {
+      try { await api("PUT", "/api/users/" + person.serverId, { name: next, email: person.email }); }
+      catch (e) { console.warn(e); }
+    }
+  }
   const row = state.athletes.find((a) => a.id === id);
   if (row) { row.first = next.split(" ")[0]; row.last = next.split(" ").slice(1).join(" "); }
   toast("Calendar renamed");
@@ -3217,6 +3458,8 @@ async function addGoalRecord() {
         const u = await ensureUser(person, "student");
         targetUserId = u.id;
       }
+    } else if (state.auth && state.auth.user) {
+      targetUserId = state.auth.user.id;
     }
     const rec = await api("POST", "/api/records", { exercise_id: exercise.id, weight: weight || 0, reps: 1, notes: "Goal", user_id: targetUserId });
     state.serverRecords.unshift(rec);
@@ -3251,7 +3494,7 @@ function docsView() {
       <strong>${esc(d.name)}</strong>
       <div class="hint">${esc(d.url)}</div>
       <div style="margin-top:8px"><a href="${esc(d.url)}" target="_blank">Open</a> <button class="comment" onclick="editDoc(${i})">Edit</button> <button class="comment" onclick="state.docs.splice(${i},1);render()">Remove</button></div>
-    </article>`).join("")}</div></section>`;
+    </article>`).join("") || `<p class="hint">No documents or links added yet.</p>`}</div></section>`;
 }
 function editDoc(index) {
   const doc = state.docs[index];
@@ -3288,7 +3531,7 @@ function packetsView() {
       <input class="plain" placeholder="Packet name" data-focus="packet-name" value="${esc(state.toolForm.packet || "")}" oninput="state.toolForm.packet=this.value">
       <button class="req" type="submit">Add packet</button>
     </form>
-    <div class="grid-cards">${state.packets.map((p, i) => `<article class="card"><strong>${esc(p)}</strong><div style="margin-top:8px"><button class="comment" onclick="editPacket(${i})">Edit</button> <button class="comment" onclick="state.packets.splice(${i},1);render()">Remove</button></div></article>`).join("")}</div></section>`;
+    <div class="grid-cards">${state.packets.map((p, i) => `<article class="card"><strong>${esc(p)}</strong><div style="margin-top:8px"><button class="comment" onclick="editPacket(${i})">Edit</button> <button class="comment" onclick="state.packets.splice(${i},1);render()">Remove</button></div></article>`).join("") || `<p class="hint">No packets added yet.</p>`}</div></section>`;
 }
 function editPacket(index) {
   openEdit({
@@ -3314,20 +3557,39 @@ function addPacket() {
 function attendanceView() {
   const date = state.entryDate;
   const comp = state.compliance && state.compliance.date === date ? state.compliance : null;
+  const compItems = (comp && comp.items) || [];
   return `<section class="stage light-page"><h1>Attendance</h1>
     <input class="plain" type="date" value="${date}" onchange="state.entryDate=this.value;loadCompliance()">
     <p class="hint">${comp ? comp.completed_count + " completed · " + comp.not_started_count + " not started" : "Mark who is here. The workout on that day is listed under each name."}</p>
     <div class="grid-cards">${ATHLETES.map((a) => {
       const key = date + ":" + a.id;
+      const cItem = compItems.find((ci) => ci.user && ci.user.id === a.serverId);
       const day = (state.calendars[a.id] || {})[date];
-      const title = day && ((day.title || "").trim() || (day.items || []).length) ? (day.title || "Workout") + " · " + (day.items || []).length + " exercises" : "No workout this day";
+      const title = cItem && cItem.workout_title
+        ? `${cItem.workout_title} · ${cItem.status}`
+        : (day && ((day.title || "").trim() || (day.items || []).length) ? (day.title || "Workout") + " · " + (day.items || []).length + " exercises" : "No workout this day");
+      const checked = state.attendance[key] != null ? state.attendance[key] : (cItem && cItem.status === "completed");
       return `<article class="card">
-        <label class="chk"><input type="checkbox" ${state.attendance[key] ? "checked" : ""} onchange="state.attendance['${key}']=this.checked;render()"> ${esc(a.name)}</label>
+        <label class="chk"><input type="checkbox" ${checked ? "checked" : ""} onchange="toggleAttendance('${date}', '${a.id}', ${a.serverId || 0}, ${cItem && cItem.workout_id ? cItem.workout_id : 0}, this.checked)"> ${esc(a.name)}</label>
         <div class="hint">${esc(title)}</div>
         <div class="hint">${esc(state.attendance[key + ":note"] || "No note")}</div>
         <button class="comment" onclick="editAttendance('${a.id}')">Edit note</button>
       </article>`;
-    }).join("")}</div></section>`;
+    }).join("") || `<p class="hint">No athletes enrolled yet.</p>`}</div></section>`;
+}
+async function toggleAttendance(date, localId, serverId, workoutId, isPresent) {
+  const key = date + ":" + localId;
+  state.attendance[key] = isPresent;
+  render();
+  if (isPresent && serverId && workoutId) {
+    try {
+      await api("POST", "/api/coach/remediate/mark-present", { user_id: serverId, workout_id: workoutId, date });
+      await loadCompliance();
+      toast("Marked present & completed");
+    } catch (e) {
+      console.warn(e);
+    }
+  }
 }
 function editAttendance(athleteId) {
   const key = state.entryDate + ":" + athleteId + ":note";
@@ -3349,27 +3611,47 @@ async function loadCompliance() {
 }
 function programmedRows() {
   const rows = [];
-  ATHLETES.forEach((a) => {
+  const seen = new Set();
+  buildAthletes().forEach((a) => {
+    if (a.id === "none") return;
     Object.keys(state.calendars[a.id] || {}).sort().forEach((date) => {
       const day = state.calendars[a.id][date];
       if (!(day.items || []).length && !(day.title || "").trim()) return;
+      const k = a.id + ":" + date;
+      seen.add(k);
       rows.push({ athlete: a.name, athleteId: a.id, date, title: day.title || "Workout", count: (day.items || []).length });
     });
+  });
+  const ctxWorkouts = (state.gymContext && state.gymContext.workouts) || [];
+  ctxWorkouts.forEach((w) => {
+    if (w.is_template || !w.scheduled_date) return;
+    if (!rows.some((r) => r.date === w.scheduled_date && r.title === w.title)) {
+      rows.push({
+        athlete: w.program_name ? w.program_name.replace(/^wourkout\s+/i, "") : "Gym",
+        athleteId: state.athleteId || "",
+        date: w.scheduled_date,
+        title: w.title || "Workout",
+        count: w.exercise_count || 0
+      });
+    }
   });
   return rows;
 }
 function reportingView() {
   const rows = programmedRows();
-  const items = rows.reduce((n, r) => n + r.count, 0);
+  const kpis = (state.gymActivity && state.gymActivity.kpis) || {};
+  const progDays = kpis.programmed_days != null ? Math.max(kpis.programmed_days, rows.length) : rows.length;
+  const exCount = kpis.total_exercises != null ? Math.max(kpis.total_exercises, rows.reduce((n, r) => n + r.count, 0)) : rows.reduce((n, r) => n + r.count, 0);
+  const athCount = kpis.total_athletes != null ? kpis.total_athletes : state.athletes.length;
   return `<section class="stage light-page"><h1>Reporting</h1>
-    <div class="kpis"><div class="kpi"><b>${rows.length}</b><span>Programmed days</span></div><div class="kpi"><b>${items}</b><span>Exercises</span></div><div class="kpi"><b>${state.athletes.length}</b><span>Athletes</span></div><div class="kpi"><b>${state.reports.length}</b><span>Notes</span></div></div>
+    <div class="kpis"><div class="kpi"><b>${progDays}</b><span>Programmed days</span></div><div class="kpi"><b>${exCount}</b><span>Exercises</span></div><div class="kpi"><b>${athCount}</b><span>Athletes</span></div><div class="kpi"><b>${state.reports.length}</b><span>Notes</span></div></div>
     <form class="toolbar" onsubmit="addReport(); return false;">
       <input class="plain" placeholder="Report note" data-focus="report-note" value="${esc(state.toolForm.report || "")}" oninput="state.toolForm.report=this.value">
       <button class="req" type="submit">Add note</button>
     </form>
     ${state.reports.map((r, i) => `<article class="card"><p>${esc(r.text)}</p><button class="comment" onclick="editReport(${i})">Edit</button> <button class="comment" onclick="state.reports.splice(${i},1);render()">Remove</button></article>`).join("")}
-    <table class="data" style="margin-top:12px"><tr><th>Date</th><th>Athlete</th><th>Workout</th><th>Exercises</th><th></th></tr>
-      ${rows.slice(0, 40).map((r) => `<tr><td>${esc(r.date)}</td><td>${esc(r.athlete)}</td><td>${esc(r.title)}</td><td>${r.count}</td><td><button class="comment" onclick="openReportDay('${r.athleteId}','${r.date}')">Open</button></td></tr>`).join("")}
+    <table class="data" style="margin-top:12px"><tr><th>Date</th><th>Target</th><th>Workout</th><th>Exercises</th><th></th></tr>
+      ${rows.slice(0, 40).map((r) => `<tr><td>${esc(r.date)}</td><td>${esc(r.athlete)}</td><td>${esc(r.title)}</td><td>${r.count}</td><td><button class="comment" onclick="openReportDay('${esc(r.athleteId)}','${esc(r.date)}')">Open</button></td></tr>`).join("") || `<tr><td colspan="5">No programmed workouts yet.</td></tr>`}
     </table></section>`;
 }
 function editReport(index) {
@@ -3519,7 +3801,7 @@ function modalHtml() {
     return `<div class="modal-back"><div class="modal" onclick="event.stopPropagation()"><div class="split"><h3>${m.mode === "move" ? "Move" : "Copy"}</h3><button class="iconbtn" onclick="state.modal=null;render()">✕</button></div>
       <div class="sub">${m.ids.length} workout items selected</div>
       <div>To calendar</div>
-      <div class="row"><select class="ghost" onchange="state.modal.athleteId=this.value">${ATHLETES.map((a) => `<option value="${a.id}" ${a.id === (m.athleteId || state.athleteId) ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select></div>
+      <div class="row"><select class="ghost" onchange="state.modal.athleteId=this.value">${buildAthletes().filter((a) => a.id !== "none").map((a) => `<option value="${esc(a.id)}" ${a.id === (m.athleteId || state.athleteId) ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select></div>
       <div>Paste on</div>
       <div class="row"><button class="pill ${!m.range ? "on" : ""}" onclick="state.modal.range=false;render()">Single date</button><button class="pill ${m.range ? "on" : ""}" onclick="state.modal.range=true;render()">Date range</button></div>
       <input class="field" type="date" value="${m.target}" onchange="state.modal.target=this.value">
@@ -3881,9 +4163,13 @@ function openAthleteInBuild() {
   const dateEl = document.getElementById("assign-date");
   const target = (targetEl && targetEl.value) || state.assignTarget || "";
   const date = (dateEl && dateEl.value) || state.assignDate || APP_TODAY;
-  if (target.startsWith("user:")) {
+  const list = buildAthletes();
+  if (target.startsWith("group:")) {
+    const gidNum = parseInt(target.slice(6), 10);
+    const match = list.find((a) => a.groupId === gidNum);
+    if (match) state.athleteId = match.id;
+  } else if (target.startsWith("user:")) {
     const uidNum = parseInt(target.slice(5), 10);
-    const list = buildAthletes();
     const match = list.find((a) => a.serverId === uidNum);
     if (match) state.athleteId = match.id;
   }
@@ -3892,6 +4178,9 @@ function openAthleteInBuild() {
     state.weekStart = sundayOf(date);
   }
   state.view = "build";
+  if (state.athleteId && state.athleteId !== "none") {
+    loadCalendarSchedule(state.athleteId);
+  }
   render();
 }
 
@@ -4579,6 +4868,8 @@ window.redeemCode = redeemCode;
 window.createGym = createGym;
 window.deleteGoalRecord = deleteGoalRecord;
 window.filterGoalsAthlete = filterGoalsAthlete;
+window.toggleAttendance = toggleAttendance;
+window.loadCalendarSchedule = loadCalendarSchedule;
 
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", () => {
