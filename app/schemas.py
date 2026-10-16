@@ -51,6 +51,8 @@ class SetLogBase(BaseModel):
     set_number: int
     weight: float = 0.0
     reps: float = 0.0
+    rest_seconds: int = 0
+    details: str = ""
     completed: bool = False
 
 class SetLogCreate(SetLogBase):

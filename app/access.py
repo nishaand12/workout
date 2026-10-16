@@ -92,6 +92,15 @@ def assert_leads_team(db: Session, user: User, team: Optional[Group]) -> Group:
 
 
 def assert_own_athlete(db: Session, user: User, athlete: Optional[User]) -> User:
+    """A coach may program athletes on teams they lead, including themselves."""
+    if (
+        athlete
+        and athlete.id == user.id
+        and is_athlete(user)
+        and (is_coach(user) or is_admin(user))
+        and same_gym(user, athlete)
+    ):
+        return athlete
     if not athlete or athlete.id not in athlete_ids_for(db, user):
         raise HTTPException(status_code=403, detail="That athlete is not on a team you lead.")
     if athlete.gym_id != user.gym_id:
