@@ -518,6 +518,8 @@ table.data tr:hover td { background: #fafafa; }
 .note-box textarea {
   min-height: 72px; border-radius: 8px; border: 1px solid #333; background: #111; color: #fff; padding: 8px;
 }
+.light-page .note-box label { color: #666; }
+.light-page .note-box textarea { background: #fff; color: #222; border-color: #ddd; }
 .editor.log-editor { width: min(720px, 96vw); }
 .group-card .member-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid #eee; }
 .team-action {
