@@ -412,6 +412,16 @@ class GymTeam(BaseModel):
     coach_name: str = ""
     athlete_count: int = 0
 
+class GymWorkoutSummary(BaseModel):
+    id: int
+    title: str
+    program_name: str = ""
+    scheduled_date: str = ""
+    exercise_count: int = 0
+    exercise_summary: str = ""
+    assigned_athlete_ids: List[int] = []
+    is_template: bool = False
+
 class GymContext(BaseModel):
     gym_id: int
     gym_name: str
@@ -419,6 +429,7 @@ class GymContext(BaseModel):
     athletes: List[GymPerson] = []
     teams: List[GymTeam] = []
     codes: List[JoinCodeResponse] = []
+    workouts: List[GymWorkoutSummary] = []
 
 class GymMemberCreate(BaseModel):
     name: str
