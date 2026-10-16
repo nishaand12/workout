@@ -261,6 +261,10 @@ select.plain, input.plain {
 .card .who { display: flex; gap: 8px; align-items: center; font-size: 13px; color: #444; }
 .card .exname { color: #888; font-size: 12px; margin-top: 8px; }
 .card .quote { font-size: 18px; margin: 6px 0 10px; }
+.group-codes { margin-top: 10px; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.group-codes .hint { margin: 0; }
+.code-line { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.code-line code { font-weight: 700; letter-spacing: .04em; }
 .comment { background: transparent; border: 0; color: #666; font-size: 13px; padding: 0; }
 .dotav { width: 28px; height: 28px; border-radius: 50%; background: var(--red); color: white; display: grid; place-items: center; font-size: 12px; font-weight: 700; }
 
