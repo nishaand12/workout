@@ -1715,6 +1715,109 @@ def list_join_codes(db: Session, user: User) -> List[JoinCode]:
     return query.order_by(JoinCode.id.asc()).all()
 
 
+def delete_join_code(db: Session, user: User, code_id: int) -> bool:
+    access.require_gym(user)
+    row = db.query(JoinCode).filter(JoinCode.id == code_id, JoinCode.gym_id == user.gym_id).first()
+    if not row:
+        return False
+    if row.kind == "gym":
+        access.require_admin(user)
+    else:
+        team = db.query(Group).filter(Group.id == row.team_id).first() if row.team_id else None
+        if not access.is_admin(user):
+            access.assert_leads_team(db, user, team)
+    db.delete(row)
+    db.commit()
+    return True
+
+
+def clone_workout_for_gym(db: Session, workout: Workout, coach: User) -> Workout:
+    """Create a gym-scoped copy of a template workout so it belongs to the coach's gym."""
+    copy = Workout(
+        title=workout.title,
+        program_name=workout.program_name or "wourkout",
+        scheduled_date=workout.scheduled_date,
+        calendar_date=workout.calendar_date,
+        week_number=workout.week_number or 1,
+        day_of_week=workout.day_of_week or "",
+        description=workout.description or "",
+        created_by_coach_id=coach.id,
+        gym_id=coach.gym_id,
+    )
+    db.add(copy)
+    db.flush()
+    for we in sorted(workout.exercises, key=lambda x: x.order_index or 0):
+        db.add(WorkoutExercise(
+            workout_id=copy.id,
+            exercise_id=we.exercise_id,
+            superset_group=we.superset_group or "A",
+            order_index=we.order_index or 0,
+            prescription_text=we.prescription_text or "",
+            prescribed_sets=we.prescribed_sets or 3,
+            target_reps=we.target_reps or "5",
+            target_weight=we.target_weight or "0",
+            rest_seconds=we.rest_seconds or 90,
+            notes=we.notes or "",
+        ))
+    db.commit()
+    db.refresh(copy)
+    return copy
+
+
+def gym_workout_summaries(db: Session, user: User) -> List[dict]:
+    """Return saved workouts in this gym plus global library templates, with athlete assignment history."""
+    gym_workouts = db.query(Workout).filter(
+        or_(Workout.gym_id == user.gym_id, Workout.gym_id.is_(None))
+    ).order_by(desc(Workout.id)).all()
+    w_ids = [w.id for w in gym_workouts]
+    assignments = db.query(WorkoutAssignment).filter(
+        WorkoutAssignment.workout_id.in_(w_ids or [-1])
+    ).all() if w_ids else []
+
+    team_members_by_group = {}
+    if user.gym_id:
+        for u in db.query(User).filter(User.gym_id == user.gym_id, User.team_id.isnot(None)).all():
+            team_members_by_group.setdefault(u.team_id, set()).add(u.id)
+
+    assigned_by_workout = {}
+    latest_date_by_workout = {}
+    for a in assignments:
+        s = assigned_by_workout.setdefault(a.workout_id, set())
+        if a.user_id:
+            s.add(a.user_id)
+        if a.group_id and a.group_id in team_members_by_group:
+            s.update(team_members_by_group[a.group_id])
+        if a.scheduled_date:
+            prev = latest_date_by_workout.get(a.workout_id, "")
+            if a.scheduled_date > prev:
+                latest_date_by_workout[a.workout_id] = a.scheduled_date
+
+    results = []
+    seen_templates = set()
+    for w in gym_workouts:
+        is_template = w.gym_id is None
+        if is_template:
+            sig = (w.title, w.program_name)
+            if sig in seen_templates:
+                continue
+            seen_templates.add(sig)
+        ex_names = [we.exercise.name for we in sorted(w.exercises, key=lambda x: x.order_index or 0) if we.exercise]
+        summary = ", ".join(ex_names[:3])
+        if len(ex_names) > 3:
+            summary += f" (+{len(ex_names) - 3} more)"
+        results.append({
+            "id": w.id,
+            "title": w.title,
+            "program_name": w.program_name or "",
+            "scheduled_date": latest_date_by_workout.get(w.id) or w.scheduled_date or w.calendar_date or "",
+            "exercise_count": len(w.exercises),
+            "exercise_summary": summary,
+            "assigned_athlete_ids": sorted(assigned_by_workout.get(w.id, set())),
+            "is_template": is_template,
+        })
+    return results
+
+
 def redeem_join_code(db: Session, user: User, raw_code: str) -> User:
     code = (raw_code or "").strip().upper()
     row = db.query(JoinCode).filter(JoinCode.code == code).first()
@@ -1982,6 +2085,7 @@ def gym_context(db: Session, user: User) -> dict:
             "team_id": c.team_id,
             "team_name": c.team.name if c.team else None,
         } for c in codes],
+        "workouts": gym_workout_summaries(db, user),
     }
 
 
