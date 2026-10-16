@@ -183,7 +183,9 @@ button { cursor: pointer; }
 .superset-anchor { display: flex; align-items: center; gap: 6px; }
 .reps-info { width: 16px; font-size: 11px; color: #9ab; }
 .editor-actions { margin-top: 8px; }
-.modal.edit-modal { max-height: min(88vh, 760px); overflow: auto; }
+.modal.edit-modal { max-height: 92vh; overflow: hidden; display: flex; flex-direction: column; }
+.modal.edit-modal .edit-fields { overflow: auto; min-height: 0; padding-bottom: 4px; }
+.modal.edit-modal .full { flex-shrink: 0; }
 .editor-h { display: flex; align-items: center; gap: 8px; }
 .editor-h .name, .name-input { font-weight: 700; flex: 1; min-width: 0; background: transparent; border: 0; border-bottom: 1px solid #444; color: white; padding: 2px 4px; }
 .editor textarea { width: 100%; min-height: 72px; background: #1b1b1b; border: 1px solid #444; border-radius: 6px; padding: 6px; color: #eee; }

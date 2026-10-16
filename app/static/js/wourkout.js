@@ -3996,7 +3996,7 @@ function editModalHtml(m) {
     }
     return `<label class="edit-field"><span>${esc(f.label)}</span>${control}</label>`;
   }).join("");
-  return `<div class="modal-back" onclick="if(event.target===this) closeEdit()"><div class="modal edit-modal" onclick="event.stopPropagation()"><h3>${esc(m.title)}</h3>${hint}${fields}<button class="full save" type="button" onclick="saveEdit()">SAVE</button><button class="full" type="button" onclick="closeEdit()">CANCEL</button></div></div>`;
+  return `<div class="modal-back" onclick="if(event.target===this) closeEdit()"><div class="modal edit-modal" onclick="event.stopPropagation()"><h3>${esc(m.title)}</h3>${hint}<div class="edit-fields">${fields}</div><button class="full save" type="button" onclick="saveEdit()">SAVE</button><button class="full" type="button" onclick="closeEdit()">CANCEL</button></div></div>`;
 }
 function modalHtml() {
   const m = state.modal;
