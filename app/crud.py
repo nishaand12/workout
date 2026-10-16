@@ -1991,8 +1991,12 @@ def bulk_add_gym_athletes(db: Session, actor: User, team_id: int, items: list) -
         access.assert_leads_team(db, actor, team)
     created = []
     for raw in items:
-        name = (getattr(raw, "name", None) if not isinstance(raw, dict) else raw.get("name") or "").strip()
-        email = (getattr(raw, "email", None) if not isinstance(raw, dict) else raw.get("email") or "").strip().lower()
+        def _field(key: str) -> str:
+            value = raw.get(key) if isinstance(raw, dict) else getattr(raw, key, None)
+            return str(value or "").strip()
+
+        name = _field("name")
+        email = _field("email").lower()
         if not name and not email:
             continue
         if not name:

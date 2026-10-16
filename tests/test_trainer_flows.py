@@ -729,6 +729,47 @@ class TrainerFlowTests(unittest.TestCase):
         self.assertTrue(body["completed"])
         self.assertIn("21X1", body["details"])
 
+    def test_bulk_upload_athletes_without_emails(self):
+        reg = self.client.post("/api/auth/register", json={
+            "name": "Bulk Coach",
+            "email": f"bulk.{self.stamp}@example.com",
+            "username": f"bulk_{self.stamp[:8]}",
+            "password": "Password123!",
+            "role": "coach",
+        })
+        self.assertEqual(reg.status_code, 201, reg.text)
+        auth = self._auth(reg.json()["access_token"])
+        gym = self.client.post("/api/gyms", json={"name": f"Bulk Gym {self.stamp}"}, headers=auth)
+        self.assertEqual(gym.status_code, 201, gym.text)
+        team = self.client.post("/api/groups", json={"name": f"Bulk Team {self.stamp}"}, headers=auth)
+        self.assertEqual(team.status_code, 201, team.text)
+        team_id = team.json()["id"]
+
+        res = self.client.post("/api/gym/athletes/bulk", json={
+            "team_id": team_id,
+            "athletes": [
+                {"name": "Test athlete 1"},
+                {"name": "Test athlete 2", "email": None},
+                {"name": "Test athlete 3", "email": ""},
+            ],
+        }, headers=auth)
+        self.assertEqual(res.status_code, 201, res.text)
+        body = res.json()
+        self.assertEqual(body["added_count"], 3)
+        emails = [u["user"]["email"] for u in body["users"]]
+        self.assertEqual(len(set(emails)), 3)
+        for u in body["users"]:
+            self.assertEqual(u["user"]["team_id"], team_id)
+            self.assertTrue(u["temporary_password"])
+
+        # Re-uploading the same names creates new, distinct accounts rather than crashing.
+        again = self.client.post("/api/gym/athletes/bulk", json={
+            "team_id": team_id,
+            "athletes": [{"name": "Test athlete 1"}],
+        }, headers=auth)
+        self.assertEqual(again.status_code, 201, again.text)
+        self.assertNotIn(again.json()["users"][0]["user"]["email"], emails)
+
 
 if __name__ == "__main__":
     unittest.main()
