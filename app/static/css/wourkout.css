@@ -324,9 +324,65 @@ table.data tr:hover td { background: #fafafa; }
 .help { color: #ccc; font-size: 13px; padding: 8px 12px; }
 .history { font-size: 12px; color: #bbb; padding: 4px 0; border-bottom: 1px solid #2a2a2a; }
 
+.nav-toggle {
+  display: none;
+  background: transparent;
+  border: 0;
+  color: #ddd;
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+}
+.nav-links { display: contents; }
+.nav-drawer, .nav-backdrop { display: none; }
+.drawer-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.drawer-label { color: #888; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; padding: 12px 10px 4px; }
+.drawer-foot { margin-top: auto; padding-top: 16px; display: flex; flex-direction: column; gap: 10px; }
+
 @media (max-width: 1100px) {
   .entry-wrap { grid-template-columns: 1fr; }
   .week { grid-template-columns: repeat(7, 180px); }
+}
+@media (max-width: 900px) {
+  .topnav .nav-links,
+  .topnav .role-switch,
+  .topnav .nav-profile { display: none; }
+  .nav-toggle { display: inline-flex; }
+  .nav-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.5);
+    z-index: 70;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .2s ease;
+  }
+  .nav-backdrop.open { opacity: 1; pointer-events: auto; }
+  .nav-drawer {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(300px, 86vw);
+    background: #111;
+    z-index: 80;
+    transform: translateX(-105%);
+    transition: transform .22s ease;
+    padding: 12px;
+    overflow: auto;
+    box-shadow: 12px 0 40px rgba(0,0,0,.4);
+  }
+  .nav-drawer.open { transform: translateX(0); }
+  .nav-drawer .navbtn { display: block; width: 100%; text-align: left; }
+  .nav-drawer .role-switch { flex-wrap: wrap; margin: 0 0 8px; }
+  .nav-drawer .nav-profile { border: 0; margin: 0; padding: 0; }
 }
 
 /* =========================================================

@@ -310,6 +310,7 @@ const state = {
   history: [],
   toast: "",
   navMenu: null,
+  navOpen: false,
   entryAthlete: null,
   entryDate: "2026-10-13",
   entryOpen: false,
@@ -576,32 +577,90 @@ function ownAthleteSession() {
   return !!(user && state.role === "athlete" && state.serverUserId === user.id && heldRoles(user).includes("athlete"));
 }
 
+function athletePages(view) {
+  return view === "mine" || view === "entry" || view === "whiteboard" || view === "maxes" || view === "journal";
+}
+function signedInName() {
+  const user = state.auth && state.auth.user;
+  return (user && (user.name || user.username)) || "Athlete";
+}
+function ownAthleteId() {
+  return state.actingAthlete || (state.auth && state.auth.user && state.auth.user.username) || "me";
+}
+function viewedAthleteName() {
+  const fromList = buildAthletes().find((a) => a.id === state.actingAthlete);
+  return (fromList && fromList.name) || signedInName();
+}
+function workoutToolList() {
+  return [["weightroom", "WEIGHTROOM VIEW"], ["whiteboard", "WHITEBOARD"], ["entry", "WORKOUT ENTRY"], ["maxes", "MAXES / PRS"], ["journal", "JOURNAL"], ["leaderboard", "LEADERBOARD"], ["evaluations", "EVALUATIONS"]];
+}
+function coachToolList() {
+  return [
+    ["users", "MANAGE USERS"], ["calendars", "MANAGE CALENDARS"], ["build", "THE PLANNER"],
+    ["exercises", "EXERCISES"], ["goals", "GOALS"], ["documents", "DOCUMENTS & LINKS"],
+    ["packets", "PACKETS & SHEETS"], ["attendance", "ATTENDANCE"], ["reporting", "REPORTING"], ["payments", "PAYMENTS"]
+  ];
+}
+function navItem(id, label, caret) {
+  const on = state.view === id;
+  return `<div class="nav-anchor"><button class="navbtn ${on ? "active" : ""}" onclick="go('${id}', event)">${label}${caret ? ' <span class="caret">▼</span>' : ""}</button>${menuFor(id)}</div>`;
+}
+function drawerHtml(displayName, initial, roleClass, avatarBg, user) {
+  const link = (id, label) => `<button type="button" class="navbtn ${state.view === id ? "active" : ""}" onclick="go('${id}')">${label}</button>`;
+  const tool = (id, label) => `<button type="button" class="navbtn ${state.view === id || (id === "journal" && state.view === "feed") ? "active" : ""}" onclick="goTool('${id}')">${label}</button>`;
+  let links = "";
+  if (state.role === "athlete") {
+    links = [["mine", "MY SCHEDULE"], ["entry", "WORKOUT ENTRY"], ["whiteboard", "WHITEBOARD"], ["maxes", "MAXES / PRS"], ["journal", "JOURNAL"]]
+      .map(([id, label]) => link(id, label)).join("");
+  } else if (state.role === "admin") {
+    links = link("admin", "COACHES");
+  } else {
+    links = link("squad", "ATHLETES") + link("build", "BUILD")
+      + `<div class="drawer-label">Workout tools</div>`
+      + workoutToolList().map(([id, label]) => tool(id, label)).join("")
+      + `<div class="drawer-label">Coach tools</div>`
+      + coachToolList().map(([id, label]) => tool(id, label)).join("");
+  }
+  const roles = heldRoles(user);
+  const switcher = roles.length > 1
+    ? `<div class="drawer-label">View</div><div class="role-switch">${roles.map((r) => `<button type="button" class="${state.role === r ? "on" : ""}" onclick="switchRole('${r}')">${esc(r)}</button>`).join("")}</div>`
+    : "";
+  return `<div class="nav-backdrop ${state.navOpen ? "open" : ""}" onclick="closeNav()"></div>
+    <aside class="nav-drawer ${state.navOpen ? "open" : ""}" onclick="event.stopPropagation()">
+      <div class="drawer-head">
+        <div class="wordmark">w<span>ourkout</span></div>
+        <button type="button" class="iconbtn" aria-label="Close menu" onclick="closeNav()">✕</button>
+      </div>
+      ${links}
+      ${switcher}
+      <div class="drawer-foot">
+        <div class="nav-profile">
+          <div class="nav-avatar" style="background:${avatarBg}">${initial}</div>
+          <div class="nav-user-info">
+            <span class="nav-user-name">${esc(displayName)}</span>
+            <span class="role-badge ${roleClass}">${esc(roleClass.toUpperCase())}</span>
+          </div>
+        </div>
+        <button class="nav-logout-btn" type="button" onclick="handleLogout()">Log out</button>
+      </div>
+    </aside>`;
+}
 function nav() {
   const isAthlete = state.role === "athlete";
-  const item = (id, label, caret) => `<div class="nav-anchor"><button class="navbtn ${state.view === id || (id === "feed" && (state.view === "feed" || state.view === "journal")) ? "active" : ""}" onclick="go('${id}', event)">${label}${caret ? ' <span class="caret">▼</span>' : ""}</button>${menuFor(id)}</div>`;
-  
   const user = state.auth && state.auth.user;
   const displayName = user ? (user.name || user.username) : (isAthlete ? "Athlete" : "Coach");
   const initial = (displayName[0] || "U").toUpperCase();
   const roleClass = state.role || "athlete";
   const avatarBg = roleClass === "athlete" ? "#22c55e" : roleClass === "admin" ? "#ef4444" : "#3b82f6";
-
-  const athleteNav = `${item("mine", "MY SCHEDULE")}`;
-
-  const coachNav = `
-    ${item("squad", "ATHLETES")}
-    ${item("build", "BUILD")}
-    ${item("workout", "WORKOUT TOOLS", true)}
-    ${item("coach", "COACH TOOLS", true)}
-  `;
-  const adminNav = `${item("admin", "COACHES")}`;
-  const links = isAthlete ? athleteNav : (state.role === "admin" ? adminNav : coachNav);
+  const athleteNav = `${navItem("mine", "MY SCHEDULE")}${navItem("entry", "WORKOUT ENTRY")}${navItem("whiteboard", "WHITEBOARD")}${navItem("maxes", "MAXES / PRS")}${navItem("journal", "JOURNAL")}`;
+  const coachNav = `${navItem("squad", "ATHLETES")}${navItem("build", "BUILD")}${navItem("workout", "WORKOUT TOOLS", true)}${navItem("coach", "COACH TOOLS", true)}`;
+  const links = isAthlete ? athleteNav : (state.role === "admin" ? navItem("admin", "COACHES") : coachNav);
   const home = isAthlete ? "mine" : (state.role === "admin" ? "admin" : "squad");
-
   return `<header class="topnav">
+    <button type="button" class="nav-toggle" aria-label="Open menu" onclick="toggleNav(event)">☰</button>
     <div class="wordmark" onclick="go('${home}')">w<span>ourkout</span></div>
     <span class="view-pill ${esc(state.role || "athlete")}">${esc((state.role || "athlete").toUpperCase())} VIEW</span>
-    ${links}
+    <nav class="nav-links">${links}</nav>
     <div class="spacer"></div>
     ${heldRoles(user).length > 1 ? `<div class="role-switch">${heldRoles(user).map((r) => `<button type="button" class="${state.role === r ? "on" : ""}" onclick="switchRole('${r}')">${esc(r)}</button>`).join("")}</div>` : ""}
     <div class="nav-profile">
@@ -612,49 +671,79 @@ function nav() {
       </div>
       <button class="nav-logout-btn" onclick="handleLogout()">Log out</button>
     </div>
-  </header>`;
+  </header>${drawerHtml(displayName, initial, roleClass, avatarBg, user)}`;
 }
 function menuFor(id) {
-  if (state.navMenu !== id) return "";
+  if (state.navMenu !== id || state.role === "athlete") return "";
   if (id === "workout") {
-    const list = state.role === "athlete"
-      ? [["weightroom", "WEIGHTROOM VIEW"], ["whiteboard", "WHITEBOARD"], ["maxes", "MAXES / PRS"], ["journal", "JOURNAL"], ["leaderboard", "LEADERBOARD"], ["evaluations", "EVALUATIONS"]]
-      : [["weightroom", "WEIGHTROOM VIEW"], ["whiteboard", "WHITEBOARD"], ["entry", "WORKOUT ENTRY"], ["maxes", "MAXES / PRS"], ["journal", "JOURNAL"], ["leaderboard", "LEADERBOARD"], ["evaluations", "EVALUATIONS"]];
-    return `<div class="menu" style="top:40px">${list.map(([v, l]) => `<button onclick="goTool('${v}')">${l}</button>`).join("")}</div>`;
+    return `<div class="menu" style="top:40px">${workoutToolList().map(([v, l]) => `<button onclick="goTool('${v}')">${l}</button>`).join("")}</div>`;
   }
   if (id === "coach") {
-    return `<div class="menu" style="top:40px">${[
-      ["users", "MANAGE USERS"], ["calendars", "MANAGE CALENDARS"], ["build", "THE PLANNER"],
-      ["exercises", "EXERCISES"], ["goals", "GOALS"], ["documents", "DOCUMENTS & LINKS"],
-      ["packets", "PACKETS & SHEETS"], ["attendance", "ATTENDANCE"], ["reporting", "REPORTING"], ["payments", "PAYMENTS"]
-    ].map(([v, l]) => `<button onclick="goTool('${v}')">${l}</button>`).join("")}</div>`;
-  }
-  if (id === "account") {
-    const who = state.role === "athlete" ? (ATHLETES.find((a) => a.id === state.actingAthlete) || {}).name : "Coach";
-    return `<div class="menu" style="top:40px;right:0;max-height:70vh;overflow:auto">
-      <div class="help">Signed in as ${esc(who)}</div>
-      <button onclick="backToCoach()">Coach calendar</button>
-      ${ATHLETES.map((a) => `<button onclick="openAsAthlete('${a.id}')">${esc(a.name)}</button>`).join("")}
-      <button onclick="handleLogout()" style="color:#ef4444;font-weight:700">Log out</button>
-    </div>`;
+    return `<div class="menu" style="top:40px">${coachToolList().map(([v, l]) => `<button onclick="goTool('${v}')">${l}</button>`).join("")}</div>`;
   }
   return "";
 }
+function toggleNav(ev) {
+  if (ev) ev.stopPropagation();
+  state.navOpen = !state.navOpen;
+  render();
+}
+function closeNav() {
+  if (!state.navOpen) return;
+  state.navOpen = false;
+  render();
+}
 function go(view, ev) {
   if (ev) ev.stopPropagation();
+  state.navOpen = false;
   if (view === "workout" || view === "coach") {
+    if (state.role === "athlete") {
+      state.view = "mine";
+      state.navMenu = null;
+      closeFloats();
+      render();
+      return;
+    }
     state.navMenu = state.navMenu === view ? null : view;
     render();
     return;
   }
   state.navMenu = null;
+  if (state.role === "athlete" && !athletePages(view)) view = "mine";
+  if (state.role === "athlete" && view === "entry") {
+    state.view = "entry";
+    closeFloats();
+    selectEntryDate(state.entryDate);
+    return;
+  }
   state.view = view === "feed" ? "feed" : view;
-  if (view === "feed") state.feedMode = "athletes";
+  if (view === "feed" && state.role !== "athlete") state.feedMode = "athletes";
+  if (view === "feed" && state.role === "athlete") state.view = "journal";
   closeFloats();
   render();
 }
 function goTool(view) {
   state.navMenu = null;
+  state.navOpen = false;
+  if (state.role === "athlete") {
+    const next = view === "journal" ? "journal" : view;
+    if (!athletePages(next)) {
+      state.view = "mine";
+      closeFloats();
+      render();
+      return;
+    }
+    if (next === "entry") {
+      state.view = "entry";
+      closeFloats();
+      selectEntryDate(state.entryDate);
+      return;
+    }
+    state.view = next;
+    closeFloats();
+    render();
+    return;
+  }
   if (view === "journal") { state.view = "feed"; state.feedMode = "journal"; }
   else if (view === "build") { state.view = "build"; }
   else state.view = view;
@@ -688,13 +777,15 @@ function leftRail() {
 }
 
 function body() {
+  if (state.role === "athlete" && !athletePages(state.view)) state.view = "mine";
   switch (state.view) {
     case "build": return state.role === "athlete" ? mineView() : buildView();
     case "mine": return mineView();
     case "admin": return adminView();
     case "squad": return squadView();
     case "entry": return entryView();
-    case "feed": return feedView();
+    case "journal": return journalView();
+    case "feed": return state.role === "athlete" ? journalView() : feedView();
     case "users": return usersView();
     case "exercises": return liftsView();
     case "daily": return dailyView();
@@ -710,7 +801,7 @@ function body() {
     case "attendance": return attendanceView();
     case "reporting": return reportingView();
     case "payments": return paymentsView();
-    default: return buildView();
+    default: return state.role === "athlete" ? mineView() : buildView();
   }
 }
 
@@ -1602,7 +1693,13 @@ function savedDay(date) {
       const restLine = notes.split("\n").find((line) => line.indexOf("Rests:") === 0) || "";
       const rests = restLine ? restLine.slice(6).split(",") : [we.rest_seconds ? String(we.rest_seconds) : ""];
       const detail = notes.split("\n").filter((line) => line.indexOf("Rests:") !== 0).join("\n");
+      const tagged = (label) => {
+        const line = notes.split("\n").find((row) => row.indexOf(label + ":") === 0) || "";
+        return line ? line.slice(label.length + 1).split(",") : [];
+      };
       return {
+        id: "wx" + we.id,
+        weId: we.id,
         name: (we.exercise && we.exercise.name) || "Exercise",
         letter: we.superset_group || "",
         type: detail.indexOf("\n") >= 0 ? "circuit" : "lift",
@@ -1610,6 +1707,10 @@ function savedDay(date) {
         reps: String(we.target_reps || "1").split(","),
         loads: String(we.target_weight || "").split(","),
         rests,
+        tempos: tagged("Tempos"),
+        velocities: tagged("Velocities"),
+        powers: tagged("Powers"),
+        pcts: tagged("Pcts"),
         detail,
         note: ""
       };
@@ -1662,29 +1763,75 @@ function mineView() {
       </div>
     </div>
     <div class="cal-scroll">${weeksHtml}</div>
-    ${athleteOpenPanel()}
   </section>`;
 }
 async function openAthleteDay(date) {
-  let day = savedDay(date);
+  const day = savedDay(date);
   if (!day) return;
   dismissToast();
-  state.athleteOpenDate = date;
+  state.athleteOpenDate = null;
+  state.navOpen = false;
+  state.entryDate = date;
+  state.entryAthlete = ownAthleteId();
+  state.view = "entry";
+  if (!state.startedAt) state.startedAt = Date.now();
+  const first = (day.items || [])[0];
+  state.entryItem = first ? (first.id || ("wx" + first.weId)) : null;
   render();
   if (day.workoutId) {
     try { await openAthleteWorkout(day.workoutId); }
     catch (err) { console.error(err); }
-  } else if (day.items && day.items.length) {
-    try {
-      await publishDay(date, { quiet: true });
-      const refreshed = savedDay(date);
-      if (refreshed && refreshed.workoutId) {
-        await openAthleteWorkout(refreshed.workoutId);
-      }
-    } catch (err) {
-      console.error(err);
-    }
   }
+  hydrateEntryLogs(date);
+  render();
+}
+async function selectEntryDate(date) {
+  state.entryDate = date;
+  state.view = "entry";
+  state.navOpen = false;
+  state.entryAthlete = state.role === "athlete" ? ownAthleteId() : state.entryAthlete;
+  const day = state.role === "athlete" ? savedDay(date) : null;
+  const first = day && day.items && day.items[0];
+  state.entryItem = first ? (first.id || ("wx" + first.weId)) : null;
+  render();
+  if (state.role !== "athlete") return;
+  if (day && day.workoutId) {
+    try { await openAthleteWorkout(day.workoutId); }
+    catch (err) { console.error(err); }
+  } else {
+    state.openWorkout = null;
+    state.openSession = null;
+  }
+  hydrateEntryLogs(date);
+  render();
+}
+function hydrateEntryLogs(date) {
+  if (state.role !== "athlete" || !state.openSession) return;
+  const day = savedDay(date);
+  if (!day) return;
+  const aid = ownAthleteId();
+  (day.items || []).forEach((it) => {
+    const id = it.id || ("wx" + it.weId);
+    const key = aid + ":" + date + ":" + id;
+    if (state.logs[key] && state.logs[key].hydrated) return;
+    const cells = {};
+    const sets = it.sets || 1;
+    for (let i = 0; i < sets; i++) {
+      const log = (state.openSession.set_logs || []).find((row) => row.workout_exercise_id === it.weId && row.set_number === i + 1) || {};
+      const details = logDetails(log);
+      cells[i] = {
+        w: log.weight != null && log.weight !== "" ? log.weight : ((it.loads && it.loads[i]) || ""),
+        r: log.reps != null && log.reps !== "" ? log.reps : ((it.reps && it.reps[i]) || ""),
+        rest: log.rest_seconds != null && log.rest_seconds !== "" ? log.rest_seconds : ((it.rests && (it.rests[i] || it.rests[0])) || ""),
+        tempo: details.tempo != null && details.tempo !== "" ? details.tempo : ((it.tempos && (it.tempos[i] || it.tempos[0])) || ""),
+        velocity: details.velocity || ((it.velocities && (it.velocities[i] || it.velocities[0])) || ""),
+        power: details.power || ((it.powers && (it.powers[i] || it.powers[0])) || ""),
+        pct: details.pct || ((it.pcts && (it.pcts[i] || it.pcts[0])) || ""),
+        done: !!log.completed
+      };
+    }
+    state.logs[key] = { cells, hydrated: true };
+  });
 }
 function athleteOpenPanel() {
   if (!state.athleteOpenDate) return "";
@@ -1997,6 +2144,7 @@ function undo() {
 }
 
 function entryView() {
+  if (state.role === "athlete") return athleteEntryView();
   const who = state.entryAthlete;
   const athleteObj = ATHLETES.find((a) => a.id === who);
   const day = who ? ensureDay(state.entryDate, who) : null;
@@ -2041,6 +2189,54 @@ function entryView() {
     </div>
   </section>`;
 }
+function athleteEntryView() {
+  const who = { id: ownAthleteId(), name: viewedAthleteName() };
+  state.entryAthlete = who.id;
+  const saved = savedDay(state.entryDate);
+  const day = saved ? {
+    title: saved.title || "Workout",
+    workoutId: saved.workoutId,
+    items: (saved.items || []).map((it, i) => Object.assign({}, it, { id: it.id || ("wx" + (it.weId || i)) }))
+  } : { title: "Rest", items: [], workoutId: null };
+  const week = sundayOf(state.entryDate);
+  const days = Array.from({ length: 7 }, (_, i) => addDays(week, i));
+  const summary = summarize(who.id, state.entryDate);
+  return `<section class="stage light-page" id="workout-entry">
+    <h1 style="font-size:18px;color:#666;font-weight:600">Workout Entry</h1>
+    <div class="entry-wrap">
+      <div>
+        <div class="panel athlete-mini">
+          <div class="bigav">${esc((who.name || "A").slice(0, 1))}</div>
+          <strong>${esc(who.name)}</strong>
+          <button class="blackbtn" type="button" onclick="go('mine')">My Schedule</button>
+          <button class="blackbtn" type="button" onclick="window.print()">Print Workout</button>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="weekstrip">
+          <button class="iconbtn" style="color:#333" type="button" onclick="selectEntryDate(addDays(state.entryDate,-7))">‹</button>
+          <div style="text-align:center"><div>${fmtLong(state.entryDate).replace(/,.*/, "")}</div>
+            <div>${days.map((d) => `<button class="d ${d === state.entryDate ? "on" : ""}" type="button" onclick="selectEntryDate('${d}')">${new Date(d + "T12:00:00").getDate()}</button>`).join("")}</div>
+          </div>
+          <button class="iconbtn" style="color:#333" type="button" onclick="selectEntryDate(addDays(state.entryDate,7))">›</button>
+        </div>
+        <h3>${esc(day.items.length ? (day.title || "Workout") : "Rest")}</h3>
+        ${day.items.map((it) => entryItem(who.id, state.entryDate, it)).join("") || '<div class="empty">No exercises this day</div>'}
+        ${ownAthleteSession() && day.workoutId ? noteForm(day.workoutId) : ""}
+      </div>
+      <div>
+        <div class="panel"><strong>Session Summary</strong><div class="kpis" style="margin-top:8px">
+          <div class="kpi"><b>${summary.sets}</b><span>Sets Completed</span></div>
+          <div class="kpi"><b>${summary.reps}</b><span>Total Reps</span></div>
+          <div class="kpi"><b>${summary.tonnage}</b><span>Tonnage</span></div>
+          <div class="kpi"><b>${summary.duration}</b><span>Session Duration</span></div>
+        </div></div>
+        <div class="panel" style="margin-top:10px"><strong>Imported Data</strong><p class="hint">No Imported Data for this session.</p></div>
+        <div class="panel" style="margin-top:10px"><strong>New PR's</strong><p class="hint">${summary.prs || "No PRs for this Session"}</p></div>
+      </div>
+    </div>
+  </section>`;
+}
 function athletePicker() {
   return `<input class="plain" placeholder="Search" style="width:100%;margin:8px 0" data-focus="ath-search" oninput="state.athQ=this.value;render()">
     ${ATHLETES.filter((a) => !state.athQ || a.name.toLowerCase().includes(state.athQ.toLowerCase())).map((a) => `<button class="opt" style="color:#222" onclick="pickAthlete('${a.id}')"><span class="dotav">${esc(a.name[0])}</span> ${esc(a.name)}</button>`).join("")}
@@ -2056,28 +2252,65 @@ function pickAthlete(id) {
 function entryItem(aid, date, it) {
   const key = aid + ":" + date + ":" + it.id;
   const open = state.entryItem === it.id;
+  const fields = [["w", "Kg"], ["r", "Reps"]];
+  if (state.role === "athlete") {
+    fields.push(["rest", "Rest (s)"]);
+    if ((it.tempos || []).some((v) => String(v || "").trim())) fields.push(["tempo", "Tempo"]);
+    if ((it.velocities || []).some((v) => String(v || "").trim())) fields.push(["velocity", "Velocity"]);
+    if ((it.powers || []).some((v) => String(v || "").trim())) fields.push(["power", "Power"]);
+    if ((it.pcts || []).some((v) => String(v || "").trim())) fields.push(["pct", "%1RM"]);
+  }
+  const rows = Array.from({ length: it.sets || 1 }, (_, i) => {
+    const log = (state.logs[key] && state.logs[key].cells && state.logs[key].cells[i]) || {
+      w: (it.loads && it.loads[i]) || "",
+      r: (it.reps && it.reps[i]) || "",
+      rest: (it.rests && (it.rests[i] || it.rests[0])) || "",
+      tempo: (it.tempos && (it.tempos[i] || it.tempos[0])) || "",
+      velocity: (it.velocities && (it.velocities[i] || it.velocities[0])) || "",
+      power: (it.powers && (it.powers[i] || it.powers[0])) || "",
+      pct: (it.pcts && (it.pcts[i] || it.pcts[0])) || "",
+      done: false
+    };
+    const cells = fields.map(([field, label]) => `<td><input aria-label="${esc(label)} set ${i + 1}" value="${esc(log[field] ?? "")}" onchange="logCell('${key}',${i},'${field}',this.value,'${date}','${it.id}',${it.weId || 0})"></td>`).join("");
+    return `<tr><td>${i + 1}</td>${cells}<td><input aria-label="Done set ${i + 1}" type="checkbox" ${log.done ? "checked" : ""} onchange="logCell('${key}',${i},'done',this.checked,'${date}','${it.id}',${it.weId || 0})"></td></tr>`;
+  }).join("");
+  const table = it.type === "questionnaire"
+    ? (it.questions || []).map((q) => `<label class="chk"><input type="checkbox" onchange="logCheck('${key}', this.checked)"> ${esc(q)}</label>`).join("")
+    : `<table class="sets"><tr><th>Set</th>${fields.map((field) => `<th>${field[1]}</th>`).join("")}<th></th></tr>${rows}</table>`;
+  const safeName = String(it.name || "Exercise").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
   return `<div>
     <button class="entry-item" onclick="state.entryItem=state.entryItem==='${it.id}'?null:'${it.id}';render()">
       <span class="letter" style="background:${LETTER_COLOR[it.letter] || "#999"}">${esc(it.letter || "•")}</span>
       <span><strong>${esc(it.name)}</strong><div class="hint">${esc(scriptLine(it))}</div></span>
     </button>
-    ${open ? `<div style="padding:6px 8px 10px">${it.type === "questionnaire" ? it.questions.map((q) => `<label class="chk"><input type="checkbox" onchange="logCheck('${key}', this.checked)"> ${esc(q)}</label>`).join("") : `<table class="sets"><tr><th>Set</th><th>Kg</th><th>Reps</th><th></th></tr>${Array.from({ length: it.sets || 1 }, (_, i) => {
-      const log = (state.logs[key] && state.logs[key].cells && state.logs[key].cells[i]) || { w: it.loads[i] || "", r: it.reps[i] || "", done: false };
-      return `<tr><td>${i + 1}</td><td><input value="${esc(log.w)}" onchange="logCell('${key}',${i},'w',this.value,'${date}','${it.id}')"></td><td><input value="${esc(log.r)}" onchange="logCell('${key}',${i},'r',this.value,'${date}','${it.id}')"></td><td><input type="checkbox" ${log.done ? "checked" : ""} onchange="logCell('${key}',${i},'done',this.checked,'${date}','${it.id}')"></td></tr>`;
-    }).join("")}</table>`}
-    <button class="complete" onclick="markDone('${key}','${it.name}')">Complete</button></div>` : ""}
+    ${open ? `<div style="padding:6px 8px 10px">${table}<button class="complete" onclick="markDone('${key}','${safeName}',${it.weId || 0},${it.sets || 1})">Complete</button></div>` : ""}
   </div>`;
 }
-function logCell(key, i, field, value) {
-  const log = state.logs[key] || (state.logs[key] = { cells: {} });
-  log.cells[i] = log.cells[i] || { w: "", r: "", done: false };
-  log.cells[i][field] = value;
+function logCell(key, i, field, value, date, itemId, weId) {
+  const log = state.logs[key] || (state.logs[key] = { cells: {}, hydrated: true });
+  log.hydrated = true;
+  log.cells[i] = log.cells[i] || { w: "", r: "", rest: "", done: false };
+  log.cells[i][field] = field === "done" ? !!value : value;
+  const map = { w: "weight", r: "reps", rest: "rest", done: "completed", tempo: "tempo", velocity: "velocity", power: "power", pct: "pct" };
+  if (state.role === "athlete" && weId && state.openSession && map[field]) {
+    logAthleteSet(weId, i + 1, map[field], log.cells[i][field]);
+    return;
+  }
   render();
 }
-function logCheck(key) { state.logs[key] = { done: true }; }
-function markDone(key, name) {
-  const log = state.logs[key] || (state.logs[key] = { cells: {} });
+function logCheck(key) { state.logs[key] = { done: true, hydrated: true }; }
+async function markDone(key, name, weId, sets) {
+  const log = state.logs[key] || (state.logs[key] = { cells: {}, hydrated: true });
   log.done = true;
+  log.hydrated = true;
+  const count = sets || 1;
+  for (let i = 0; i < count; i++) {
+    log.cells[i] = log.cells[i] || { w: "", r: "", done: false };
+    log.cells[i].done = true;
+    if (state.role === "athlete" && weId && state.openSession) {
+      await logAthleteSet(weId, i + 1, "completed", true);
+    }
+  }
   toast("Logged " + name);
   render();
 }
@@ -2157,9 +2390,11 @@ function commentOn(i) {
   });
 }
 function journalView() {
-  return `<section class="stage light-page">
-    <div class="feed-top"><div><h1>My Journal</h1><div class="filters">ALL TIME ▾</div></div></div>
-    ${state.journal.length ? `<div class="grid-cards">${state.journal.map((j) => `<article class="card"><strong>${esc(j.title)}</strong><p>${esc(j.body)}</p><div class="hint">${esc(j.date)}</div></article>`).join("")}</div>` : `<div class="empty"><div><div class="book">📓</div><div>No Entries Available</div></div></div>`}
+  return `<section class="stage light-page" id="journal">
+    <div class="feed-top"><div><h1>My Journal</h1><div class="filters">${esc(state.role === "athlete" ? signedInName() : "Your notes")}</div></div>
+      <button class="req" type="button" onclick="state.modal={type:'journal'};render()">New entry</button>
+    </div>
+    ${state.journal.length ? `<div class="grid-cards">${state.journal.map((j) => `<article class="card"><strong>${esc(j.title)}</strong><p>${esc(j.body)}</p><div class="hint">${esc(j.date)}</div></article>`).join("")}</div>` : `<div class="empty"><div><div class="book">📓</div><div>No entries yet</div></div></div>`}
   </section>`;
 }
 function teamView() {
@@ -2638,10 +2873,23 @@ function weightroomView() {
   return `<section class="stage light-page"><h1>Weightroom</h1><p class="hint">Who is on the floor today</p><div class="grid-cards">${ATHLETES.slice(0, 4).map((a) => `<article class="card"><strong>${esc(a.name)}</strong><div class="hint">Logging · Week 5</div><button class="comment" onclick="state.entryAthlete='${a.id}';goTool('entry')">Open</button></article>`).join("")}</div></section>`;
 }
 function boardView() {
+  if (!state.boardDate) state.boardDate = state.entryDate || "2026-10-13";
+  if (state.role === "athlete") {
+    const name = viewedAthleteName();
+    const day = savedDay(state.boardDate);
+    const items = day && day.items ? day.items : [];
+    return `<section class="stage light-page" id="whiteboard">
+      <h1>Whiteboard</h1>
+      <div class="toolbar">
+        <input class="plain" type="date" aria-label="Day" value="${esc(state.boardDate)}" onchange="if(this.value){state.boardDate=this.value;render()}">
+      </div>
+      <p>${fmtLong(state.boardDate)} · ${esc(name)}</p>
+      <div class="panel" style="font-size:22px">${items.map((it) => `<div>${esc(it.letter || "")} ${esc(it.name)} <span class="hint">${esc(scriptLine(it))}</span></div>`).join("") || "Nothing programmed"}</div>
+    </section>`;
+  }
   if (!state.boardAthlete || !ATHLETES.some((a) => a.id === state.boardAthlete)) {
     state.boardAthlete = ATHLETES.some((a) => a.id === state.athleteId) ? state.athleteId : (ATHLETES[0] ? ATHLETES[0].id : "");
   }
-  if (!state.boardDate) state.boardDate = state.entryDate || "2026-10-13";
   const person = ATHLETES.find((a) => a.id === state.boardAthlete) || { id: "", name: "Athlete" };
   const day = (state.calendars[person.id] || {})[state.boardDate];
   const items = day && day.items ? day.items : [];
@@ -2657,14 +2905,27 @@ function boardView() {
     <div class="panel" style="font-size:22px">${items.map((it) => `<div>${esc(it.letter || "")} ${esc(it.name)} <span class="hint">${esc(scriptLine(it))}</span></div>`).join("") || "Nothing programmed"}</div>
   </section>`;
 }
+function maxesKey() {
+  return state.role === "athlete" ? ("own:" + ownAthleteId()) : state.athleteId;
+}
 function maxesView() {
-  const rows = state.prs[state.athleteId] || (state.prs[state.athleteId] = []);
-  return `<section class="stage light-page"><h1>Maxes / PRs · ${esc(athlete().name)}</h1>
-    <table class="data"><tr><th>Lift</th><th>Kg</th><th></th></tr>${rows.map((r, i) => `<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td><button class="comment" onclick="editPr(${i})">Edit</button></td></tr>`).join("")}</table>
-    <button class="req" style="margin-top:8px" onclick="const n=prompt('Lift'); if(n){state.prs['${state.athleteId}'].push([n,'']);render()}">+ PR</button></section>`;
+  const key = maxesKey();
+  const rows = state.prs[key] || (state.prs[key] = []);
+  const name = state.role === "athlete" ? viewedAthleteName() : athlete().name;
+  return `<section class="stage light-page" id="maxes"><h1>Maxes / PRs · ${esc(name)}</h1>
+    <table class="data"><tr><th>Lift</th><th>Kg</th><th></th></tr>${rows.map((r, i) => `<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td><button class="comment" onclick="editPr(${i})">Edit</button></td></tr>`).join("") || `<tr><td colspan="3">No personal records yet.</td></tr>`}</table>
+    <button class="req" style="margin-top:8px" onclick="addPr()">+ PR</button></section>`;
+}
+function addPr() {
+  const name = prompt("Lift");
+  if (!name) return;
+  const key = maxesKey();
+  state.prs[key] = state.prs[key] || [];
+  state.prs[key].push([name, ""]);
+  render();
 }
 function editPr(index) {
-  const rows = state.prs[state.athleteId] || [];
+  const rows = state.prs[maxesKey()] || [];
   const row = rows[index];
   if (!row) return;
   openEdit({
@@ -3294,6 +3555,10 @@ document.addEventListener("keydown", (ev) => {
 
 window.go = go;
 window.goTool = goTool;
+window.toggleNav = toggleNav;
+window.closeNav = closeNav;
+window.selectEntryDate = selectEntryDate;
+window.addPr = addPr;
 window.openEdit = openEdit;
 window.saveEdit = saveEdit;
 window.closeEdit = closeEdit;
