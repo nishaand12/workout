@@ -13,7 +13,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, desc, asc
 
-from app.models import Exercise, Workout, WorkoutExercise, WorkoutSession, SetLog, PersonalRecord, User, Group, WorkoutAssignment, Gym, JoinCode
+from app.models import Exercise, Workout, WorkoutExercise, WorkoutSession, SetLog, PersonalRecord, User, Group, WorkoutAssignment, Gym, JoinCode, GymItem, GymHiddenExercise
 from app import access
 from app.schemas import (
     ExerciseCreate, ExerciseUpdate, WorkoutCreate, WorkoutUpdate, PersonalRecordCreate,
@@ -652,16 +652,18 @@ def get_or_create_active_session(db: Session, workout_id: int, user_id: Optional
         return None
 
     if not session:
+        started = datetime.utcnow()
         session = WorkoutSession(
             workout_id=workout_id,
             user_id=user_id,
-            start_time=datetime.utcnow(),
+            start_time=started,
             completed=False
         )
         db.add(session)
         db.flush()
 
-        # Initialize default set logs from workout exercises, one value per set.
+        # Prescription stays on the workout exercise. Seeded rows stay at 0 so
+        # opening a session does not count as lifted weight on the leaderboard.
         for we in workout.exercises:
             for s_num in range(1, (we.prescribed_sets or 1) + 1):
                 index = s_num - 1
@@ -669,11 +671,12 @@ def get_or_create_active_session(db: Session, workout_id: int, user_id: Optional
                     session_id=session.id,
                     workout_exercise_id=we.id,
                     set_number=s_num,
-                    weight=_nth_float(we.target_weight or "", index, 0.0),
-                    reps=_nth_float(we.target_reps or "", index, 0.0),
+                    weight=0.0,
+                    reps=0.0,
                     rest_seconds=_set_rest_seconds(we, index),
                     details=_set_details(we, index),
-                    completed=False
+                    completed=False,
+                    logged_at=started,
                 )
                 db.add(set_log)
         db.commit()
@@ -2125,6 +2128,127 @@ def get_calendar_schedule(
     return [by_date[d] for d in sorted(by_date.keys())]
 
 
+def _log_counts_toward_tonnage(log: SetLog, session: WorkoutSession) -> bool:
+    """A done set counts. So does a set log_or_update_set rewrote after the seed.
+
+    The seed stamps logged_at with the session start. A later save bumps logged_at.
+    """
+    if log.completed:
+        return True
+    logged_at = log.logged_at
+    started = session.start_time
+    if logged_at is None or started is None:
+        return False
+    try:
+        return logged_at > started
+    except TypeError:
+        return str(logged_at) > str(started)
+
+
+ITEM_KINDS = ("document", "packet", "invoice", "report", "evaluation", "journal")
+
+
+def _item_payload(row: GymItem) -> dict:
+    try:
+        body = json.loads(row.body) if row.body else {}
+    except (TypeError, ValueError):
+        body = row.body or ""
+    return {"id": row.id, "kind": row.kind, "user_id": row.user_id, "body": body}
+
+
+def _staff_user(user: User) -> bool:
+    return access.is_admin(user) or access.is_coach(user)
+
+
+def list_gym_items(db: Session, user: User, kind: Optional[str] = None) -> List[dict]:
+    access.require_gym(user)
+    if kind and kind not in ITEM_KINDS:
+        raise HTTPException(status_code=400, detail="Unknown item.")
+    query = db.query(GymItem).filter(GymItem.gym_id == user.gym_id)
+    if kind:
+        query = query.filter(GymItem.kind == kind)
+    rows = query.order_by(GymItem.id.asc()).all()
+    staff = _staff_user(user)
+    visible = []
+    for row in rows:
+        if row.kind == "journal":
+            if row.user_id != user.id:
+                continue
+        elif not staff:
+            continue
+        visible.append(_item_payload(row))
+    return visible
+
+
+def create_gym_item(db: Session, user: User, kind: str, body) -> dict:
+    access.require_gym(user)
+    if kind not in ITEM_KINDS:
+        raise HTTPException(status_code=400, detail="Unknown item.")
+    if kind != "journal" and not _staff_user(user):
+        raise HTTPException(status_code=403, detail="Athlete accounts do not have coach tools.")
+    row = GymItem(
+        gym_id=user.gym_id,
+        user_id=user.id if kind == "journal" else None,
+        kind=kind,
+        body=json.dumps(body if body is not None else {}),
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _item_payload(row)
+
+
+def _owned_item(db: Session, user: User, item_id: int) -> GymItem:
+    access.require_gym(user)
+    row = db.query(GymItem).filter(GymItem.id == item_id, GymItem.gym_id == user.gym_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Item not found.")
+    if row.kind == "journal":
+        if row.user_id != user.id:
+            raise HTTPException(status_code=403, detail="That journal entry belongs to someone else.")
+    elif not _staff_user(user):
+        raise HTTPException(status_code=403, detail="Athlete accounts do not have coach tools.")
+    return row
+
+
+def update_gym_item(db: Session, user: User, item_id: int, body) -> dict:
+    row = _owned_item(db, user, item_id)
+    row.body = json.dumps(body if body is not None else {})
+    db.commit()
+    db.refresh(row)
+    return _item_payload(row)
+
+
+def delete_gym_item(db: Session, user: User, item_id: int) -> None:
+    row = _owned_item(db, user, item_id)
+    db.delete(row)
+    db.commit()
+
+
+def hidden_exercise_ids(db: Session, user: User) -> List[int]:
+    if not user.gym_id:
+        return []
+    rows = db.query(GymHiddenExercise).filter(GymHiddenExercise.gym_id == user.gym_id).all()
+    return sorted(row.exercise_id for row in rows)
+
+
+def hide_exercise_for_gym(db: Session, user: User, exercise_id: int) -> dict:
+    access.require_gym(user)
+    if not _staff_user(user):
+        raise HTTPException(status_code=403, detail="Athlete accounts do not have coach tools.")
+    exercise = db.query(Exercise).filter(Exercise.id == exercise_id).first()
+    if not exercise:
+        raise HTTPException(status_code=404, detail="Exercise not found.")
+    existing = db.query(GymHiddenExercise).filter(
+        GymHiddenExercise.gym_id == user.gym_id,
+        GymHiddenExercise.exercise_id == exercise_id,
+    ).first()
+    if not existing:
+        db.add(GymHiddenExercise(gym_id=user.gym_id, exercise_id=exercise_id))
+        db.commit()
+    return {"exercise_id": exercise_id}
+
+
 def get_gym_activity(db: Session, viewer: User) -> dict:
     """Return real sessions, athlete notes, leaderboard tonnage, and KPIs for the viewer's gym."""
     if not viewer.gym_id:
@@ -2162,7 +2286,7 @@ def get_gym_activity(db: Session, viewer: User) -> dict:
         s_sets = 0
         s_reps = 0
         for log in s.set_logs:
-            if log.completed:
+            if _log_counts_toward_tonnage(log, s):
                 s_sets += 1
                 s_reps += int(log.reps or 0)
                 s_tonnage += float(log.weight or 0.0) * float(log.reps or 0.0)
@@ -2338,6 +2462,8 @@ def gym_context(db: Session, user: User) -> dict:
             "team_name": c.team.name if c.team else None,
         } for c in codes],
         "workouts": gym_workout_summaries(db, user),
+        "items": list_gym_items(db, user),
+        "hidden_exercise_ids": hidden_exercise_ids(db, user),
     }
 
 

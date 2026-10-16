@@ -31,6 +31,7 @@ from app.schemas import (
     PasswordResetRequest, PasswordResetConfirm, SupabaseAuthSync,
     ViewSwitch, GymCreate, JoinCodeCreate, JoinCodeRedeem, JoinCodeResponse,
     GymContext, GymMemberCreate, GymMemberCreated, MoveTeamRequest,
+    GymSavedItem, GymItemCreate, GymItemUpdate, HideExerciseRequest,
     CoachAssignRequest, AthleteNoteRequest, ScheduleItem,
     BulkAthleteUploadRequest, BulkAthleteUploadResponse, CalendarScheduleEntry
 )
@@ -933,6 +934,48 @@ def mark_present(req: MarkPresentRequest, db: Session = Depends(get_db)):
 @app.get("/api/gym/context", response_model=GymContext)
 def get_gym_context(db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
     return crud.gym_context(db, current_user)
+
+@app.get("/api/gym/items", response_model=List[GymSavedItem])
+def list_gym_items(
+    kind: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: crud.User = Depends(require_auth),
+):
+    return crud.list_gym_items(db, current_user, kind=kind)
+
+@app.post("/api/gym/items", response_model=GymSavedItem, status_code=status.HTTP_201_CREATED)
+def create_gym_item(
+    body: GymItemCreate,
+    db: Session = Depends(get_db),
+    current_user: crud.User = Depends(require_auth),
+):
+    return crud.create_gym_item(db, current_user, body.kind, body.body)
+
+@app.put("/api/gym/items/{item_id}", response_model=GymSavedItem)
+def update_gym_item(
+    item_id: int,
+    body: GymItemUpdate,
+    db: Session = Depends(get_db),
+    current_user: crud.User = Depends(require_auth),
+):
+    return crud.update_gym_item(db, current_user, item_id, body.body)
+
+@app.delete("/api/gym/items/{item_id}")
+def delete_gym_item(
+    item_id: int,
+    db: Session = Depends(get_db),
+    current_user: crud.User = Depends(require_auth),
+):
+    crud.delete_gym_item(db, current_user, item_id)
+    return {"message": "Removed"}
+
+@app.post("/api/gym/hidden-exercises", status_code=status.HTTP_201_CREATED)
+def hide_exercise(
+    body: HideExerciseRequest,
+    db: Session = Depends(get_db),
+    current_user: crud.User = Depends(require_auth),
+):
+    return crud.hide_exercise_for_gym(db, current_user, body.exercise_id)
 
 @app.post("/api/gym/coaches", response_model=GymMemberCreated, status_code=status.HTTP_201_CREATED)
 def add_coach(body: GymMemberCreate, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):

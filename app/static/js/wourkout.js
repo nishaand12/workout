@@ -307,6 +307,10 @@ const state = {
   },
   gymContext: null,
   gymActivity: null,
+  calendarLoaded: {},
+  calendarLoading: {},
+  hiddenExerciseIds: [],
+  coachSessionFor: "",
   mySchedule: [],
   notesByWorkout: {},
   assignResult: "",
@@ -480,8 +484,10 @@ async function enterApp(data) {
   state.auth.isAuthenticated = true;
   land(data.user || data);
   if (state.auth.user.needs_onboarding) return;
-  if (state.role === "athlete") await loadMySchedule();
-  else await loadGymContext();
+  if (state.role === "athlete") {
+    await loadMySchedule();
+    await loadOwnJournal();
+  } else await loadGymContext();
   if (state.role !== "athlete") loadExercises();
 }
 const NOTE_SKIP = { Rests: 1, Tempos: 1, Velocities: 1, Powers: 1, Pcts: 1, Props: 1, Flags: 1, Additional: 1 };
@@ -596,8 +602,10 @@ async function loadCalendarSchedule(targetId) {
   } else {
     return;
   }
+  state.calendarLoading[targetId] = true;
   try {
     const entries = await api("GET", "/api/calendar/schedule" + query);
+    state.calendarLoaded[targetId] = true;
     if (!state.calendars[targetId]) state.calendars[targetId] = {};
     const calObj = state.calendars[targetId];
     (entries || []).forEach((entry) => {
@@ -615,6 +623,8 @@ async function loadCalendarSchedule(targetId) {
     render();
   } catch (err) {
     console.error("Failed to load calendar schedule:", err);
+  } finally {
+    state.calendarLoading[targetId] = false;
   }
 }
 
@@ -678,6 +688,70 @@ function syncFromGymContext() {
   }
   if (!state.entryAthlete && ATHLETES.length) {
     state.entryAthlete = ATHLETES[0].id;
+  }
+  applyGymSaved(ctx);
+}
+
+function itemBody(item) {
+  if (item && item.body && typeof item.body === "object") return item.body;
+  if (item && typeof item.body === "string") return { name: item.body, text: item.body };
+  return {};
+}
+function markHiddenExercises() {
+  const hidden = state.hiddenExerciseIds || [];
+  (state.serverExercises || []).forEach((row) => { row.hidden = hidden.indexOf(row.id) >= 0; });
+}
+function applyGymSaved(ctx) {
+  const items = (ctx && ctx.items) || [];
+  state.docs = items.filter((item) => item.kind === "document").map((item) => {
+    const body = itemBody(item);
+    return { id: item.id, name: body.name || "", url: body.url || "" };
+  });
+  state.packets = items.filter((item) => item.kind === "packet").map((item) => ({ id: item.id, name: itemBody(item).name || "" }));
+  state.invoices = items.filter((item) => item.kind === "invoice").map((item) => {
+    const body = itemBody(item);
+    return { id: item.id, who: body.who || "", amount: body.amount || "", note: body.note || "" };
+  });
+  state.reports = items.filter((item) => item.kind === "report").map((item) => ({ id: item.id, text: itemBody(item).text || "" }));
+  state.evals = items.filter((item) => item.kind === "evaluation").map((item) => ({ id: item.id, text: itemBody(item).text || itemBody(item).name || "" }));
+  state.journal = items.filter((item) => item.kind === "journal").map((item) => {
+    const body = itemBody(item);
+    return { id: item.id, title: body.title || "Note", body: body.body || "", date: body.date || "" };
+  });
+  state.hiddenExerciseIds = (ctx && ctx.hidden_exercise_ids) || [];
+  markHiddenExercises();
+}
+async function loadOwnJournal() {
+  try {
+    const items = await api("GET", "/api/gym/items?kind=journal");
+    state.journal = (items || []).map((item) => {
+      const body = itemBody(item);
+      return { id: item.id, title: body.title || "Note", body: body.body || "", date: body.date || "" };
+    });
+    render();
+  } catch (err) {
+    console.error(err);
+  }
+}
+async function createSaved(kind, body) {
+  return await api("POST", "/api/gym/items", { kind, body });
+}
+async function updateSaved(id, body) {
+  return await api("PUT", "/api/gym/items/" + id, { body });
+}
+async function removeSaved(listName, index) {
+  const list = state[listName];
+  const row = list && list[index];
+  if (!row) return;
+  const removed = list.splice(index, 1)[0];
+  render();
+  if (!removed.id) return;
+  try {
+    await api("DELETE", "/api/gym/items/" + removed.id);
+  } catch (err) {
+    list.splice(index, 0, removed);
+    toast(err.message || "Could not remove that");
+    render();
   }
 }
 
@@ -919,7 +993,7 @@ function rightRail() {
     ${btn("feed", "✎", "Feed")}
     ${btn("users", "☺", "Users")}
     <div style="flex:1"></div>
-    <button title="Add" onclick="onFab()">＋</button>
+    ${fabSuppressed() ? "" : `<button title="Add" onclick="onFab()">＋</button>`}
   </aside>`;
 }
 function leftRail() {
@@ -1108,7 +1182,7 @@ function dayCol(date) {
     <div>${items}</div>
     ${editor}
     <button class="add-ex" onclick="openSearch('${date}', event)">+ Add Exercise</button>
-    ${state.clipboard ? `<button class="add-ex" onclick="pasteOn('${date}')">Paste ${state.clipboard.items.length} item(s)</button>` : ""}
+    ${state.clipboard && (state.clipboard.items || []).length ? `<button class="add-ex" onclick="pasteOn('${date}')">Paste ${state.clipboard.items.length} item(s)</button>` : ""}
     ${search}
     <div class="stats"><span>S <b>${st.s}</b></span><span>R <b>${st.r}</b></span><span>V <b>${st.v}</b></span></div>
   </div>`;
@@ -2067,23 +2141,29 @@ async function selectEntryDate(date) {
   hydrateEntryLogs(date);
   render();
 }
-function hydrateEntryLogs(date) {
-  if (state.role !== "athlete" || !state.openSession) return;
-  const day = savedDay(date);
-  if (!day) return;
-  const aid = ownAthleteId();
-  (day.items || []).forEach((it) => {
+function setLogTouched(log) {
+  if (!log || log.id == null) return false;
+  if (log.completed) return true;
+  return (parseFloat(log.weight) || 0) !== 0 || (parseFloat(log.reps) || 0) !== 0;
+}
+function hydrateEntryLogs(date, aid, day) {
+  if (!state.openSession) return;
+  const useDay = day || (state.role === "athlete" ? savedDay(date) : null);
+  if (!useDay) return;
+  const who = aid || ownAthleteId();
+  (useDay.items || []).forEach((it) => {
     const id = it.id || ("wx" + it.weId);
-    const key = aid + ":" + date + ":" + id;
+    const key = who + ":" + date + ":" + id;
     if (state.logs[key] && state.logs[key].hydrated) return;
     const cells = {};
     const sets = it.sets || 1;
     for (let i = 0; i < sets; i++) {
       const log = (state.openSession.set_logs || []).find((row) => row.workout_exercise_id === it.weId && row.set_number === i + 1) || {};
       const details = logDetails(log);
+      const touched = setLogTouched(log);
       cells[i] = {
-        w: log.weight != null && log.weight !== "" ? log.weight : ((it.loads && it.loads[i]) || ""),
-        r: log.reps != null && log.reps !== "" ? log.reps : ((it.reps && it.reps[i]) || ""),
+        w: touched && log.weight != null && log.weight !== "" ? log.weight : ((it.loads && it.loads[i]) || ""),
+        r: touched && log.reps != null && log.reps !== "" ? log.reps : ((it.reps && it.reps[i]) || ""),
         rest: log.rest_seconds != null && log.rest_seconds !== "" ? log.rest_seconds : ((it.rests && (it.rests[i] || it.rests[0])) || ""),
         tempo: details.tempo != null && details.tempo !== "" ? details.tempo : ((it.tempos && (it.tempos[i] || it.tempos[0])) || ""),
         velocity: details.velocity || ((it.velocities && (it.velocities[i] || it.velocities[0])) || ""),
@@ -2148,6 +2228,9 @@ function athleteExercise(we) {
     const n = i + 1;
     const log = ((state.openSession && state.openSession.set_logs) || []).find((l) => l.workout_exercise_id === we.id && l.set_number === n) || {};
     const details = logDetails(log);
+    const touched = setLogTouched(log);
+    const shownWeight = touched ? (log.weight ?? "") : (loads[i] || loads[0] || "");
+    const shownReps = touched ? (log.reps ?? "") : (reps[i] || reps[0] || "");
     const rest = log.rest_seconds != null && log.rest_seconds !== "" ? log.rest_seconds : (rests[i] || rests[0] || (we.rest_seconds ? String(we.rest_seconds) : ""));
     const extraCells = extras.map((field) => {
       const prescribed = field.values[i] || field.values[0] || "";
@@ -2155,8 +2238,8 @@ function athleteExercise(we) {
       return `<td><input aria-label="${esc(field.label)} set ${n}" value="${esc(value)}" onchange="logAthleteSet(${we.id}, ${n}, '${field.key}', this.value)"></td>`;
     }).join("");
     return `<tr><td>${n}</td>
-      <td><input aria-label="Weight set ${n}" value="${esc(log.weight ?? loads[i] ?? loads[0] ?? "")}" onchange="logAthleteSet(${we.id}, ${n}, 'weight', this.value)"></td>
-      <td><input aria-label="Reps set ${n}" value="${esc(log.reps ?? reps[i] ?? reps[0] ?? "")}" onchange="logAthleteSet(${we.id}, ${n}, 'reps', this.value)"></td>
+      <td><input aria-label="Weight set ${n}" value="${esc(shownWeight)}" onchange="logAthleteSet(${we.id}, ${n}, 'weight', this.value)"></td>
+      <td><input aria-label="Reps set ${n}" value="${esc(shownReps)}" onchange="logAthleteSet(${we.id}, ${n}, 'reps', this.value)"></td>
       <td><input aria-label="Rest set ${n}" value="${esc(rest)}" onchange="logAthleteSet(${we.id}, ${n}, 'rest', this.value)"></td>
       ${extraCells}
       <td><input aria-label="Done set ${n}" type="checkbox" ${log.completed ? "checked" : ""} onchange="logAthleteSet(${we.id}, ${n}, 'completed', this.checked)"></td></tr>`;
@@ -2261,7 +2344,7 @@ function applyCopy() {
   render();
 }
 function pasteOn(date) {
-  if (!state.clipboard) return;
+  if (!state.clipboard || !(state.clipboard.items || []).length) return;
   snapshot();
   const day = ensureDay(date);
   const clones = state.clipboard.items.map((it) => Object.assign(JSON.parse(JSON.stringify(it)), { id: uid(), selected: false }));
@@ -2573,16 +2656,61 @@ function sidebarHtml() {
 }
 
 function undo() {
+  if (!state.undo.length) return;
   const prev = state.undo.pop();
-  if (!prev) { toast("Nothing to undo"); return; }
+  if (!prev) return;
   state.calendars = JSON.parse(prev);
   state.editor = null;
   toast("Undone");
   render();
 }
 
+function importedDataPanel(day) {
+  const items = (day && day.items) || [];
+  const logs = ((state.openSession && state.openSession.set_logs) || []).filter((log) => setLogTouched(log));
+  const rows = logs.map((log) => {
+    const item = items.find((it) => it.weId === log.workout_exercise_id);
+    return `<tr><td>${esc((item && item.name) || "Exercise")}</td><td>${esc(log.set_number)}</td><td>${esc(log.weight)}</td><td>${esc(log.reps)}</td></tr>`;
+  }).join("");
+  const body = rows
+    ? `<table class="data"><tr><th>Exercise</th><th>Set</th><th>Kg</th><th>Reps</th></tr>${rows}</table>`
+    : `<p class="hint">No Imported Data for this session.</p>`;
+  return `<div class="panel" style="margin-top:10px"><strong>Imported Data</strong>${body}</div>`;
+}
+function queueCoachEntrySession() {
+  if (state.role === "athlete") return;
+  const who = state.entryAthlete;
+  const date = state.entryDate;
+  const key = (who || "") + ":" + date;
+  if (state.coachSessionFor === key) return;
+  state.coachSessionFor = key;
+  state.openSession = null;
+  const ready = state.calendarLoaded[who] ? Promise.resolve() : loadCalendarSchedule(who);
+  Promise.resolve(ready).then(() => {
+    if (state.coachSessionFor === key) loadCoachEntrySession();
+  });
+}
+async function loadCoachEntrySession() {
+  if (state.role === "athlete") return;
+  const who = state.entryAthlete;
+  const date = state.entryDate;
+  const key = (who || "") + ":" + date;
+  const person = ATHLETES.find((a) => a.id === who) || buildAthletes().find((a) => a.id === who && !a.isGroup);
+  const day = who ? (state.calendars[who] || {})[date] : null;
+  if (!person || !person.serverId || !day || !day.savedWorkoutId) return;
+  try {
+    const session = await api("GET", "/api/sessions/active/" + day.savedWorkoutId + "?user_id=" + person.serverId);
+    if (state.coachSessionFor !== key) return;
+    state.openSession = session;
+    hydrateEntryLogs(date, who, day);
+    render();
+  } catch (err) {
+    console.error(err);
+  }
+}
 function entryView() {
   if (state.role === "athlete") return athleteEntryView();
+  queueCoachEntrySession();
   const who = state.entryAthlete;
   const athleteObj = ATHLETES.find((a) => a.id === who) || buildAthletes().find((a) => a.id === who && !a.isGroup);
   const activeWho = athleteObj ? athleteObj.id : null;
@@ -2622,7 +2750,7 @@ function entryView() {
           <div class="kpi"><b>${summary.tonnage}</b><span>Tonnage</span></div>
           <div class="kpi"><b>${summary.duration}</b><span>Session Duration</span></div>
         </div></div>
-        <div class="panel" style="margin-top:10px"><strong>Imported Data</strong><p class="hint">No Imported Data for this session.</p></div>
+        ${importedDataPanel(day)}
         <div class="panel" style="margin-top:10px"><strong>New PR's</strong><p class="hint">${summary.prs || "No PRs for this Session"}</p></div>
       </div>
     </div>
@@ -2670,7 +2798,7 @@ function athleteEntryView() {
           <div class="kpi"><b>${summary.tonnage}</b><span>Tonnage</span></div>
           <div class="kpi"><b>${summary.duration}</b><span>Session Duration</span></div>
         </div></div>
-        <div class="panel" style="margin-top:10px"><strong>Imported Data</strong><p class="hint">No Imported Data for this session.</p></div>
+        ${importedDataPanel(day)}
         <div class="panel" style="margin-top:10px"><strong>New PR's</strong><p class="hint">${summary.prs || "No PRs for this Session"}</p></div>
       </div>
     </div>
@@ -2732,7 +2860,7 @@ function logCell(key, i, field, value, date, itemId, weId) {
   log.cells[i] = log.cells[i] || { w: "", r: "", rest: "", done: false };
   log.cells[i][field] = field === "done" ? !!value : value;
   const map = { w: "weight", r: "reps", rest: "rest", done: "completed", tempo: "tempo", velocity: "velocity", power: "power", pct: "pct" };
-  if (state.role === "athlete" && weId && state.openSession && map[field]) {
+  if (weId && state.openSession && map[field] && (state.role === "athlete" || state.coachSessionFor)) {
     logAthleteSet(weId, i + 1, map[field], log.cells[i][field]);
     return;
   }
@@ -2747,7 +2875,7 @@ async function markDone(key, name, weId, sets) {
   for (let i = 0; i < count; i++) {
     log.cells[i] = log.cells[i] || { w: "", r: "", done: false };
     log.cells[i].done = true;
-    if (state.role === "athlete" && weId && state.openSession) {
+    if (weId && state.openSession && (state.role === "athlete" || state.coachSessionFor)) {
       await logAthleteSet(weId, i + 1, "completed", true);
     }
   }
@@ -2835,6 +2963,20 @@ function journalView() {
     </div>
     ${state.journal.length ? `<div class="grid-cards">${state.journal.map((j) => `<article class="card"><strong>${esc(j.title)}</strong><p>${esc(j.body)}</p><div class="hint">${esc(j.date)}</div></article>`).join("")}</div>` : `<div class="empty"><div><div class="book">📓</div><div>No entries yet</div></div></div>`}
   </section>`;
+}
+async function saveJournalEntry() {
+  const title = (state.modal && state.modal.title) || "Note";
+  const body = (state.modal && state.modal.body) || "";
+  const date = fmtLong(APP_TODAY);
+  try {
+    const row = await createSaved("journal", { title, body, date });
+    state.journal.unshift({ id: row.id, title, body, date });
+    state.feedMode = "journal";
+    state.modal = null;
+    render();
+  } catch (err) {
+    toast(err.message || "Could not save that entry");
+  }
 }
 function teamView() {
   const posts = state.posts.filter((p) => !state.teamGroup || p.group === state.teamGroup);
@@ -2964,8 +3106,7 @@ function usersView() {
     </form>
     <div class="redbar"><span>${state.userTab === "coaches" ? "Coaches" : "Athletes"}</span>
       <span><select class="plain" onchange="state.userSort=this.value;render()"><option value="last">Last Name</option><option value="first">First Name</option></select>
-      <input class="plain" placeholder="Search for User" data-focus="user-q" value="${esc(state.userQ)}" oninput="state.userQ=this.value;render()">
-      <button class="ghost" onclick="render()">Search</button></span></div>
+      <input class="plain" placeholder="Search for User" data-focus="user-q" value="${esc(state.userQ)}" oninput="state.userQ=this.value;render()"></span></div>
       <div class="tablewrap"><table class="data"><tr><th></th><th>FIRST</th><th>LAST</th><th>EMAIL</th><th>ASSIGNED GROUPS</th><th>ASSIGNED CALS</th><th>LAST ACTIVITY</th><th></th></tr>
       ${filtered.sort((a, b) => (a[state.userSort] || "").localeCompare(b[state.userSort] || "")).map((r) => `<tr><td><span class="dotav">${esc((r.first || "U")[0])}</span></td><td>${esc(r.first)}</td><td>${esc(r.last)}</td><td>${esc(r.email)}</td><td>${esc(r.groups)}</td><td>${esc(r.cals)}</td><td style="color:${r.activity === "N/A" ? "#c90" : "#1a7f37"}">${esc(r.activity)}</td><td><button class="icon-a" onclick="editUser('${r.id}')">✎</button> <button class="icon-a" onclick="removeUser('${r.id}')">🗑</button></td></tr>`).join("") || `<tr><td colspan="8" style="text-align:center;color:#777;padding:18px">No ${state.userTab === "coaches" ? "coaches" : "athletes"} found. Use "Upload Users" or the form above to add people.</td></tr>`}
       </table></div>`;
@@ -3478,6 +3619,7 @@ async function loadExercises() {
   try {
     const list = await api("GET", "/api/exercises");
     state.serverExercises = list;
+    markHiddenExercises();
     list.forEach((e) => syncCatalogExercise(e));
     render();
   } catch (err) { console.error(err); }
@@ -3536,10 +3678,19 @@ async function saveExerciseName(id, previousName) {
     return false;
   }
 }
-function hideExercise(id) {
+async function hideExercise(id) {
   const row = state.serverExercises.find((e) => e.id === id);
   if (row) row.hidden = true;
+  if (state.hiddenExerciseIds.indexOf(id) < 0) state.hiddenExerciseIds.push(id);
   render();
+  try {
+    await api("POST", "/api/gym/hidden-exercises", { exercise_id: id });
+  } catch (err) {
+    if (row) row.hidden = false;
+    state.hiddenExerciseIds = state.hiddenExerciseIds.filter((n) => n !== id);
+    toast(err.message || "Could not hide that exercise");
+    render();
+  }
 }
 
 function dailyView() {
@@ -3643,10 +3794,32 @@ function boardLeader() {
   return `<section class="stage light-page"><h1>Leaderboard</h1><table class="data"><tr><th>#</th><th>Athlete</th><th>Tonnage (kg)</th></tr>${scores.map((s, i) => `<tr><td>${i + 1}</td><td>${esc(s[0])}</td><td>${Math.round(s[1])}</td></tr>`).join("") || `<tr><td colspan="3">No athletes or logged sessions yet.</td></tr>`}</table></section>`;
 }
 function evalView() {
-  return `<section class="stage light-page"><h1>Evaluations</h1>${state.evals.map((e) => `<article class="card">${esc(e)}</article>`).join("") || '<div class="empty">No evaluations yet</div>'}<button class="req" onclick="const n=prompt('Evaluation note'); if(n){state.evals.push(n);render()}">+ Evaluation</button></section>`;
+  return `<section class="stage light-page"><h1>Evaluations</h1>${state.evals.map((e) => `<article class="card">${esc(e.text || e)}</article>`).join("") || '<div class="empty">No evaluations yet</div>'}<button class="req" onclick="addEvaluation()">+ Evaluation</button></section>`;
+}
+function addEvaluation() {
+  const note = prompt("Evaluation note");
+  if (!note) return;
+  createSaved("evaluation", { text: note }).then((row) => {
+    state.evals.push({ id: row.id, text: note });
+    render();
+  }).catch((err) => {
+    toast(err.message || "Could not save that evaluation");
+    render();
+  });
+}
+function programmedDayCount(target) {
+  const saved = Object.values(state.calendars[target.id] || {}).filter((day) => day && day.savedWorkoutId).length;
+  if (state.calendarLoaded[target.id]) return saved;
+  if (!target.isGroup && target.serverId) {
+    return ((state.gymContext && state.gymContext.workouts) || []).filter((workout) => !workout.is_template && workout.scheduled_date && (workout.assigned_athlete_ids || []).indexOf(target.serverId) >= 0).length;
+  }
+  return saved;
 }
 function calendarsView() {
   const targets = buildAthletes().filter((t) => t.id !== "none");
+  targets.forEach((target) => {
+    if (!state.calendarLoaded[target.id] && !state.calendarLoading[target.id]) loadCalendarSchedule(target.id);
+  });
   return `<section class="stage light-page"><h1>Manage Calendars</h1>
     <form class="toolbar" onsubmit="addCalendar(); return false;">
       <input class="plain" placeholder="Athlete name" data-focus="cal-name" value="${esc(state.toolForm.calName || "")}" oninput="state.toolForm.calName=this.value">
@@ -3655,7 +3828,7 @@ function calendarsView() {
     </form>
     <div class="grid-cards">${targets.map((a) => `<article class="card">
       <strong>${esc(a.name)}</strong>
-      <div class="hint">${Object.keys(state.calendars[a.id] || {}).length} programmed days${a.email ? " · " + esc(a.email) : ""}</div>
+      <div class="hint">${programmedDayCount(a)} programmed days${a.email ? " · " + esc(a.email) : ""}</div>
       ${!a.isGroup ? `<button class="comment" onclick="editCalendar('${a.id}')">Edit</button>` : ""}
       <button class="comment" onclick="switchAthlete('${esc(a.id)}');state.view='build';render()">Open calendar</button>
     </article>`).join("") || `<p class="hint">No calendars yet. Create a group or upload athletes in Manage Users.</p>`}</div></section>`;
@@ -3877,7 +4050,7 @@ function docsView() {
     <div class="grid-cards">${state.docs.map((d, i) => `<article class="card">
       <strong>${esc(d.name)}</strong>
       <div class="hint">${esc(d.url)}</div>
-      <div style="margin-top:8px"><a href="${esc(d.url)}" target="_blank">Open</a> <button class="comment" onclick="editDoc(${i})">Edit</button> <button class="comment" onclick="state.docs.splice(${i},1);render()">Remove</button></div>
+      <div style="margin-top:8px"><a href="${esc(d.url)}" target="_blank">Open</a> <button class="comment" onclick="editDoc(${i})">Edit</button> <button class="comment" onclick="removeSaved('docs', ${i})">Remove</button></div>
     </article>`).join("") || `<p class="hint">No documents or links added yet.</p>`}</div></section>`;
 }
 function editDoc(index) {
@@ -3889,24 +4062,35 @@ function editDoc(index) {
       { key: "name", label: "Name", value: doc.name || "" },
       { key: "url", label: "URL", value: doc.url || "" }
     ],
-    onSave: (values) => {
+    onSave: async (values) => {
       const name = (values.name || "").trim();
       if (!name) { toast("Name the document"); return; }
-      doc.name = name;
-      doc.url = (values.url || "").trim() || "#";
-      state.modal = null;
-      toast("Document saved");
+      const url = (values.url || "").trim() || "#";
+      try {
+        if (doc.id) await updateSaved(doc.id, { name, url });
+        doc.name = name;
+        doc.url = url;
+        state.modal = null;
+        toast("Document saved");
+      } catch (err) {
+        toast(err.message || "Could not save that document");
+      }
     }
   });
 }
-function addDoc() {
+async function addDoc() {
   const name = (state.toolForm.docName || "").trim();
   const url = (state.toolForm.docUrl || "").trim() || "#";
   if (!name) { toast("Name the document"); return; }
-  state.docs.push({ name, url });
-  state.toolForm.docName = "";
-  state.toolForm.docUrl = "";
-  toast("Document saved");
+  try {
+    const row = await createSaved("document", { name, url });
+    state.docs.push({ id: row.id, name, url });
+    state.toolForm.docName = "";
+    state.toolForm.docUrl = "";
+    toast("Document saved");
+  } catch (err) {
+    toast(err.message || "Could not save that document");
+  }
   render();
 }
 function packetsView() {
@@ -3915,27 +4099,38 @@ function packetsView() {
       <input class="plain" placeholder="Packet name" data-focus="packet-name" value="${esc(state.toolForm.packet || "")}" oninput="state.toolForm.packet=this.value">
       <button class="req" type="submit">Add packet</button>
     </form>
-    <div class="grid-cards">${state.packets.map((p, i) => `<article class="card"><strong>${esc(p)}</strong><div style="margin-top:8px"><button class="comment" onclick="editPacket(${i})">Edit</button> <button class="comment" onclick="state.packets.splice(${i},1);render()">Remove</button></div></article>`).join("") || `<p class="hint">No packets added yet.</p>`}</div></section>`;
+    <div class="grid-cards">${state.packets.map((p, i) => `<article class="card"><strong>${esc(p.name || p)}</strong><div style="margin-top:8px"><button class="comment" onclick="editPacket(${i})">Edit</button> <button class="comment" onclick="removeSaved('packets', ${i})">Remove</button></div></article>`).join("") || `<p class="hint">No packets added yet.</p>`}</div></section>`;
 }
 function editPacket(index) {
   openEdit({
     title: "Edit packet",
-    fields: [{ key: "name", label: "Packet name", value: state.packets[index] || "" }],
-    onSave: (values) => {
+    fields: [{ key: "name", label: "Packet name", value: (state.packets[index] && state.packets[index].name) || "" }],
+    onSave: async (values) => {
       const name = (values.name || "").trim();
       if (!name) { toast("Name the packet"); return; }
-      state.packets[index] = name;
-      state.modal = null;
-      toast("Packet saved");
+      const packet = state.packets[index];
+      try {
+        if (packet && packet.id) await updateSaved(packet.id, { name });
+        if (packet) packet.name = name;
+        state.modal = null;
+        toast("Packet saved");
+      } catch (err) {
+        toast(err.message || "Could not save that packet");
+      }
     }
   });
 }
-function addPacket() {
+async function addPacket() {
   const name = (state.toolForm.packet || "").trim();
   if (!name) { toast("Name the packet"); return; }
-  state.packets.push(name);
-  state.toolForm.packet = "";
-  toast("Packet saved");
+  try {
+    const row = await createSaved("packet", { name });
+    state.packets.push({ id: row.id, name });
+    state.toolForm.packet = "";
+    toast("Packet saved");
+  } catch (err) {
+    toast(err.message || "Could not save that packet");
+  }
   render();
 }
 function attendanceView() {
@@ -4033,7 +4228,7 @@ function reportingView() {
       <input class="plain" placeholder="Report note" data-focus="report-note" value="${esc(state.toolForm.report || "")}" oninput="state.toolForm.report=this.value">
       <button class="req" type="submit">Add note</button>
     </form>
-    ${state.reports.map((r, i) => `<article class="card"><p>${esc(r.text)}</p><button class="comment" onclick="editReport(${i})">Edit</button> <button class="comment" onclick="state.reports.splice(${i},1);render()">Remove</button></article>`).join("")}
+    ${state.reports.map((r, i) => `<article class="card"><p>${esc(r.text)}</p><button class="comment" onclick="editReport(${i})">Edit</button> <button class="comment" onclick="removeSaved('reports', ${i})">Remove</button></article>`).join("")}
     <table class="data" style="margin-top:12px"><tr><th>Date</th><th>Target</th><th>Workout</th><th>Exercises</th><th></th></tr>
       ${rows.slice(0, 40).map((r) => `<tr><td>${esc(r.date)}</td><td>${esc(r.athlete)}</td><td>${esc(r.title)}</td><td>${r.count}</td><td><button class="comment" onclick="openReportDay('${esc(r.athleteId)}','${esc(r.date)}')">Open</button></td></tr>`).join("") || `<tr><td colspan="5">No programmed workouts yet.</td></tr>`}
     </table></section>`;
@@ -4044,21 +4239,31 @@ function editReport(index) {
   openEdit({
     title: "Edit note",
     fields: [{ key: "text", label: "Note", value: report.text || "", multiline: true }],
-    onSave: (values) => {
+    onSave: async (values) => {
       const text = (values.text || "").trim();
       if (!text) { toast("Write a note"); return; }
-      report.text = text;
-      state.modal = null;
-      toast("Note saved");
+      try {
+        if (report.id) await updateSaved(report.id, { text });
+        report.text = text;
+        state.modal = null;
+        toast("Note saved");
+      } catch (err) {
+        toast(err.message || "Could not save that note");
+      }
     }
   });
 }
-function addReport() {
+async function addReport() {
   const text = (state.toolForm.report || "").trim();
   if (!text) { toast("Write a note"); return; }
-  state.reports.push({ id: uid(), text });
-  state.toolForm.report = "";
-  toast("Report note saved");
+  try {
+    const row = await createSaved("report", { text });
+    state.reports.push({ id: row.id, text });
+    state.toolForm.report = "";
+    toast("Report note saved");
+  } catch (err) {
+    toast(err.message || "Could not save that note");
+  }
   render();
 }
 function openReportDay(id, date) {
@@ -4080,7 +4285,7 @@ function paymentsView() {
       <strong>${esc(inv.who || "Athlete")}</strong>
       <div>${esc(inv.amount || "")}</div>
       <div class="hint">${esc(inv.note || "")}</div>
-      <div style="margin-top:8px"><button class="comment" onclick="editInvoice(${i})">Edit</button> <button class="comment" onclick="state.invoices.splice(${i},1);render()">Remove</button></div>
+      <div style="margin-top:8px"><button class="comment" onclick="editInvoice(${i})">Edit</button> <button class="comment" onclick="removeSaved('invoices', ${i})">Remove</button></div>
     </article>`).join("") : "<p>No invoices</p>"}</section>`;
 }
 function editInvoice(index) {
@@ -4093,24 +4298,36 @@ function editInvoice(index) {
       { key: "amount", label: "Amount", value: inv.amount || "" },
       { key: "note", label: "Note", value: inv.note || "" }
     ],
-    onSave: (values) => {
+    onSave: async (values) => {
       const amount = (values.amount || "").trim();
       if (!amount) { toast("Enter an amount"); return; }
-      inv.who = (values.who || "").trim();
-      inv.amount = amount;
-      inv.note = (values.note || "").trim();
-      state.modal = null;
-      toast("Invoice saved");
+      const next = { who: (values.who || "").trim(), amount, note: (values.note || "").trim() };
+      try {
+        if (inv.id) await updateSaved(inv.id, next);
+        inv.who = next.who;
+        inv.amount = next.amount;
+        inv.note = next.note;
+        state.modal = null;
+        toast("Invoice saved");
+      } catch (err) {
+        toast(err.message || "Could not save that invoice");
+      }
     }
   });
 }
-function addInvoice() {
+async function addInvoice() {
   const amount = (state.toolForm.payAmount || "").trim();
   if (!amount) { toast("Enter an amount"); return; }
-  state.invoices.push({ id: uid(), who: state.toolForm.payWho || athlete().name, amount, note: state.toolForm.payNote || "" });
-  state.toolForm.payAmount = "";
-  state.toolForm.payNote = "";
-  toast("Invoice saved");
+  const body = { who: state.toolForm.payWho || athlete().name, amount, note: state.toolForm.payNote || "" };
+  try {
+    const row = await createSaved("invoice", body);
+    state.invoices.push({ id: row.id, who: body.who, amount: body.amount, note: body.note });
+    state.toolForm.payAmount = "";
+    state.toolForm.payNote = "";
+    toast("Invoice saved");
+  } catch (err) {
+    toast(err.message || "Could not save that invoice");
+  }
   render();
 }
 
@@ -4211,7 +4428,7 @@ function modalHtml() {
     return `<div class="modal-back"><div class="modal"><h3>Create New Exercise</h3><input class="field" data-focus="new-ex" placeholder="Exercise name" oninput="state.modal.name=this.value"><button class="full primary" onclick="const n=(state.modal.name||'').trim(); if(!n)return; CATALOG.push({name:n,type:'lift'}); state.lifts.push({id:uid(),name:n,type:'Lifts',tags:'N/A'}); addItem(state.modal.date, fromCatalog({name:n,type:'lift'})); state.modal=null;">CREATE</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
   }
   if (m.type === "journal") {
-    return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render();}"><div class="modal"><h3>Journal entry</h3><input class="field" placeholder="Title" data-focus="jtitle" oninput="state.modal.title=this.value"><textarea data-focus="jbody" oninput="state.modal.body=this.value"></textarea><button class="full primary" onclick="state.journal.unshift({title:state.modal.title||'Note', body:state.modal.body||'', date: fmtLong('2026-10-14')}); state.feedMode='journal'; state.modal=null; render()">SAVE</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
+    return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render();}"><div class="modal"><h3>Journal entry</h3><input class="field" placeholder="Title" data-focus="jtitle" oninput="state.modal.title=this.value"><textarea data-focus="jbody" oninput="state.modal.body=this.value"></textarea><button class="full primary" onclick="saveJournalEntry()">SAVE</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
   }
   if (m.type === "adduser") {
     return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render();}"><div class="modal"><h3>Add user</h3><input class="field" placeholder="First" oninput="state.modal.first=this.value"><input class="field" placeholder="Last" oninput="state.modal.last=this.value" style="margin-top:6px"><input class="field" placeholder="Email" oninput="state.modal.email=this.value" style="margin-top:6px"><button class="full primary" onclick="addUserFromModal()">ADD</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
@@ -4244,8 +4461,11 @@ function saveInfo() {
   state.modal = null;
   render();
 }
+function fabSuppressed() {
+  return state.view === "weightroom" || state.view === "whiteboard" || state.view === "leaderboard" || state.view === "entry";
+}
 function fabHtml() {
-  if (state.view === "build" || state.view === "admin" || state.view === "squad" || state.view === "mine" || state.role === "athlete" || state.role === "admin") return "";
+  if (state.view === "build" || state.view === "admin" || state.view === "squad" || state.view === "mine" || state.role === "athlete" || state.role === "admin" || fabSuppressed()) return "";
   return `<button class="fab" onclick="onFab()">+</button>`;
 }
 function onFab() {
@@ -4267,10 +4487,8 @@ function onFab() {
     return;
   }
   if (state.view === "journal") { state.modal = { type: "journal" }; render(); return; }
-  state.modal = { type: "journal" };
-  state.view = "feed";
-  state.feedMode = "journal";
-  render();
+  if (state.view === "evaluations") { addEvaluation(); return; }
+  if (state.view === "maxes") { addGoalRecord(); return; }
 }
 
 document.addEventListener("click", (ev) => {
@@ -4761,8 +4979,10 @@ async function redeemCode(e) {
     state.auth.user = user;
     land(user);
     if (!user.needs_onboarding) {
-      if (state.role === "athlete") await loadMySchedule();
-      else await loadGymContext();
+      if (state.role === "athlete") {
+        await loadMySchedule();
+        await loadOwnJournal();
+      } else await loadGymContext();
     }
     toast(state.role === "coach" ? "You're a coach in this gym" : "You're an athlete on this team");
   } catch (err) {
@@ -4774,8 +4994,10 @@ async function switchRole(role) {
   try {
     const user = await api("POST", "/api/auth/view", { role });
     land(user);
-    if (state.role === "athlete") await loadMySchedule();
-    else await loadGymContext();
+    if (state.role === "athlete") {
+      await loadMySchedule();
+      await loadOwnJournal();
+    } else await loadGymContext();
   } catch (err) {
     toast(err.message || "Could not switch view");
   }
@@ -5203,8 +5425,10 @@ async function initAuth() {
       state.auth.isAuthenticated = true;
       land(me);
       if (!me.needs_onboarding) {
-        if (state.role === "athlete") await loadMySchedule();
-        else await loadGymContext();
+        if (state.role === "athlete") {
+          await loadMySchedule();
+          await loadOwnJournal();
+        } else await loadGymContext();
       }
     } catch (err) {
       console.warn("Session expired or invalid:", err);
