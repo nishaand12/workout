@@ -83,6 +83,9 @@ def ensure_schema_migrations():
         gcols = {c["name"] for c in inspector.get_columns("groups")}
         if "gym_id" not in gcols:
             statements.append("ALTER TABLE groups ADD COLUMN gym_id INTEGER")
+        if not str(engine.url).startswith("sqlite"):
+            statements.append("DROP INDEX IF EXISTS ix_groups_name")
+            statements.append("CREATE INDEX IF NOT EXISTS ix_groups_name ON groups (name)")
 
     if "workouts" in tables:
         wcols = {c["name"] for c in inspector.get_columns("workouts")}
@@ -660,11 +663,35 @@ def create_group(
     db: Session = Depends(get_db),
     viewer: Optional[crud.User] = Depends(get_current_user),
 ):
+    name = (group_in.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Enter a group name.")
+    group_in.name = name
     if viewer is not None:
         if not _staff(viewer):
             raise HTTPException(status_code=403, detail="Athlete accounts do not have coach tools.")
         access.require_gym(viewer)
         group_in.coach_id = viewer.id
+        existing = db.query(crud.Group).filter(
+            crud.Group.name.ilike(name),
+            crud.Group.gym_id == viewer.gym_id,
+        ).first()
+        if not existing:
+            existing = db.query(crud.Group).filter(
+                crud.Group.name.ilike(name),
+                crud.Group.gym_id.is_(None),
+            ).first()
+        if existing:
+            if existing.gym_id is None or existing.coach_id is None or existing.coach_id == viewer.id:
+                existing.gym_id = viewer.gym_id
+                existing.coach_id = viewer.id
+                if access.is_admin(viewer):
+                    viewer.is_coach = True
+                db.commit()
+                db.refresh(existing)
+                existing.member_count = len(existing.members)
+                return existing
+            raise HTTPException(status_code=400, detail="A group with that name already exists in this gym.")
     group = crud.create_group(db, group_in)
     if viewer is not None:
         group.gym_id = viewer.gym_id
@@ -789,8 +816,17 @@ def create_assignment(
     if bool(assign_in.group_id) == bool(assign_in.user_id):
         raise HTTPException(status_code=400, detail="Choose either one client or one team")
     _guard_assignment_target(db, viewer, assign_in.user_id, assign_in.group_id)
+    workout = crud.get_workout(db, assign_in.workout_id)
+    if not workout:
+        raise HTTPException(status_code=404, detail="Workout not found")
     if viewer is not None:
         assign_in.assigned_by_coach_id = viewer.id
+        if viewer.gym_id and workout.gym_id != viewer.gym_id:
+            if workout.gym_id is None:
+                cloned = crud.clone_workout_for_gym(db, workout, viewer)
+                assign_in.workout_id = cloned.id
+            else:
+                raise HTTPException(status_code=403, detail="That workout belongs to another gym.")
     return crud.create_assignment(db, assign_in)
 
 @app.post("/api/assignments/program", response_model=List[WorkoutAssignmentResponse], status_code=status.HTTP_201_CREATED)
@@ -902,6 +938,13 @@ def create_join_code(body: JoinCodeCreate, db: Session = Depends(get_db), curren
 @app.get("/api/join-codes", response_model=List[JoinCodeResponse])
 def get_join_codes(db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
     return crud.list_join_codes(db, current_user)
+
+@app.delete("/api/join-codes/{code_id}")
+def delete_join_code(code_id: int, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    success = crud.delete_join_code(db, current_user, code_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Join code not found")
+    return {"message": "Join code deleted"}
 
 @app.post("/api/join-codes/redeem", response_model=UserResponse)
 def redeem_join_code(body: JoinCodeRedeem, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
