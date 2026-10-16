@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, List, Optional
 from pydantic import BaseModel, ConfigDict
 
 # Exercise Schemas
@@ -440,6 +440,22 @@ class GymWorkoutSummary(BaseModel):
     assigned_athlete_ids: List[int] = []
     is_template: bool = False
 
+class GymSavedItem(BaseModel):
+    id: int
+    kind: str
+    user_id: Optional[int] = None
+    body: Any = None
+
+class GymItemCreate(BaseModel):
+    kind: str
+    body: Any = None
+
+class GymItemUpdate(BaseModel):
+    body: Any = None
+
+class HideExerciseRequest(BaseModel):
+    exercise_id: int
+
 class GymContext(BaseModel):
     gym_id: int
     gym_name: str
@@ -448,6 +464,8 @@ class GymContext(BaseModel):
     teams: List[GymTeam] = []
     codes: List[JoinCodeResponse] = []
     workouts: List[GymWorkoutSummary] = []
+    items: List[GymSavedItem] = []
+    hidden_exercise_ids: List[int] = []
 
 class GymMemberCreate(BaseModel):
     name: str

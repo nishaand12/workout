@@ -703,8 +703,8 @@ class TrainerFlowTests(unittest.TestCase):
         self.assertEqual(session.status_code, 200, session.text)
         logs = session.json()["set_logs"]
         self.assertEqual(len(logs), 2)
-        self.assertEqual(logs[0]["weight"], 100)
-        self.assertEqual(logs[0]["reps"], 5)
+        self.assertEqual(logs[0]["weight"], 0)
+        self.assertEqual(logs[0]["reps"], 0)
         self.assertEqual(logs[0]["rest_seconds"], 90)
         self.assertIn("tempo", logs[0]["details"])
         we_id = workout.json()["exercises"][0]["id"]
@@ -841,6 +841,74 @@ class TrainerFlowTests(unittest.TestCase):
         self.assertEqual(body["default_stations"], "Inchworm\nSpiderman")
         self.assertEqual(body["default_notes"], "Quality reps")
         self.assertEqual(body["video_url"], "https://youtu.be/circuit1")
+
+    def test_saved_items_survive_and_logged_load_counts(self):
+        token, coach = self._login("coach@wourkout.app", "CoachPassword123!")
+        auth = self._auth(token)
+        created = self.client.post("/api/gym/items", json={
+            "kind": "document",
+            "body": {"name": f"Warmup {self.stamp}", "url": "https://wourkout.example/warmup"},
+        }, headers=auth)
+        self.assertEqual(created.status_code, 201, created.text)
+        item_id = created.json()["id"]
+
+        context = self.client.get("/api/gym/context", headers=auth)
+        self.assertEqual(context.status_code, 200, context.text)
+        docs = [row for row in context.json()["items"] if row["id"] == item_id]
+        self.assertEqual(docs[0]["body"]["name"], f"Warmup {self.stamp}")
+
+        edited = self.client.put(f"/api/gym/items/{item_id}", json={
+            "body": {"name": f"Warmup {self.stamp}", "url": "https://wourkout.example/edited"},
+        }, headers=auth)
+        self.assertEqual(edited.status_code, 200, edited.text)
+        self.assertEqual(edited.json()["body"]["url"], "https://wourkout.example/edited")
+
+        exercise = self._exercise()
+        hidden = self.client.post("/api/gym/hidden-exercises", json={"exercise_id": exercise["id"]}, headers=auth)
+        self.assertEqual(hidden.status_code, 201, hidden.text)
+        again = self.client.get("/api/gym/context", headers=auth)
+        self.assertIn(exercise["id"], again.json()["hidden_exercise_ids"])
+
+        athlete = next(person for person in again.json()["athletes"] if person["email"] == "athlete@wourkout.app")
+        workout = self._workout(f"Logged {self.stamp}", "wourkout", "2026-10-18")
+        assigned = self.client.post("/api/assignments", json={
+            "workout_id": workout["id"],
+            "assigned_by_coach_id": coach["id"],
+            "user_id": athlete["id"],
+            "scheduled_date": "2026-10-18",
+        }, headers=auth)
+        self.assertEqual(assigned.status_code, 201, assigned.text)
+
+        before = self.client.get("/api/gym/activity", headers=auth).json()
+        before_row = next(row for row in before["leaderboard"] if row["user_id"] == athlete["id"])
+        session = self.client.get(f"/api/sessions/active/{workout['id']}", params={"user_id": athlete["id"]}, headers=auth)
+        self.assertEqual(session.status_code, 200, session.text)
+        self.assertEqual(session.json()["set_logs"][0]["weight"], 0)
+        after_open = self.client.get("/api/gym/activity", headers=auth).json()
+        opened_row = next(row for row in after_open["leaderboard"] if row["user_id"] == athlete["id"])
+        self.assertEqual(opened_row["tonnage"], before_row["tonnage"])
+
+        we_id = workout["exercises"][0]["id"]
+        logged = self.client.post(
+            f"/api/sessions/{session.json()['id']}/sets",
+            params={
+                "workout_exercise_id": we_id,
+                "set_number": 1,
+                "weight": 40,
+                "reps": 5,
+                "completed": False,
+            },
+            headers=auth,
+        )
+        self.assertEqual(logged.status_code, 200, logged.text)
+        after = self.client.get("/api/gym/activity", headers=auth).json()
+        after_row = next(row for row in after["leaderboard"] if row["user_id"] == athlete["id"])
+        self.assertEqual(after_row["tonnage"], before_row["tonnage"] + 200)
+
+        removed = self.client.delete(f"/api/gym/items/{item_id}", headers=auth)
+        self.assertEqual(removed.status_code, 200, removed.text)
+        gone = self.client.get("/api/gym/context", headers=auth).json()
+        self.assertFalse(any(row["id"] == item_id for row in gone["items"]))
 
 
 if __name__ == "__main__":

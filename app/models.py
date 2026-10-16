@@ -254,3 +254,21 @@ class PersonalRecord(Base):
 
     exercise = relationship("Exercise", back_populates="records")
     user = relationship("User", back_populates="records")
+
+class GymItem(Base):
+    """Coach notes, documents, packets, invoices, evaluations, and journal entries for one gym."""
+    __tablename__ = "gym_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    gym_id = Column(Integer, ForeignKey("gyms.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    kind = Column(String(32), nullable=False, index=True)
+    body = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class GymHiddenExercise(Base):
+    """A lift hidden on this gym's exercise list. The catalog itself stays shared."""
+    __tablename__ = "gym_hidden_exercises"
+
+    gym_id = Column(Integer, ForeignKey("gyms.id", ondelete="CASCADE"), primary_key=True)
+    exercise_id = Column(Integer, ForeignKey("exercises.id", ondelete="CASCADE"), primary_key=True)
