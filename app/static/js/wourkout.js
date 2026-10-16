@@ -926,7 +926,7 @@ function leftRail() {
   return `<aside class="rail">
     <button title="Collections" class="${state.sidebar ? "on" : ""}" onclick="state.sidebar=!state.sidebar;render()">☰</button>
     <button title="Program Library" onclick="goTool('exercises')">▤</button>
-    <button title="Mobile Preview" onclick="openPreview(state.focusDay)">▢</button>
+    <button title="Preview" class="${state.preview ? "on" : ""}" onclick="togglePreview()">▢</button>
     <button title="Action History" onclick="state.sidebar=true;state.historyOpen=true;render()">↺</button>
   </aside>`;
 }
@@ -2316,60 +2316,236 @@ document.addEventListener("drop", (ev) => {
   dropOn(ev, day.dataset.day, null);
 });
 
-function openPreview(date) {
-  const day = ensureDay(date);
-  state.preview = { date, index: 0 };
-  state.previewTab = day.items.length ? "list" : "exercise";
+function previewItems(day) {
+  return (day.items || []).filter((it) => it.type !== "break");
+}
+function previewLog(it, create) {
+  if (!it || !state.preview) return {};
+  const key = state.athleteId + ":" + state.preview.date + ":" + it.id;
+  if (!state.logs[key]) {
+    if (!create) return {};
+    state.logs[key] = {};
+  }
+  return state.logs[key];
+}
+function youtubeId(url) {
+  const m = String(url || "").match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|shorts\/))([\w-]{6,})/);
+  return m ? m[1] : "";
+}
+function previewHasLoad(it) {
+  return (it.loads || []).slice(0, it.sets || 1).some((x) => x !== "" && x != null);
+}
+function previewMax(name) {
+  const want = String(name || "").toLowerCase();
+  const hit = (state.serverRecords || []).find((r) => String((r.exercise && r.exercise.name) || "").toLowerCase() === want);
+  return hit && hit.weight != null && hit.weight !== "" ? hit.weight : "";
+}
+function openPreview(date, index) {
+  const startAt = Number.isInteger(index) ? index : null;
+  state.preview = {
+    date,
+    index: startAt == null ? 0 : startAt,
+    mode: startAt == null ? "list" : "exercise",
+    playing: false
+  };
   state.dayMenu = null;
   state.sidebar = false;
+  state.focusDay = date;
   render();
+}
+function togglePreview() {
+  if (state.preview) { state.preview = null; render(); return; }
+  openPreview(state.focusDay || APP_TODAY);
+}
+function shiftPreviewDay(n) {
+  if (!state.preview) return;
+  const date = addDays(state.preview.date, n);
+  state.preview.date = date;
+  state.preview.mode = "list";
+  state.preview.index = 0;
+  state.preview.playing = false;
+  state.focusDay = date;
+  const weeks = state.viewMode === "week" ? 1 : 4;
+  const end = addDays(state.weekStart, weeks * 7 - 1);
+  if (date < state.weekStart || date > end) state.weekStart = sundayOf(date);
+  render();
+}
+function previewPickItem(index) {
+  if (!state.preview) return;
+  state.preview.index = index;
+  state.preview.mode = "exercise";
+  state.preview.playing = false;
+  render();
+}
+function closePreviewCard() {
+  if (!state.preview) return;
+  state.preview.mode = "list";
+  state.preview.playing = false;
+  render();
+}
+function previewOpenEntry() {
+  if (!state.preview) return;
+  state.entryAthlete = state.athleteId;
+  state.entryDate = state.preview.date;
+  state.preview = null;
+  goTool("entry");
+}
+function previewOptOut() {
+  const it = previewCurrent();
+  if (!it) return;
+  const log = previewLog(it, true);
+  log.optedOut = !log.optedOut;
+  toast(log.optedOut ? "Opted out of " + it.name : "Opt out cleared for " + it.name);
+  render();
+}
+function previewJournal() {
+  state.preview = null;
+  state.view = "feed";
+  state.feedMode = "journal";
+  render();
+}
+function previewMedia() {
+  const it = previewCurrent();
+  if (!it || !it.videoUrl) { toast("No media on this exercise"); return; }
+  state.preview.playing = !state.preview.playing;
+  render();
+}
+function previewCurrent() {
+  if (!state.preview) return null;
+  const items = previewItems(ensureDay(state.preview.date));
+  return items[state.preview.index] || null;
 }
 function previewHtml() {
   const day = ensureDay(state.preview.date);
-  const it = day.items[state.preview.index];
-  const list = state.previewTab === "list" || !it;
+  if (state.preview.mode !== "exercise") return previewListHtml(day);
+  return previewExerciseHtml(day);
+}
+function previewListHtml(day) {
+  const items = previewItems(day);
+  const questionnaire = items.find((it) => it.type === "questionnaire");
+  const head = day.title || (questionnaire ? questionnaire.name : "");
+  const count = head && questionnaire && !day.title ? (questionnaire.questions || []).length : items.length;
+  const people = buildAthletes().filter((a) => a.id !== "none");
   return `<aside class="preview">
-    <div class="vid"><div class="play">▶</div><div style="position:absolute;bottom:8px;left:10px">${esc(it ? it.name : "Workout")}</div></div>
-    <div class="body">
-      <div class="hint">${fmtLong(state.preview.date)}</div>
-      <strong>${esc(athlete().name)}</strong>
-      <div class="tabs">
-        <button class="${state.previewTab === "list" ? "on" : ""}" onclick="state.previewTab='list';render()">GENERAL</button>
-        <button class="${state.previewTab !== "list" ? "on" : ""}" onclick="state.previewTab='exercise';render()">EXERCISE</button>
+    <div class="preview-scroll">
+      <div class="preview-date">
+        <button type="button" onclick="shiftPreviewDay(-1)" aria-label="Previous day">‹</button>
+        <span>${fmtLong(state.preview.date)}</span>
+        <button type="button" onclick="shiftPreviewDay(1)" aria-label="Next day">›</button>
       </div>
-      ${list ? day.items.map((x, i) => `<button class="opt" onclick="state.preview.index=${i};state.previewTab='exercise';render()">${esc(x.letter || "•")} ${esc(x.name)}</button>`).join("") || '<div class="hint">No exercises</div>' : previewDetail(day, it)}
+      <select class="preview-athlete" aria-label="Athlete" onchange="switchAthlete(this.value)">${people.map((a) => `<option value="${esc(a.id)}" ${a.id === state.athleteId ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select>
+      ${head ? `<div class="preview-sec"><span class="preview-tick">✓</span><div><strong>${esc(head)}</strong><small>${count} ITEMS</small></div></div>` : ""}
+      ${items.map((it, i) => `<button type="button" class="preview-row" onclick="previewPickItem(${i})">
+        <span class="preview-tick">✓</span>
+        <span><b>${esc(it.name)}</b><small>${esc(it.type === "questionnaire" ? ((it.questions || []).length + " ITEMS") : scriptLine(it))}</small></span>
+      </button>`).join("") || '<div class="hint">No exercises this day</div>'}
+    </div>
+    <button type="button" class="preview-entry" onclick="previewOpenEntry()">View in Workout Entry →</button>
+  </aside>`;
+}
+function previewExerciseHtml(day) {
+  const items = previewItems(day);
+  const it = items[state.preview.index];
+  if (!it) return previewListHtml(day);
+  const log = previewLog(it);
+  const max = previewMax(it.name);
+  const atStart = state.preview.index <= 0;
+  return `<aside class="preview">
+    <div class="preview-scroll">
+      ${previewMediaBlock(it)}
+      ${max !== "" ? `<div class="preview-max">Max: ${esc(max)}</div>` : ""}
+      <div class="preview-progress" aria-hidden="true"><span class="knob">${log.done ? "✓" : "✓"}</span><span class="track"></span></div>
+      <div class="preview-actions">
+        <button type="button" class="act optout ${log.optedOut ? "on" : ""}" onclick="previewOptOut()">OPT OUT</button>
+        <button type="button" class="act journal" onclick="previewJournal()">JOURNAL</button>
+        <button type="button" class="act media" onclick="previewMedia()">MEDIA</button>
+      </div>
+      <div class="preview-sheet">
+        ${previewSheet(it, log)}
+      </div>
     </div>
     <div class="preview-nav">
-      <button class="iconbtn" onclick="state.preview=null;render()">✕</button>
-      <span>
-        <button class="iconbtn" onclick="stepPreview(-1)">‹</button>
-        <button class="iconbtn" onclick="stepPreview(1)">›</button>
-      </span>
+      <button type="button" class="iconbtn" onclick="stepPreview(-1)" ${atStart ? "disabled" : ""} aria-label="Previous exercise">‹</button>
+      <button type="button" class="iconbtn" onclick="closePreviewCard()" aria-label="Close preview">✕</button>
+      <button type="button" class="iconbtn" onclick="stepPreview(1)" aria-label="Next exercise">›</button>
     </div>
   </aside>`;
 }
-function previewDetail(day, it) {
-  if (!it) return "";
-  if (it.type === "questionnaire") {
-    return it.questions.map((q, i) => `<div class="q">${i + 1}. ${esc(q)}</div>`).join("") + `<button class="complete" onclick="completeItem('${state.preview.date}','${it.id}')">Complete</button>`;
+function previewMediaBlock(it) {
+  const yid = youtubeId(it.videoUrl);
+  if (it.videoUrl && state.preview.playing) {
+    const src = yid
+      ? `https://www.youtube-nocookie.com/embed/${yid}?autoplay=1`
+      : it.videoUrl;
+    const frame = yid
+      ? `<iframe src="${esc(src)}" title="${esc(it.name)}" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>`
+      : `<video src="${esc(it.videoUrl)}" controls autoplay></video>`;
+    return `<div class="preview-vid playing">${frame}</div>`;
   }
-  const rows = Array.from({ length: it.sets || 1 }, (_, i) => `<tr><td>${i + 1}</td><td>${esc(it.loads[i] || "")}</td><td>${esc(it.reps[i] || "")}</td></tr>`).join("");
-  return `<div class="ex-sub">${esc(scriptLine(it))}</div>
-    ${it.detail ? `<div class="detail">${esc(it.detail)}</div>` : ""}
-    <table class="sets"><tr><th>SET</th><th>WEIGHT (KG)</th><th>REPS</th></tr>${rows}</table>
-    <button class="comment" type="button" onclick="openEditor('${state.preview.date}','${it.id}')">Edit</button>
-    <div class="tabs">
-      <button onclick="toast('Opted out of ${esc(it.name)}')">OPT OUT</button>
-      <button onclick="state.view='feed';state.feedMode='journal';render()">JOURNAL</button>
-      <button onclick="toast('No media on this exercise')">MEDIA</button>
-    </div>
-    <button class="complete" onclick="completeItem('${state.preview.date}','${it.id}')">Complete</button>`;
+  if (it.videoUrl) {
+    const thumb = yid ? ` style="background-image:url('https://i.ytimg.com/vi/${esc(yid)}/hqdefault.jpg')"` : "";
+    return `<button type="button" class="preview-vid" onclick="previewMedia()"${thumb}>
+      <span class="play">▶</span>
+      <span class="preview-vid-title">${esc(it.name)}</span>
+    </button>`;
+  }
+  return `<div class="preview-title">${esc(it.name)}</div>`;
+}
+function previewSheet(it, log) {
+  const done = log.done ? " done" : "";
+  const button = `<button type="button" class="complete${done}" onclick="completePreview()">${log.done ? "✓ Completed" : "✓ Complete"}</button>`;
+  if (it.type === "questionnaire") {
+    const qs = (it.questions || []).map((q, i) => `<div class="q">${i + 1}. ${esc(q)}</div>`).join("") || '<div class="hint">No questions</div>';
+    return qs + button;
+  }
+  if (it.type === "circuit" || it.completionOnly || it.type === "video" || it.type === "rest") {
+    const text = it.detail || it.note || (it.type === "rest" ? ((it.reps && it.reps[0]) || 60) + "s" : "Complete 1 round");
+    return `<div class="preview-copy">${esc(text)}</div>${button}`;
+  }
+  const note = it.note ? `<div class="preview-copy">${esc(it.note)}</div>` : "";
+  const detail = it.detail ? `<div class="preview-copy">${esc(it.detail)}</div>` : "";
+  const n = Math.max(1, it.sets || (it.reps || []).length || 1);
+  const loaded = previewHasLoad(it);
+  const rows = Array.from({ length: n }, (_, i) => {
+    const rep = esc((it.reps || [])[i] ?? "");
+    const load = esc((it.loads || [])[i] ?? "");
+    if (loaded) {
+      return `<tr><td>${i + 1}</td><td><span class="preview-box">${load}</span></td><td><span class="preview-box">${rep}</span></td></tr>`;
+    }
+    return `<tr><td>${i + 1}</td><td>${rep}</td></tr>`;
+  }).join("");
+  const head = loaded
+    ? "<tr><th>SET</th><th>WEIGHT</th><th>REPS</th></tr>"
+    : "<tr><th>SET</th><th>REPS</th></tr>";
+  return `${note}${detail}<table class="preview-sets">${head}${rows}</table>${button}`;
+}
+function completePreview() {
+  const it = previewCurrent();
+  if (!it || !state.preview) return;
+  const log = previewLog(it, true);
+  if (log.done) return;
+  log.done = true;
+  log.sets = it.sets;
+  log.reps = (it.reps || []).slice();
+  log.loads = (it.loads || []).slice();
+  toast("Completed " + it.name);
+  render();
 }
 function stepPreview(d) {
-  const day = ensureDay(state.preview.date);
-  if (!day.items.length) return;
-  state.preview.index = (state.preview.index + d + day.items.length) % day.items.length;
-  state.previewTab = "exercise";
+  if (!state.preview) return;
+  const items = previewItems(ensureDay(state.preview.date));
+  if (!items.length) return;
+  const next = state.preview.index + d;
+  if (next < 0) return;
+  if (next >= items.length) {
+    state.preview.mode = "list";
+    state.preview.playing = false;
+    render();
+    return;
+  }
+  state.preview.index = next;
+  state.preview.mode = "exercise";
+  state.preview.playing = false;
   render();
 }
 function completeItem(date, id) {
