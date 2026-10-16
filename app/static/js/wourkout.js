@@ -2001,16 +2001,22 @@ function usersView() {
   const filtered = rows.filter((r) => (r.first + r.last + r.email).toLowerCase().includes(q));
   const tab = (id, label) => `<button class="${state.userTab === id ? "on" : ""}" onclick="state.userTab='${id}';render()">${label}</button>`;
   let main = "";
+  if (state.userTab === "codes") state.userTab = "groups";
   if (state.userTab === "groups") {
+    const cards = state.groups.map((g, i) => {
+      const codes = state.joinCodes.map((c, idx) => ({ c, idx })).filter((row) => row.c.group === g);
+      const codeHtml = codes.length
+        ? codes.map(({ c, idx }) => `<div class="code-line"><code>${esc(c.code)}</code><button class="icon-a" type="button" onclick="copyJoinCode(${idx})">Copy</button><button class="icon-a" type="button" onclick="removeJoinCode(${idx})">✕</button></div>`).join("")
+        : `<div class="hint">No athlete codes yet</div>`;
+      return `<article class="card"><input class="plain" value="${esc(g)}" onchange="renameGroup(${i}, this.value)"><div class="group-codes"><div class="hint">Athlete codes</div>${codeHtml}<button class="req" type="button" onclick="addJoinCode(${i})">+ Code</button></div><div style="margin-top:8px"><button class="comment" type="button" onclick="removeGroup(${i})">Remove</button></div></article>`;
+    }).join("");
     main = `<div class="light-page"><h1>Groups</h1>
+      <p class="hint">Athlete join codes live on each group. Create a code from that group's card.</p>
       <form class="toolbar" onsubmit="addGroupRecord(); return false;">
         <input class="plain" placeholder="Group name" data-focus="group-name" value="${esc(state.toolForm.group || "")}" oninput="state.toolForm.group=this.value">
         <button class="req" type="submit">Add group</button>
       </form>
-      <div class="grid-cards">${state.groups.map((g, i) => `<article class="card"><input class="plain" value="${esc(g)}" onchange="renameGroup(${i}, this.value)"><div style="margin-top:8px"><button class="comment" onclick="state.groups.splice(${i},1);render()">Remove</button></div></article>`).join("")}</div></div>`;
-  } else if (state.userTab === "codes") {
-    main = `<div class="light-page"><h1>Easy-Join Codes</h1><table class="data"><tr><th>Code</th><th>Group</th><th></th></tr>${state.joinCodes.map((c, i) => `<tr><td>${esc(c.code)}</td><td>${esc(c.group)}</td><td><button class="icon-a" onclick="navigator.clipboard.writeText('${esc(c.code)}');toast('Copied')">Copy</button> <button class="icon-a" onclick="state.joinCodes.splice(${i},1);render()">✕</button></td></tr>`).join("")}</table>
-      <button class="req" style="margin-top:12px" onclick="state.joinCodes.push({code:'NEW'+Math.floor(Math.random()*90+10), group: state.groups[0]});render()">+ Code</button></div>`;
+      <div class="grid-cards">${cards || `<p class="hint">Add a group before creating an athlete code.</p>`}</div></div>`;
   } else if (state.userTab === "upload") {
     main = `<div class="light-page"><h1>Upload Users</h1><p>Paste one name per line.</p><textarea id="uploadBox" class="plain" style="width:100%;min-height:120px"></textarea><button class="req" onclick="importUsers()">Import</button></div>`;
   } else if (state.userTab === "export") {
@@ -2035,7 +2041,7 @@ function usersView() {
     <nav>
       <div class="sec" style="color:#fff;font-size:15px;letter-spacing:0;padding:16px 14px 8px">Manage Users</div>
       <div class="sec">MANAGEMENT</div>
-      ${tab("athletes", "Athletes")}${tab("coaches", "Coaches")}${tab("groups", "Groups")}${tab("codes", "Easy-Join Codes")}
+      ${tab("athletes", "Athletes")}${tab("coaches", "Coaches")}${tab("groups", "Groups")}
       <div class="sec">TOOLS</div>
       ${tab("upload", "Upload Users")}${tab("export", "Export Data")}
     </nav>
@@ -2094,9 +2100,45 @@ function addNamed(kind) {
 function renameGroup(index, name) {
   const next = name.trim();
   if (!next) return;
+  const prev = state.groups[index];
   state.groups[index] = next;
+  state.joinCodes.forEach((c) => { if (c.group === prev) c.group = next; });
   toast("Group renamed");
   render();
+}
+function removeGroup(index) {
+  const name = state.groups[index];
+  if (name == null) return;
+  state.groups.splice(index, 1);
+  state.joinCodes = state.joinCodes.filter((c) => c.group !== name);
+  render();
+}
+function addJoinCode(index) {
+  const group = state.groups[index];
+  if (!group) { toast("Add a group before creating a code"); return; }
+  const used = new Set(state.joinCodes.map((c) => c.code));
+  let code = "";
+  for (let n = 0; n < 40; n++) {
+    const candidate = "NEW" + Math.floor(Math.random() * 90 + 10);
+    if (!used.has(candidate)) { code = candidate; break; }
+  }
+  if (!code) code = "NEW" + String(Date.now()).slice(-4);
+  state.joinCodes.push({ code, group });
+  toast("Code added for " + group);
+  render();
+}
+function removeJoinCode(index) {
+  if (!state.joinCodes[index]) return;
+  state.joinCodes.splice(index, 1);
+  render();
+}
+function copyJoinCode(index) {
+  const row = state.joinCodes[index];
+  if (!row) return;
+  const done = () => toast("Copied");
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(row.code).then(done).catch(done);
+  } else done();
 }
 async function loadRoster() {
   try {
