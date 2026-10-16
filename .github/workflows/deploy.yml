@@ -96,6 +96,8 @@ jobs:
           flags: "--allow-unauthenticated"
           secrets: |
             DATABASE_URL=wourkout-database-url:latest
+            SUPABASE_ANON_KEY=wourkout-supabase-anon-key:latest
+            SUPABASE_SERVICE_ROLE_KEY=wourkout-supabase-service-role-key:latest
 
       - name: Smoke check
         env:
