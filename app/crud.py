@@ -236,6 +236,9 @@ def seed_database_if_empty(db: Session):
         exercise_map[exercise.name] = exercise
 
     print(f"Seeded {len(exercise_map)} exercises.")
+    if settings.SUPABASE_URL:
+        db.commit()
+        return
 
     print("Seeding workouts into database...")
     created_workouts = []
@@ -745,9 +748,17 @@ def complete_session(db: Session, session_id: int, notes: str = ""):
     return session
 
 # Personal Records
-def get_personal_records(db: Session, user_id: Optional[int] = None, include_global: bool = True):
+def get_personal_records(db: Session, user_id: Optional[int] = None, include_global: bool = True, viewer: Optional[User] = None):
     query = db.query(PersonalRecord)
-    if user_id is not None:
+    if viewer is not None and viewer.gym_id:
+        gym_user_ids = [
+            u.id for u in db.query(User).filter(User.gym_id == viewer.gym_id).all()
+        ]
+        if user_id is not None:
+            query = query.filter(PersonalRecord.user_id == user_id)
+        else:
+            query = query.filter(PersonalRecord.user_id.in_(gym_user_ids or [-1]))
+    elif user_id is not None:
         if include_global:
             query = query.filter(or_(PersonalRecord.user_id == user_id, PersonalRecord.user_id.is_(None)))
         else:
@@ -1969,6 +1980,248 @@ def add_gym_athlete(db: Session, actor: User, name: str, email: str, team_id: in
     db.commit()
     db.refresh(user)
     return user, password
+
+
+def bulk_add_gym_athletes(db: Session, actor: User, team_id: int, items: list) -> dict:
+    access.require_gym(actor)
+    team = db.query(Group).filter(Group.id == team_id).first()
+    if access.is_admin(actor) and team and team.gym_id == actor.gym_id:
+        pass
+    else:
+        access.assert_leads_team(db, actor, team)
+    created = []
+    for raw in items:
+        name = (getattr(raw, "name", None) if not isinstance(raw, dict) else raw.get("name") or "").strip()
+        email = (getattr(raw, "email", None) if not isinstance(raw, dict) else raw.get("email") or "").strip().lower()
+        if not name and not email:
+            continue
+        if not name:
+            name = email.split("@")[0].replace(".", " ").title()
+        if not email:
+            slug = re.sub(r"[^a-z0-9]+", ".", name.lower()).strip(".") or "athlete"
+            candidate = f"{slug}@gym{actor.gym_id}.wourkout.app"
+            suffix = 1
+            while get_user_by_email_or_username(db, candidate):
+                suffix += 1
+                candidate = f"{slug}.{suffix}@gym{actor.gym_id}.wourkout.app"
+            email = candidate
+        existing = get_user_by_email_or_username(db, email)
+        password = None
+        if existing:
+            if existing.gym_id and existing.gym_id != actor.gym_id:
+                continue
+            user = existing
+            if name:
+                user.name = name
+        else:
+            password = _temporary_password()
+            username = email.split("@")[0]
+            if db.query(User).filter(User.username == username).first():
+                username = f"{username}_{secrets.token_hex(2)}"
+            user = User(
+                name=name,
+                email=email,
+                username=username,
+                password_hash=hash_password(password),
+                role="athlete",
+                title="Athlete",
+                gym_id=actor.gym_id,
+                is_athlete=True,
+                is_active=True,
+            )
+            db.add(user)
+            db.flush()
+        user.gym_id = actor.gym_id
+        place_athlete_on_team(db, user, team, allow_move=True, commit=False)
+        if not user.is_coach and not user.is_admin:
+            user.role = "athlete"
+        db.commit()
+        db.refresh(user)
+        created.append({"user": user, "temporary_password": password})
+    return {"added_count": len(created), "users": created}
+
+
+def get_calendar_schedule(
+    db: Session,
+    viewer: Optional[User],
+    user_id: Optional[int] = None,
+    group_id: Optional[int] = None,
+) -> List[dict]:
+    """Return full scheduled workouts (with exercises) for a group or an athlete."""
+    if group_id:
+        team = get_group(db, group_id)
+        if not team:
+            raise HTTPException(status_code=404, detail="Group not found")
+        if viewer is not None:
+            if viewer.gym_id != team.gym_id:
+                raise HTTPException(status_code=403, detail="That group is in another gym.")
+        rows = db.query(WorkoutAssignment).filter(
+            WorkoutAssignment.group_id == group_id
+        ).order_by(WorkoutAssignment.scheduled_date.asc(), WorkoutAssignment.id.desc()).all()
+        by_date = {}
+        for a in rows:
+            if not a.workout or not a.scheduled_date:
+                continue
+            if a.scheduled_date not in by_date:
+                by_date[a.scheduled_date] = {
+                    "assignment_id": a.id,
+                    "scheduled_date": a.scheduled_date,
+                    "user_id": None,
+                    "group_id": group_id,
+                    "is_group_assignment": True,
+                    "workout": a.workout,
+                }
+        return list(by_date.values())
+
+    target_id = user_id or (viewer.id if viewer else None)
+    if not target_id:
+        return []
+    target_user = get_user(db, target_id)
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if viewer is not None and not access.can_see_user(db, viewer, target_user):
+        raise HTTPException(status_code=403, detail="You cannot view that athlete's schedule.")
+
+    direct_rows = db.query(WorkoutAssignment).filter(
+        WorkoutAssignment.user_id == target_user.id
+    ).order_by(WorkoutAssignment.scheduled_date.asc(), WorkoutAssignment.id.desc()).all()
+
+    moved_off = rescheduled_away_dates(db, target_user.id)
+    group_ids = [g.id for g in target_user.groups]
+    if target_user.team_id and target_user.team_id not in group_ids:
+        group_ids.append(target_user.team_id)
+
+    group_rows = []
+    if group_ids:
+        group_rows = db.query(WorkoutAssignment).filter(
+            WorkoutAssignment.group_id.in_(group_ids)
+        ).order_by(WorkoutAssignment.scheduled_date.asc(), WorkoutAssignment.id.desc()).all()
+
+    by_date = {}
+    for a in direct_rows:
+        if not a.workout or not a.scheduled_date:
+            continue
+        if a.scheduled_date not in by_date:
+            by_date[a.scheduled_date] = {
+                "assignment_id": a.id,
+                "scheduled_date": a.scheduled_date,
+                "user_id": target_user.id,
+                "group_id": None,
+                "is_group_assignment": False,
+                "workout": a.workout,
+            }
+    for a in group_rows:
+        if not a.workout or not a.scheduled_date:
+            continue
+        if a.scheduled_date in moved_off or a.scheduled_date in by_date:
+            continue
+        by_date[a.scheduled_date] = {
+            "assignment_id": a.id,
+            "scheduled_date": a.scheduled_date,
+            "user_id": target_user.id,
+            "group_id": a.group_id,
+            "is_group_assignment": True,
+            "workout": a.workout,
+        }
+    return [by_date[d] for d in sorted(by_date.keys())]
+
+
+def get_gym_activity(db: Session, viewer: User) -> dict:
+    """Return real sessions, athlete notes, leaderboard tonnage, and KPIs for the viewer's gym."""
+    if not viewer.gym_id:
+        return {"sessions": [], "leaderboard": [], "kpis": {"programmed_days": 0, "total_exercises": 0, "total_athletes": 0, "completed_sessions": 0}}
+
+    if access.is_admin(viewer):
+        athletes = [u for u in db.query(User).filter(User.gym_id == viewer.gym_id).all() if u.team_id or "athlete" in u.roles]
+        team_ids = [t.id for t in db.query(Group).filter(Group.gym_id == viewer.gym_id).all()]
+    elif access.is_coach(viewer):
+        by_id = {u.id: u for u in access.athletes_for(db, viewer)}
+        if access.is_athlete(viewer):
+            by_id[viewer.id] = viewer
+        athletes = list(by_id.values())
+        team_ids = [t.id for t in access.leads_teams(db, viewer)]
+    else:
+        athletes = [viewer]
+        team_ids = [viewer.team_id] if viewer.team_id else []
+
+    athlete_ids = [a.id for a in athletes]
+    user_map = {a.id: a for a in athletes}
+
+    sessions = db.query(WorkoutSession).filter(
+        WorkoutSession.user_id.in_(athlete_ids or [-1])
+    ).order_by(desc(WorkoutSession.start_time), desc(WorkoutSession.id)).limit(50).all()
+
+    session_items = []
+    tonnage_by_user = {aid: 0.0 for aid in athlete_ids}
+    sets_by_user = {aid: 0 for aid in athlete_ids}
+    completed_sessions_by_user = {aid: 0 for aid in athlete_ids}
+
+    for s in sessions:
+        u = user_map.get(s.user_id) or get_user(db, s.user_id)
+        w = s.workout
+        s_tonnage = 0.0
+        s_sets = 0
+        s_reps = 0
+        for log in s.set_logs:
+            if log.completed:
+                s_sets += 1
+                s_reps += int(log.reps or 0)
+                s_tonnage += float(log.weight or 0.0) * float(log.reps or 0.0)
+        if s.user_id in tonnage_by_user:
+            tonnage_by_user[s.user_id] += s_tonnage
+            sets_by_user[s.user_id] += s_sets
+            if s.completed or s_sets > 0:
+                completed_sessions_by_user[s.user_id] += 1
+        session_items.append({
+            "id": s.id,
+            "workout_id": s.workout_id,
+            "workout_title": w.title if w else "Workout",
+            "user_id": s.user_id,
+            "user_name": u.name if u else "Athlete",
+            "date": s.start_time.strftime("%Y-%m-%d") if s.start_time else "",
+            "completed": bool(s.completed),
+            "athlete_note": s.athlete_note or "",
+            "coach_note": s.notes or "",
+            "completed_sets": s_sets,
+            "total_reps": s_reps,
+            "tonnage": round(s_tonnage, 1),
+        })
+
+    pr_counts = {}
+    for pr in db.query(PersonalRecord).filter(PersonalRecord.user_id.in_(athlete_ids or [-1])).all():
+        pr_counts[pr.user_id] = pr_counts.get(pr.user_id, 0) + 1
+
+    leaderboard = []
+    for a in athletes:
+        leaderboard.append({
+            "user_id": a.id,
+            "name": a.name,
+            "team_name": a.team_name or "No group",
+            "tonnage": round(tonnage_by_user.get(a.id, 0.0), 1),
+            "completed_sessions": completed_sessions_by_user.get(a.id, 0),
+            "completed_sets": sets_by_user.get(a.id, 0),
+            "pr_count": pr_counts.get(a.id, 0),
+        })
+    leaderboard.sort(key=lambda r: (r["tonnage"], r["completed_sets"], r["pr_count"]), reverse=True)
+
+    assign_clauses = []
+    if athlete_ids:
+        assign_clauses.append(WorkoutAssignment.user_id.in_(athlete_ids))
+    if team_ids:
+        assign_clauses.append(WorkoutAssignment.group_id.in_(team_ids))
+    assignments = db.query(WorkoutAssignment).filter(or_(*assign_clauses)).all() if assign_clauses else []
+    total_ex = sum(len(a.workout.exercises) for a in assignments if a.workout)
+
+    return {
+        "sessions": session_items,
+        "leaderboard": leaderboard,
+        "kpis": {
+            "programmed_days": len(assignments),
+            "total_exercises": total_ex,
+            "total_athletes": len(athletes),
+            "completed_sessions": sum(completed_sessions_by_user.values()),
+        },
+    }
 
 
 def remove_athlete(db: Session, actor: User, user_id: int) -> str:
