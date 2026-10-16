@@ -8,6 +8,15 @@ class ExerciseBase(BaseModel):
     category: Optional[str] = "Strength"
     default_notes: Optional[str] = ""
     video_url: Optional[str] = ""
+    default_sets: Optional[int] = 3
+    default_reps: Optional[str] = "10"
+    default_load: Optional[str] = ""
+    default_rest: Optional[str] = ""
+    default_tempo: Optional[str] = ""
+    default_velocity: Optional[str] = ""
+    default_power: Optional[str] = ""
+    default_pct: Optional[str] = ""
+    default_stations: Optional[str] = ""
 
 class ExerciseCreate(ExerciseBase):
     pass
@@ -17,6 +26,15 @@ class ExerciseUpdate(BaseModel):
     category: Optional[str] = None
     default_notes: Optional[str] = None
     video_url: Optional[str] = None
+    default_sets: Optional[int] = None
+    default_reps: Optional[str] = None
+    default_load: Optional[str] = None
+    default_rest: Optional[str] = None
+    default_tempo: Optional[str] = None
+    default_velocity: Optional[str] = None
+    default_power: Optional[str] = None
+    default_pct: Optional[str] = None
+    default_stations: Optional[str] = None
 
 class ExerciseResponse(ExerciseBase):
     id: int

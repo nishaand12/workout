@@ -770,6 +770,78 @@ class TrainerFlowTests(unittest.TestCase):
         self.assertEqual(again.status_code, 201, again.text)
         self.assertNotIn(again.json()["users"][0]["user"]["email"], emails)
 
+    def test_exercise_defaults_stay_when_a_day_changes(self):
+        created = self.client.post("/api/exercises", json={
+            "name": f"Back Squat {self.stamp}",
+            "category": "Strength",
+            "video_url": "https://www.youtube.com/watch?v=abc123",
+            "default_sets": 4,
+            "default_reps": "6",
+            "default_load": "100",
+            "default_rest": "90",
+            "default_tempo": "31X1",
+            "default_velocity": "0.8",
+            "default_power": "400",
+            "default_pct": "80",
+        })
+        self.assertEqual(created.status_code, 201, created.text)
+        exercise = created.json()
+        self.assertEqual(exercise["video_url"], "https://www.youtube.com/watch?v=abc123")
+        self.assertEqual(exercise["default_sets"], 4)
+        self.assertEqual(exercise["default_reps"], "6")
+        self.assertEqual(exercise["default_load"], "100")
+        self.assertEqual(exercise["default_pct"], "80")
+
+        workout = self.client.post("/api/workouts", json={
+            "title": f"Day {self.stamp}",
+            "program_name": f"Block {self.stamp}",
+            "calendar_date": "2026-10-16",
+            "scheduled_date": "2026-10-16",
+            "day_of_week": "Friday",
+            "exercises": [{
+                "exercise_id": exercise["id"],
+                "prescribed_sets": 2,
+                "target_reps": "3",
+                "target_weight": "40",
+                "notes": "Changed on this day only",
+            }],
+        })
+        self.assertEqual(workout.status_code, 201, workout.text)
+        self.assertEqual(workout.json()["exercises"][0]["prescribed_sets"], 2)
+        self.assertEqual(workout.json()["exercises"][0]["target_reps"], "3")
+
+        again = self.client.get("/api/exercises", params={"search": exercise["name"]})
+        self.assertEqual(again.status_code, 200, again.text)
+        saved = next(row for row in again.json() if row["id"] == exercise["id"])
+        self.assertEqual(saved["default_sets"], 4)
+        self.assertEqual(saved["default_reps"], "6")
+        self.assertEqual(saved["default_load"], "100")
+        self.assertEqual(saved["video_url"], "https://www.youtube.com/watch?v=abc123")
+
+        circuit = self.client.post("/api/exercises", json={
+            "name": f"Mobility {self.stamp}",
+            "category": "Circuit",
+            "default_sets": 3,
+            "default_stations": "Inchworm\nCalf raise",
+            "default_notes": "Easy pace",
+        })
+        self.assertEqual(circuit.status_code, 201, circuit.text)
+        circuit_id = circuit.json()["id"]
+        updated = self.client.put(f"/api/exercises/{circuit_id}", json={
+            "default_sets": 4,
+            "default_stations": "Inchworm\nSpiderman",
+            "default_notes": "Quality reps",
+            "video_url": "https://youtu.be/circuit1",
+        })
+        self.assertEqual(updated.status_code, 200, updated.text)
+        body = updated.json()
+        self.assertEqual(body["name"], f"Mobility {self.stamp}")
+        self.assertEqual(body["category"], "Circuit")
+        self.assertEqual(body["default_sets"], 4)
+        self.assertEqual(body["default_stations"], "Inchworm\nSpiderman")
+        self.assertEqual(body["default_notes"], "Quality reps")
+        self.assertEqual(body["video_url"], "https://youtu.be/circuit1")
+
 
 if __name__ == "__main__":
     unittest.main()
