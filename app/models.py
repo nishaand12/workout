@@ -224,6 +224,8 @@ class SetLog(Base):
     set_number = Column(Integer, nullable=False)
     weight = Column(Float, default=0.0)
     reps = Column(Float, default=0.0)
+    rest_seconds = Column(Integer, default=0)
+    details = Column(Text, default="")  # JSON for tempo, velocity, power, %1RM
     completed = Column(Boolean, default=False)
     logged_at = Column(DateTime, default=datetime.utcnow)
 

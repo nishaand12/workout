@@ -602,6 +602,133 @@ class TrainerFlowTests(unittest.TestCase):
         taken = self.client.post("/api/gyms", json={"name": "Elsewhere"}, headers=self._auth(admin_token))
         self.assertEqual(taken.status_code, 409, taken.text)
 
+    def test_coach_adds_athlete_to_one_group_and_programs_self(self):
+        reg = self.client.post("/api/auth/register", json={
+            "name": "Nishaan D",
+            "email": f"nishaan.{self.stamp}@example.com",
+            "username": f"nd_{self.stamp[:8]}",
+            "password": "Password123!",
+            "role": "athlete",
+        })
+        self.assertEqual(reg.status_code, 201, reg.text)
+        token = reg.json()["access_token"]
+        auth = self._auth(token)
+        created = self.client.post("/api/gyms", json={"name": f"wourkout {self.stamp}"}, headers=auth)
+        self.assertEqual(created.status_code, 201, created.text)
+
+        team = self.client.post("/api/groups", json={"name": f"Falcons {self.stamp}"}, headers=auth)
+        self.assertEqual(team.status_code, 201, team.text)
+        team_id = team.json()["id"]
+        me = self.client.get("/api/auth/me", headers=auth).json()
+        self.assertIn("coach", me["roles"])
+        self.assertIn("admin", me["roles"])
+
+        added = self.client.post(f"/api/groups/{team_id}/members/{me['id']}", headers=auth)
+        self.assertEqual(added.status_code, 200, added.text)
+        me = self.client.get("/api/auth/me", headers=auth).json()
+        self.assertIn("athlete", me["roles"])
+        self.assertEqual(me["team_id"], team_id)
+        self.assertEqual(me["team_name"], team.json()["name"])
+
+        other = self.client.post("/api/groups", json={"name": f"Second {self.stamp}"}, headers=auth)
+        self.assertEqual(other.status_code, 201, other.text)
+        refused = self.client.post(f"/api/groups/{other.json()['id']}/members/{me['id']}", headers=auth)
+        self.assertEqual(refused.status_code, 400, refused.text)
+
+        guest = self.client.post("/api/gym/athletes", json={
+            "name": "Guest Athlete",
+            "email": f"guest.{self.stamp}@example.com",
+            "team_id": team_id,
+        }, headers=auth)
+        self.assertEqual(guest.status_code, 201, guest.text)
+        guest_id = guest.json()["user"]["id"]
+        guest_second = self.client.post(f"/api/groups/{other.json()['id']}/members/{guest_id}", headers=auth)
+        self.assertEqual(guest_second.status_code, 400, guest_second.text)
+
+        removed_guest = self.client.delete(f"/api/groups/{team_id}/members/{guest_id}", headers=auth)
+        self.assertEqual(removed_guest.status_code, 200, removed_guest.text)
+        moved = self.client.post(f"/api/groups/{other.json()['id']}/members/{guest_id}", headers=auth)
+        self.assertEqual(moved.status_code, 200, moved.text)
+
+        outsider = self.client.post("/api/gym/coaches", json={
+            "name": "Other Coach",
+            "email": f"other.coach.{self.stamp}@example.com",
+        }, headers=auth)
+        self.assertEqual(outsider.status_code, 201, outsider.text)
+        outsider_token, _ = self._login(outsider.json()["user"]["email"], outsider.json()["temporary_password"])
+        blocked = self.client.delete(f"/api/groups/{other.json()['id']}/members/{guest_id}", headers=self._auth(outsider_token))
+        self.assertEqual(blocked.status_code, 403, blocked.text)
+
+        removed = self.client.delete(f"/api/groups/{team_id}/members/{me['id']}", headers=auth)
+        self.assertEqual(removed.status_code, 200, removed.text)
+        me = self.client.get("/api/auth/me", headers=auth).json()
+        self.assertIsNone(me["team_id"])
+        self.assertIn("athlete", me["roles"])
+
+        exercise = self._exercise()
+        workout = self.client.post("/api/workouts", json={
+            "title": f"Self day {self.stamp}",
+            "program_name": "wourkout",
+            "calendar_date": "2026-10-16",
+            "scheduled_date": "2026-10-16",
+            "day_of_week": "Friday",
+            "week_number": 5,
+            "exercises": [{
+                "exercise_id": exercise["id"],
+                "superset_group": "A",
+                "prescribed_sets": 2,
+                "target_reps": "5,3",
+                "target_weight": "100,110",
+                "rest_seconds": 90,
+                "notes": "Rests:90,60\nTempos:20X1,20X1",
+            }],
+        }, headers=auth)
+        self.assertEqual(workout.status_code, 201, workout.text)
+        assigned = self.client.post("/api/assignments", json={
+            "workout_id": workout.json()["id"],
+            "user_id": me["id"],
+            "scheduled_date": "2026-10-16",
+            "notes": "Saved from Build",
+        }, headers=auth)
+        self.assertEqual(assigned.status_code, 201, assigned.text)
+        self.assertEqual(assigned.json()["user_id"], me["id"])
+
+        viewed = self.client.post("/api/auth/view", json={"role": "athlete"}, headers=auth)
+        self.assertEqual(viewed.status_code, 200, viewed.text)
+        schedule = self.client.get("/api/my/schedule", headers=auth)
+        self.assertEqual(schedule.status_code, 200, schedule.text)
+        self.assertTrue(any(row["scheduled_date"] == "2026-10-16" and row["workout_id"] == workout.json()["id"] for row in schedule.json()))
+
+        session = self.client.get(f"/api/sessions/active/{workout.json()['id']}", params={"user_id": me["id"]}, headers=auth)
+        self.assertEqual(session.status_code, 200, session.text)
+        logs = session.json()["set_logs"]
+        self.assertEqual(len(logs), 2)
+        self.assertEqual(logs[0]["weight"], 100)
+        self.assertEqual(logs[0]["reps"], 5)
+        self.assertEqual(logs[0]["rest_seconds"], 90)
+        self.assertIn("tempo", logs[0]["details"])
+        we_id = workout.json()["exercises"][0]["id"]
+        logged = self.client.post(
+            f"/api/sessions/{session.json()['id']}/sets",
+            params={
+                "workout_exercise_id": we_id,
+                "set_number": 1,
+                "weight": 102.5,
+                "reps": 5,
+                "rest_seconds": 75,
+                "completed": True,
+                "details": '{"tempo":"21X1"}',
+            },
+            headers=auth,
+        )
+        self.assertEqual(logged.status_code, 200, logged.text)
+        body = logged.json()
+        self.assertEqual(body["weight"], 102.5)
+        self.assertEqual(body["reps"], 5)
+        self.assertEqual(body["rest_seconds"], 75)
+        self.assertTrue(body["completed"])
+        self.assertIn("21X1", body["details"])
+
 
 if __name__ == "__main__":
     unittest.main()

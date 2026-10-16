@@ -94,6 +94,13 @@ def ensure_schema_migrations():
         if "athlete_note" not in scols:
             statements.append("ALTER TABLE workout_sessions ADD COLUMN athlete_note TEXT DEFAULT ''")
 
+    if "set_logs" in tables:
+        lcols = {c["name"] for c in inspector.get_columns("set_logs")}
+        if "rest_seconds" not in lcols:
+            statements.append("ALTER TABLE set_logs ADD COLUMN rest_seconds INTEGER DEFAULT 0")
+        if "details" not in lcols:
+            statements.append("ALTER TABLE set_logs ADD COLUMN details TEXT DEFAULT ''")
+
     if "personal_records" in tables:
         cols = {c["name"] for c in inspector.get_columns("personal_records")}
         if "user_id" not in cols:
@@ -249,6 +256,8 @@ def _workout_visible(db: Session, viewer: Optional[crud.User], workout) -> bool:
         return crud.athlete_can_read_workout(db, viewer, workout.id)
     if workout.created_by_coach_id == viewer.id:
         return True
+    if access.is_athlete(viewer) and crud.athlete_can_read_workout(db, viewer, workout.id):
+        return True
     ids = access.athlete_ids_for(db, viewer) or [-1]
     return db.query(crud.WorkoutAssignment).filter(
         crud.WorkoutAssignment.workout_id == workout.id,
@@ -387,6 +396,8 @@ def log_set(
     weight: float = Query(0.0),
     reps: float = Query(0.0),
     completed: bool = Query(False),
+    rest_seconds: Optional[int] = Query(None),
+    details: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ):
     return crud.log_or_update_set(
@@ -396,7 +407,9 @@ def log_set(
         set_number=set_number,
         weight=weight,
         reps=reps,
-        completed=completed
+        completed=completed,
+        rest_seconds=rest_seconds,
+        details=details,
     )
 
 @app.post("/api/sessions/{session_id}/complete", response_model=WorkoutSessionResponse)
@@ -721,7 +734,18 @@ def add_group_member(
     return {"message": "Member added"}
 
 @app.delete("/api/groups/{group_id}/members/{user_id}")
-def remove_group_member(group_id: int, user_id: int, db: Session = Depends(get_db)):
+def remove_group_member(
+    group_id: int,
+    user_id: int,
+    db: Session = Depends(get_db),
+    viewer: Optional[crud.User] = Depends(get_current_user),
+):
+    if viewer is not None:
+        team = crud.get_group(db, group_id)
+        if access.is_admin(viewer) and team and team.gym_id == viewer.gym_id:
+            pass
+        else:
+            access.assert_leads_team(db, viewer, team)
     success = crud.remove_user_from_group(db, group_id, user_id)
     if not success:
         raise HTTPException(status_code=400, detail="Could not remove member from group")

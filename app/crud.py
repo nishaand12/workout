@@ -594,6 +594,51 @@ def delete_workout(db: Session, workout_id: int):
     return True
 
 # Session & Set Logging
+def _note_values(notes: str, label: str) -> List[str]:
+    prefix = label + ":"
+    for line in (notes or "").split("\n"):
+        if line.startswith(prefix):
+            return line[len(prefix):].split(",")
+    return []
+
+
+def _nth_float(parts, index: int, default: float) -> float:
+    if isinstance(parts, str):
+        parts = [piece.strip() for piece in parts.split(",")] if parts else []
+    piece = ""
+    if index < len(parts) and str(parts[index]).strip() != "":
+        piece = str(parts[index]).strip()
+    elif parts and str(parts[0]).strip() != "":
+        piece = str(parts[0]).strip()
+    else:
+        return default
+    digits = "".join(ch for ch in piece if ch.isdigit() or ch == ".")
+    if not digits:
+        return default
+    try:
+        return float(digits)
+    except ValueError:
+        return default
+
+
+def _set_rest_seconds(we, index: int) -> int:
+    rests = _note_values(we.notes or "", "Rests")
+    if not any(str(value).strip() for value in rests) and we.rest_seconds:
+        rests = [str(we.rest_seconds)]
+    return int(_nth_float(rests, index, 0))
+
+
+def _set_details(we, index: int) -> str:
+    extra = {}
+    for key, label in (("tempo", "Tempos"), ("velocity", "Velocities"), ("power", "Powers"), ("pct", "Pcts")):
+        values = _note_values(we.notes or "", label)
+        if not any(str(value).strip() for value in values):
+            continue
+        chosen = values[index] if index < len(values) else values[0]
+        extra[key] = str(chosen).strip()
+    return json.dumps(extra) if extra else ""
+
+
 def get_or_create_active_session(db: Session, workout_id: int, user_id: Optional[int] = None):
     # Find uncompleted session for this workout and user
     query = db.query(WorkoutSession).filter(
@@ -618,31 +663,18 @@ def get_or_create_active_session(db: Session, workout_id: int, user_id: Optional
         db.add(session)
         db.flush()
 
-        # Initialize default set logs from workout exercises
+        # Initialize default set logs from workout exercises, one value per set.
         for we in workout.exercises:
-            reps_val = 10.0
-            try:
-                first_reps = we.target_reps.split(",")[0].strip() if we.target_reps else "10"
-                digits = "".join([c for c in first_reps if c.isdigit() or c == '.'])
-                if digits:
-                    reps_val = float(digits)
-            except Exception:
-                reps_val = 10.0
-
-            wt_val = 0.0
-            try:
-                first_wt = we.target_weight.split(",")[0].strip() if we.target_weight else "0"
-                wt_val = float(first_wt)
-            except Exception:
-                wt_val = 0.0
-
-            for s_num in range(1, we.prescribed_sets + 1):
+            for s_num in range(1, (we.prescribed_sets or 1) + 1):
+                index = s_num - 1
                 set_log = SetLog(
                     session_id=session.id,
                     workout_exercise_id=we.id,
                     set_number=s_num,
-                    weight=wt_val,
-                    reps=reps_val,
+                    weight=_nth_float(we.target_weight or "", index, 0.0),
+                    reps=_nth_float(we.target_reps or "", index, 0.0),
+                    rest_seconds=_set_rest_seconds(we, index),
+                    details=_set_details(we, index),
                     completed=False
                 )
                 db.add(set_log)
@@ -651,7 +683,17 @@ def get_or_create_active_session(db: Session, workout_id: int, user_id: Optional
 
     return session
 
-def log_or_update_set(db: Session, session_id: int, workout_exercise_id: int, set_number: int, weight: float, reps: float, completed: bool):
+def log_or_update_set(
+    db: Session,
+    session_id: int,
+    workout_exercise_id: int,
+    set_number: int,
+    weight: float,
+    reps: float,
+    completed: bool,
+    rest_seconds: Optional[int] = None,
+    details: Optional[str] = None,
+):
     set_log = db.query(SetLog).filter(
         SetLog.session_id == session_id,
         SetLog.workout_exercise_id == workout_exercise_id,
@@ -662,6 +704,10 @@ def log_or_update_set(db: Session, session_id: int, workout_exercise_id: int, se
         set_log.weight = weight
         set_log.reps = reps
         set_log.completed = completed
+        if rest_seconds is not None:
+            set_log.rest_seconds = rest_seconds
+        if details is not None:
+            set_log.details = details
         set_log.logged_at = datetime.utcnow()
     else:
         set_log = SetLog(
@@ -670,6 +716,8 @@ def log_or_update_set(db: Session, session_id: int, workout_exercise_id: int, se
             set_number=set_number,
             weight=weight,
             reps=reps,
+            rest_seconds=rest_seconds or 0,
+            details=details or "",
             completed=completed,
             logged_at=datetime.utcnow()
         )
@@ -1899,7 +1947,17 @@ def gym_context(db: Session, user: User) -> dict:
         teams = db.query(Group).filter(Group.gym_id == user.gym_id).order_by(Group.name.asc()).all()
     elif access.is_coach(user):
         coaches = [user]
-        athletes = access.athletes_for(db, user)
+        by_id = {p.id: p for p in access.athletes_for(db, user)}
+        unassigned = db.query(User).filter(
+            User.gym_id == user.gym_id,
+            User.team_id.is_(None),
+            or_(User.is_athlete.is_(True), User.role.in_(("athlete", "student"))),
+        ).all()
+        for person in unassigned:
+            by_id[person.id] = person
+        if access.is_athlete(user):
+            by_id[user.id] = user
+        athletes = sorted(by_id.values(), key=lambda person: (person.name or "").lower())
         teams = access.leads_teams(db, user)
     else:
         raise HTTPException(status_code=403, detail="Athlete accounts do not have coach tools.")
