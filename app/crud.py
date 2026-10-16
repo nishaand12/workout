@@ -367,12 +367,7 @@ def get_exercise(db: Session, exercise_id: int):
     return db.query(Exercise).filter(Exercise.id == exercise_id).first()
 
 def create_exercise(db: Session, exercise_in: ExerciseCreate):
-    exercise = Exercise(
-        name=exercise_in.name,
-        category=exercise_in.category or "Strength",
-        default_notes=exercise_in.default_notes or "",
-        video_url=exercise_in.video_url or ""
-    )
+    exercise = Exercise(**exercise_in.model_dump())
     db.add(exercise)
     db.commit()
     db.refresh(exercise)

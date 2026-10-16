@@ -163,10 +163,27 @@ button { cursor: pointer; }
 
 .editor {
   position: fixed; z-index: 35; top: 76px; left: 50%; transform: translateX(-42%);
-  width: min(480px, 92vw);
+  width: min(540px, 94vw);
   max-height: calc(100vh - 96px); overflow: auto;
   background: #242424; border: 1px solid #3a3a3a; border-radius: 10px; box-shadow: var(--shadow); padding: 10px 12px 12px;
 }
+.sets-line { display: flex; align-items: center; gap: 8px; }
+.sets-row { flex: 1; margin: 4px 0; }
+.sets-label { min-width: 42px; }
+.prop-anchor, .superset-anchor, .menu-anchor { position: relative; }
+.prop-anchor { margin-left: auto; }
+.kbd { color: #9a9a9a; font-size: 11px; margin-left: 4px; }
+.prop-menu { right: 0; top: 30px; left: auto; width: 200px; padding: 6px; }
+.prop-menu-h { display: flex; justify-content: space-between; align-items: center; padding: 4px 8px 6px; color: #eee; font-size: 13px; }
+.prop-menu-h span { color: #999; font-size: 11px; }
+.about-prop { border-top: 1px solid #3a3a3a; margin-top: 4px; color: #cfcfcf; }
+.letter-pop { right: 8px; top: 36px; width: 72px; padding: 4px; }
+.options-pop { left: 0; top: 28px; width: 180px; }
+.superset-pop { left: 0; top: 28px; width: 220px; max-height: 220px; overflow: auto; }
+.superset-anchor { display: flex; align-items: center; gap: 6px; }
+.reps-info { width: 16px; font-size: 11px; color: #9ab; }
+.editor-actions { margin-top: 8px; }
+.modal.edit-modal { max-height: min(88vh, 760px); overflow: auto; }
 .editor-h { display: flex; align-items: center; gap: 8px; }
 .editor-h .name, .name-input { font-weight: 700; flex: 1; min-width: 0; background: transparent; border: 0; border-bottom: 1px solid #444; color: white; padding: 2px 4px; }
 .editor textarea { width: 100%; min-height: 72px; background: #1b1b1b; border: 1px solid #444; border-radius: 6px; padding: 6px; color: #eee; }

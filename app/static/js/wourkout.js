@@ -5,9 +5,17 @@ const LETTER_COLOR = {
   F: "#ef4444", G: "#14b8a6", H: "#ec4899", I: "#84cc16", J: "#6366f1"
 };
 const PROP_LABEL = {
-  load: "Load (kg)", rest: "Rest (s)", tempo: "Tempo", velocity: "Velocity",
-  power: "Peak Power", pct: "%1RM"
+  load: "Load", rest: "Rest", tempo: "Tempo", velocity: "Velocity",
+  power: "Peak Power", pct: "%PR"
 };
+const PROP_FIELDS = [
+  ["load", "loads"],
+  ["rest", "rests"],
+  ["tempo", "tempos"],
+  ["velocity", "velocities"],
+  ["power", "powers"],
+  ["pct", "pcts"]
+];
 const ATHLETES = [];
 const COACHES = [];
 const GROUPS = [];
@@ -85,18 +93,71 @@ const QUESTIONS = [
 const SPRINT_DETAIL = "Complete 1 round - Light Skip - 20 meters\nSide Shuffle - 20 meters\nLight Skip - 20 meters\nKaraokes - 20 meters\nBackwards Run - 20 meters\nAcceleration - 20-30 meters";
 const MOBILITY_DETAIL = "5 reps - Inchworm\n10 reps - Alt. Calf raises\nKnee Extension Isometric - 4x35s Dynamic Mobility (lower)";
 
+function exerciseRecord(name) {
+  const key = String(name || "").toLowerCase();
+  return state.serverExercises.find((e) => String(e.name || "").toLowerCase() === key) || null;
+}
+function libraryDefaultsFrom(record) {
+  if (!record) return null;
+  const sets = parseInt(record.default_sets, 10);
+  return {
+    sets: sets > 0 ? sets : 3,
+    reps: record.default_reps != null ? String(record.default_reps) : "10",
+    load: record.default_load || "",
+    rest: record.default_rest || "",
+    tempo: record.default_tempo || "",
+    velocity: record.default_velocity || "",
+    power: record.default_power || "",
+    pct: record.default_pct || "",
+    stations: record.default_stations || "",
+    note: record.default_notes || "",
+    videoUrl: record.video_url || ""
+  };
+}
+function withPropertyDefaults(partial, defaults) {
+  const sets = partial.sets || 1;
+  const props = [];
+  const extra = {};
+  if (defaults) {
+    PROP_FIELDS.forEach(([key, arr]) => {
+      const value = defaults[key];
+      if (value != null && String(value) !== "") {
+        props.push(key);
+        extra[arr] = Array(sets).fill(String(value));
+      }
+    });
+    partial.libraryDefaults = {
+      sets: defaults.sets, reps: defaults.reps, load: defaults.load, rest: defaults.rest,
+      tempo: defaults.tempo, velocity: defaults.velocity, power: defaults.power, pct: defaults.pct
+    };
+  }
+  partial.props = props;
+  return Object.assign(partial, extra);
+}
 function fromCatalog(entry) {
+  const defaults = libraryDefaultsFrom(exerciseRecord(entry.name));
   if (entry.type === "questionnaire") {
     return item({ name: entry.name, type: "questionnaire", letter: "A", sets: 1, reps: [1], questions: QUESTIONS.slice(), requireResponse: true, trackReps: false });
   }
   if (entry.type === "circuit") {
-    const detail = entry.name.includes("Sprint") ? SPRINT_DETAIL : entry.name.includes("Mobility") || entry.name.includes("Warm") ? MOBILITY_DETAIL : "Complete 1 round - 20 seconds on, 20 seconds off";
-    return item({ name: entry.name, type: "circuit", letter: "A", sets: 1, reps: [1], detail, completionOnly: true, trackReps: false });
+    const detail = defaults
+      ? (defaults.stations || "")
+      : (entry.name.includes("Sprint") ? SPRINT_DETAIL : entry.name.includes("Mobility") || entry.name.includes("Warm") ? MOBILITY_DETAIL : "Complete 1 round - 20 seconds on, 20 seconds off");
+    const sets = defaults ? Math.max(1, Math.min(10, parseInt(defaults.sets, 10) || 1)) : 1;
+    const rep = defaults ? (defaults.reps || "1") : "1";
+    return item(withPropertyDefaults({
+      name: entry.name, type: "circuit", letter: "A", sets, reps: Array(sets).fill(rep),
+      detail, note: defaults ? (defaults.note || "") : "", completionOnly: true, trackReps: false
+    }, defaults));
   }
   if (entry.type === "break") return item({ name: "Session Break", type: "break", letter: "", sets: 0, reps: [], trackReps: false });
   if (entry.type === "rest") return item({ name: "Rest Time", type: "rest", letter: "", sets: 1, reps: [60], note: "60s", trackReps: false });
   if (entry.type === "video") return item({ name: "Video", type: "video", letter: "", sets: 0, reps: [], trackReps: false });
-  return item({ name: entry.name, type: "lift", letter: "A", sets: 1, reps: [1] });
+  const sets = defaults ? Math.max(1, Math.min(10, parseInt(defaults.sets, 10) || 3)) : 3;
+  const rep = defaults ? (defaults.reps != null ? defaults.reps : "10") : "10";
+  return item(withPropertyDefaults({
+    name: entry.name, type: "lift", letter: "A", sets, reps: Array(sets).fill(rep)
+  }, defaults));
 }
 
 function blankDay(date, extra = {}) {
@@ -167,6 +228,7 @@ const state = {
   propMenu: false,
   letterMenu: false,
   optionsMenu: false,
+  supersetMenu: false,
   dayMenu: null,
   recurMenu: null,
   colorMenu: null,
@@ -345,6 +407,7 @@ function closeFloats() {
   state.propMenu = false;
   state.letterMenu = false;
   state.optionsMenu = false;
+  state.supersetMenu = false;
   state.dayMenu = null;
   state.recurMenu = null;
   state.colorMenu = null;
@@ -419,25 +482,83 @@ async function enterApp(data) {
   if (state.auth.user.needs_onboarding) return;
   if (state.role === "athlete") await loadMySchedule();
   else await loadGymContext();
+  if (state.role !== "athlete") loadExercises();
+}
+const NOTE_SKIP = { Rests: 1, Tempos: 1, Velocities: 1, Powers: 1, Pcts: 1, Props: 1, Flags: 1, Additional: 1 };
+function taggedValue(lines, label) {
+  const line = lines.find((row) => row.indexOf(label + ":") === 0) || "";
+  return line ? line.slice(label.length + 1) : "";
+}
+function splitTag(lines, label) {
+  const value = taggedValue(lines, label);
+  return value ? value.split(",") : [];
+}
+function parseNotes(notes, restSeconds) {
+  const lines = String(notes || "").split("\n");
+  const plainLines = lines.filter((line) => !NOTE_SKIP[line.split(":")[0]] && line.trim() !== "");
+  let rests = splitTag(lines, "Rests");
+  if (!rests.length && restSeconds) rests = [String(restSeconds)];
+  const additional = lines.filter((line) => line.indexOf("Additional:") === 0).map((line) => line.slice("Additional:".length)).join("\n");
+  return {
+    plainLines,
+    rests,
+    tempos: splitTag(lines, "Tempos"),
+    velocities: splitTag(lines, "Velocities"),
+    powers: splitTag(lines, "Powers"),
+    pcts: splitTag(lines, "Pcts"),
+    props: splitTag(lines, "Props").filter(Boolean),
+    flags: splitTag(lines, "Flags"),
+    additional
+  };
+}
+function inferProps(parsed, loads) {
+  const props = parsed.props.slice();
+  const add = (key, arr) => {
+    if (!props.includes(key) && (arr || []).some((x) => x !== "" && x != null)) props.push(key);
+  };
+  add("load", loads);
+  add("rest", parsed.rests);
+  add("tempo", parsed.tempos);
+  add("velocity", parsed.velocities);
+  add("power", parsed.powers);
+  add("pct", parsed.pcts);
+  return props;
+}
+function itemNotes(it) {
+  const sets = it.sets || 1;
+  const lines = [];
+  if (it.type === "circuit") {
+    if (it.detail) lines.push(it.detail);
+    String(it.note || "").split("\n").forEach((line) => { if (line) lines.push("Additional:" + line); });
+  } else if (it.note) {
+    lines.push(it.note);
+  }
+  if ((it.props || []).length) lines.push("Props:" + it.props.join(","));
+  const flags = [];
+  if (it.type === "circuit" || it.type === "questionnaire") {
+    if (it.trackReps) flags.push("trackReps");
+  } else if (it.trackReps === false) flags.push("noTrackReps");
+  if (it.trackVolume) flags.push("trackVolume");
+  if (it.type === "circuit" && it.completionOnly === false) flags.push("noCompletionOnly");
+  else if (it.completionOnly) flags.push("completionOnly");
+  if (flags.length) lines.push("Flags:" + flags.join(","));
+  const keys = { Rests: "rests", Tempos: "tempos", Velocities: "velocities", Powers: "powers", Pcts: "pcts" };
+  Object.keys(keys).forEach((label) => {
+    const tagged = taggedList(label, (it[keys[label]] || []).slice(0, sets));
+    if (tagged) lines.push(tagged);
+  });
+  return lines.filter(Boolean).join("\n");
 }
 function workoutToDayItems(workout) {
   if (!workout || !Array.isArray(workout.exercises)) return [];
   return workout.exercises.slice().sort((a, b) => (a.order_index || 0) - (b.order_index || 0)).map((we) => {
-    const notes = String(we.notes || "");
-    const lines = notes.split("\n");
-    const tagged = (label) => {
-      const line = lines.find((row) => row.indexOf(label + ":") === 0) || "";
-      return line ? line.slice(label.length + 1).split(",") : [];
-    };
-    const skip = { Rests: 1, Tempos: 1, Velocities: 1, Powers: 1, Pcts: 1 };
-    const plainLines = lines.filter((line) => !skip[line.split(":")[0]] && line.trim() !== "");
-    const rests = tagged("Rests");
-    if (!rests.length && we.rest_seconds) rests.push(String(we.rest_seconds));
+    const parsed = parseNotes(we.notes, we.rest_seconds);
     const sets = we.prescribed_sets || 1;
     const reps = String(we.target_reps || "1").split(",");
     const loads = String(we.target_weight || "").split(",");
     const cat = String((we.exercise && we.exercise.category) || "").toLowerCase();
-    const type = cat.includes("question") ? "questionnaire" : (cat.includes("circuit") || plainLines.length > 1 ? "circuit" : "lift");
+    const type = cat.includes("question") ? "questionnaire" : (cat.includes("circuit") || parsed.plainLines.length > 1 ? "circuit" : "lift");
+    const flags = parsed.flags;
     return item({
       id: "wx" + we.id,
       weId: we.id,
@@ -447,14 +568,18 @@ function workoutToDayItems(workout) {
       sets,
       reps,
       loads,
-      rests: rests.length ? rests : Array(sets).fill(""),
-      tempos: tagged("Tempos"),
-      velocities: tagged("Velocities"),
-      powers: tagged("Powers"),
-      pcts: tagged("Pcts"),
-      detail: type === "circuit" ? plainLines.join("\n") : "",
-      note: type === "circuit" ? "" : plainLines.join(" · "),
-      questions: type === "questionnaire" ? (plainLines.length ? plainLines : QUESTIONS.slice()) : []
+      rests: parsed.rests.length ? parsed.rests : Array(sets).fill(""),
+      tempos: parsed.tempos,
+      velocities: parsed.velocities,
+      powers: parsed.powers,
+      pcts: parsed.pcts,
+      props: inferProps(parsed, loads),
+      detail: type === "circuit" ? parsed.plainLines.join("\n") : "",
+      note: type === "circuit" ? parsed.additional : parsed.plainLines.join("\n"),
+      questions: type === "questionnaire" ? (parsed.plainLines.length ? parsed.plainLines : QUESTIONS.slice()) : [],
+      trackReps: (type === "circuit" || type === "questionnaire") ? flags.indexOf("trackReps") >= 0 : flags.indexOf("noTrackReps") < 0,
+      trackVolume: flags.indexOf("trackVolume") >= 0,
+      completionOnly: type === "circuit" ? flags.indexOf("noCompletionOnly") < 0 : flags.indexOf("completionOnly") >= 0
     });
   });
 }
@@ -743,6 +868,7 @@ function go(view, ev) {
   closeFloats();
   render();
   if (view === "build" && state.athleteId && state.athleteId !== "none") loadCalendarSchedule(state.athleteId);
+  if (view === "build" && !state.serverExercises.length) loadExercises();
   if (view === "maxes") loadGoals();
 }
 function goTool(view) {
@@ -774,6 +900,7 @@ function goTool(view) {
   closeFloats();
   render();
   if (view === "build" && state.athleteId && state.athleteId !== "none") loadCalendarSchedule(state.athleteId);
+  if (view === "build" && !state.serverExercises.length) loadExercises();
   if (view === "users" || view === "calendars") loadRoster();
   if (view === "exercises") loadExercises();
   if (view === "goals" || view === "maxes") loadGoals();
@@ -1020,8 +1147,19 @@ function searchPop(date) {
     </div>
   </div>`;
 }
+function catalogType(entry) {
+  if (!entry) return "lift";
+  if (entry.type === "break" || entry.type === "rest" || entry.type === "video") return entry.type;
+  const record = exerciseRecord(entry.name);
+  if (!record) return entry.type || "lift";
+  const bucket = exBucket(record.category);
+  if (bucket === "Circuits") return "circuit";
+  if (bucket === "Questionnaires") return "questionnaire";
+  return "lift";
+}
 function addFromCatalog(date, index) {
-  const entry = CATALOG[index] || { name: "Exercise", type: "lift" };
+  const entry = Object.assign({}, CATALOG[index] || { name: "Exercise", type: "lift" });
+  entry.type = catalogType(entry);
   addItem(date, fromCatalog(entry));
 }
 function createExercise(date) {
@@ -1056,98 +1194,69 @@ function openEditor(date, id, ev) {
   if (!it) return;
   state.focusDay = date;
   state.searchDay = null;
-  state.editor = null;
-  state.propMenu = false;
-  openEdit({
-    title: "Edit workout",
-    date,
-    id,
-    fields: workoutItemFields(it),
-    onSave: (values) => saveWorkoutItem(date, id, values)
-  });
-}
-function workoutItemFields(it) {
-  const fields = [{ key: "name", label: "Exercise name", value: it.name || "" }];
-  if (it.type === "break") return fields;
-  if (it.type === "video") {
-    fields.push({ key: "videoUrl", label: "Video URL", value: it.videoUrl || "" });
-    return fields;
-  }
-  if (it.type === "rest") {
-    fields.push({ key: "seconds", label: "Seconds", value: String((it.reps && it.reps[0]) || 60) });
-    return fields;
-  }
-  if (it.type === "questionnaire") {
-    fields.push({ key: "questions", label: "Questions", value: (it.questions || []).join("\n"), multiline: true });
-    return fields;
-  }
-  if (it.type === "circuit") {
-    fields.push({ key: "stations", label: "Stations", value: it.detail || "", multiline: true });
-    fields.push({ key: "sets", label: "Rounds", value: String(it.sets || 1) });
-    fields.push({ key: "note", label: "Additional info", value: it.note || "", multiline: true, maxlength: 255 });
-    return fields;
-  }
-  const n = Math.max(1, it.sets || 1);
-  fields.push({ key: "sets", label: "Sets", value: String(n) });
-  for (let i = 0; i < n; i++) {
-    const which = n > 1 ? ", set " + (i + 1) : "";
-    fields.push({ key: "reps-" + i, label: "Reps" + which, value: String((it.reps && it.reps[i]) ?? "") });
-    fields.push({ key: "load-" + i, label: "Load (kg)" + which, value: String((it.loads && it.loads[i]) ?? "") });
-  }
-  fields.push({ key: "note", label: "Additional info", value: it.note || "", multiline: true, maxlength: 255 });
-  return fields;
-}
-function saveWorkoutItem(date, id, values) {
-  const it = findItem(date, id);
-  if (!it) return;
-  const name = (values.name || "").trim();
-  if (!name) { toast("Name the exercise"); return; }
-  snapshot();
-  it.name = name;
-  if (it.type === "video") {
-    it.videoUrl = values.videoUrl || "";
-  } else if (it.type === "rest") {
-    const seconds = String(values.seconds || "60");
-    it.reps = [seconds];
-    it.note = seconds + "s";
-  } else if (it.type === "questionnaire") {
-    it.questions = String(values.questions || "").split("\n").map((line) => line.trim()).filter(Boolean);
-  } else if (it.type === "circuit") {
-    it.detail = values.stations || "";
-    resizeSets(it, parseInt(values.sets, 10) || 1);
-    it.note = String(values.note || "").slice(0, 255);
-  } else if (it.type !== "break") {
-    const sets = parseInt(values.sets, 10) || it.sets || 1;
-    resizeSets(it, sets);
-    for (let i = 0; i < it.sets; i++) {
-      if (values["reps-" + i] != null) it.reps[i] = values["reps-" + i];
-      if (values["load-" + i] != null) it.loads[i] = values["load-" + i];
-    }
-    it.note = String(values.note || "").slice(0, 255);
-  }
-  refreshFutureCopies(date);
   state.modal = null;
-  toast("Workout saved");
+  state.propMenu = false;
+  state.letterMenu = false;
+  state.optionsMenu = false;
+  state.supersetMenu = false;
+  state.editor = { day: date, id };
+  render();
+}
+function toggleEditorMenu(which, ev) {
+  if (ev) ev.stopPropagation();
+  const next = !state[which];
+  state.propMenu = false;
+  state.letterMenu = false;
+  state.optionsMenu = false;
+  state.supersetMenu = false;
+  state[which] = next;
+  render();
 }
 function editorHead(date, it, day) {
-  const index = day.items.findIndex((x) => x.id === it.id);
   return `<div class="editor-h">
       <span class="letter" style="background:${LETTER_COLOR[it.letter] || "#666"}">${esc(it.letter || "•")}</span>
-      <input class="name-input" data-focus="exname-${it.id}" value="${esc(it.name)}" oninput="setField('${date}','${it.id}','name', this.value)" onchange="render()">
-      <button class="iconbtn" title="Move up" onclick="moveItem('${date}','${it.id}',-1)">↑</button>
-      <button class="iconbtn" title="Move down" onclick="moveItem('${date}','${it.id}',1)">↓</button>
-      <button class="pill" onclick="state.letterMenu=!state.letterMenu;render()">${esc(letterCode(day, it))} ▾</button>
-      <button class="iconbtn" onclick="state.editor=null;render()">✕</button>
+      <input class="name-input" aria-label="Exercise name" data-focus="exname-${it.id}" value="${esc(it.name)}" oninput="setField('${date}','${it.id}','name', this.value)" onchange="render()">
+      <button type="button" class="pill" onclick="toggleEditorMenu('letterMenu', event)">${esc(letterCode(day, it))} ▾</button>
+      <button type="button" class="iconbtn" title="Delete" onclick="askDelete('${date}','${it.id}')">🗑</button>
+      <button type="button" class="iconbtn" title="Close" onclick="state.editor=null;render()">✕</button>
     </div>
-    ${state.letterMenu ? `<div class="pop" style="right:8px;top:36px;width:70px;padding:4px">${LETTERS.map((L) => `<button class="opt" onclick="setLetter('${date}','${it.id}','${L}')">${L}</button>`).join("")}<button class="opt" onclick="setLetter('${date}','${it.id}','')">–</button></div>` : ""}
-    <div class="hint">${index + 1} of ${day.items.length} · same letter is one superset or circuit</div>
-    ${it.note ? `<div class="note-line">${esc(it.note)}</div>` : ""}
-    <button class="linkish" onclick="openInfo('${date}','${it.id}')">+ Add Additional Info (Shift + I)</button>`;
+    ${state.letterMenu ? `<div class="pop letter-pop" onclick="event.stopPropagation()">${LETTERS.map((L) => `<button type="button" class="opt" onclick="setLetter('${date}','${it.id}','${L}')">${L}</button>`).join("")}<button type="button" class="opt" onclick="setLetter('${date}','${it.id}','')">–</button></div>` : ""}
+    <button type="button" class="linkish" onclick="openInfo('${date}','${it.id}')">+ Add Additional Info (Shift + I)</button>
+    ${it.note ? `<div class="note-line">${esc(it.note)}</div>` : ""}`;
 }
 function workTable(date, it) {
-  const keys = ["reps", "load", "rest"].concat((it.props || []).filter((k) => k !== "load" && k !== "rest"));
+  const keys = [];
+  if (it.trackReps !== false || it.type === "circuit") keys.push("reps");
+  (it.props || []).forEach((key) => { if (PROP_LABEL[key] && keys.indexOf(key) < 0) keys.push(key); });
   const propRows = keys.map((p) => propRow(date, it, p)).join("");
   return `<table class="prop-table"><tr><th></th>${Array.from({ length: it.sets || 1 }, (_, i) => `<th>Set ${i + 1}</th>`).join("")}</tr>${propRows}</table>`;
+}
+function addPropButton(date, it) {
+  return `<div class="prop-anchor">
+    <button type="button" class="pill" onclick="toggleEditorMenu('propMenu', event)">+ Add Property <span class="kbd">Ctrl+P</span></button>
+    ${state.propMenu ? propMenu(date, it.id) : ""}
+  </div>`;
+}
+function editorActions(date, it) {
+  const volume = it.trackVolume ? `<div class="hint">Volume ${setVolume(it)}</div>` : "";
+  return `<div class="row editor-actions">
+      <div class="superset-anchor">
+        <span>Superset</span>
+        <button type="button" class="pill" onclick="toggleEditorMenu('supersetMenu', event)">${esc(supersetLabel(date, it))} ▾</button>
+        ${state.supersetMenu ? supersetPop(date, it) : ""}
+      </div>
+      <div class="menu-anchor">
+        <button type="button" class="pill" onclick="toggleEditorMenu('optionsMenu', event)">Options ▾</button>
+        ${optionsPop(date, it)}
+      </div>
+      <button type="button" class="pill ${it.trackReps ? "on" : ""}" onclick="toggleFlag('${date}','${it.id}','trackReps')">${it.trackReps ? "✓ " : ""}Track Reps ▾</button>
+      <button type="button" class="pill ${it.trackVolume ? "on" : ""}" onclick="toggleFlag('${date}','${it.id}','trackVolume')">${it.trackVolume ? "✓ " : ""}Track Volume ▾</button>
+    </div>${volume}`;
+}
+function setVolume(it) {
+  let total = 0;
+  (it.reps || []).forEach((rep, i) => { total += (+rep || 0) * (+((it.loads || [])[i]) || 0); });
+  return total;
 }
 function editorPop(date) {
   const it = findItem(date, state.editor.id);
@@ -1155,71 +1264,92 @@ function editorPop(date) {
   const day = ensureDay(date);
   const head = editorHead(date, it, day);
   if (it.type === "questionnaire") {
-    return `<div class="editor" onclick="event.stopPropagation()">${head}
+    return `<div class="editor build-editor" onclick="event.stopPropagation()">${head}
       ${it.questions.map((q, i) => `<div class="q">${i + 1}. ${esc(q)}</div>`).join("")}
       <label class="chk" style="color:#ddd"><input type="checkbox" ${it.requireResponse ? "checked" : ""} onchange="itRequire('${date}','${it.id}', this.checked)"> Require Response</label>
       <div class="hint">All questionnaire items must be fully completed before showing workout.</div>
     </div>`;
   }
   if (it.type === "circuit") {
-    return `<div class="editor" onclick="event.stopPropagation()">${head}
+    return `<div class="editor build-editor" onclick="event.stopPropagation()">${head}
       <div class="hint">Stations, one per line</div>
       <textarea data-focus="detail-${it.id}" oninput="setField('${date}','${it.id}','detail', this.value)" onchange="render()">${esc(it.detail || "")}</textarea>
-      ${setRow(date, it, "Rounds")}
+      <div class="sets-line">${setRow(date, it, "Rounds")}${addPropButton(date, it)}</div>
       ${workTable(date, it)}
-      <div class="row">
-        <button class="pill" onclick="cycleSuperset('${date}','${it.id}')">Group with letter</button>
-        <button class="pill" onclick="state.optionsMenu=!state.optionsMenu;render()">Options ▾</button>
-        <button class="pill ${it.completionOnly ? "on" : ""}" onclick="toggleFlag('${date}','${it.id}','completionOnly')">Completion Only</button>
-      </div>
-      ${optionsPop(date, it)}
+      ${editorActions(date, it)}
     </div>`;
   }
   if (it.type === "break" || it.type === "video" || it.type === "rest") {
-    return `<div class="editor" onclick="event.stopPropagation()">${head}
+    return `<div class="editor build-editor" onclick="event.stopPropagation()">${head}
       ${it.type === "video" ? `<input data-focus="vid-${it.id}" placeholder="Video URL" value="${esc(it.videoUrl)}" oninput="setField('${date}','${it.id}','videoUrl', this.value)" onchange="render()">` : ""}
       ${it.type === "rest" ? `<div class="row">Seconds <input style="width:80px" data-focus="rest-${it.id}" value="${esc(it.reps[0] || 60)}" oninput="setRestSeconds('${date}','${it.id}', this.value)" onchange="render()"></div>` : ""}
     </div>`;
   }
-  return `<div class="editor" onclick="event.stopPropagation()">${head}
-    ${setRow(date, it, "Sets")}
-    <button class="pill" onclick="state.propMenu=!state.propMenu;event.stopPropagation();render()">+ Add Property Ctrl+P</button>
-    ${state.propMenu ? propMenu(date, it.id) : ""}
+  return `<div class="editor build-editor" onclick="event.stopPropagation()">${head}
+    <div class="sets-line">${setRow(date, it, "Sets")}${addPropButton(date, it)}</div>
     ${workTable(date, it)}
-    <div class="row">
-      <button class="pill" onclick="cycleSuperset('${date}','${it.id}')">Group with letter</button>
-      <button class="pill" onclick="state.optionsMenu=!state.optionsMenu;render()">Options ▾</button>
-      <button class="pill ${it.trackReps ? "on" : ""}" onclick="toggleFlag('${date}','${it.id}','trackReps')">Track Reps ▾</button>
-      <button class="pill ${it.trackVolume ? "on" : ""}" onclick="toggleFlag('${date}','${it.id}','trackVolume')">Track Volume ▾</button>
-    </div>
-    ${optionsPop(date, it)}
+    ${editorActions(date, it)}
   </div>`;
 }
 function setRow(date, it, label) {
-  return `<div class="row"><span>${label}</span><div class="stepper">
-    <button onclick="changeSets('${date}','${it.id}',-1)">−</button><b>${it.sets}</b>
-    <button onclick="changeSets('${date}','${it.id}',1)">+</button>
-  </div><span class="hint"># of ${label} 1–10</span>
-  <button class="iconbtn" onclick="askDelete('${date}','${it.id}')">🗑</button></div>`;
+  return `<div class="row sets-row"><span class="sets-label">${label}</span><div class="stepper">
+    <button type="button" aria-label="Fewer ${label}" onclick="changeSets('${date}','${it.id}',-1)">−</button><b>${it.sets}</b>
+    <button type="button" aria-label="More ${label}" onclick="changeSets('${date}','${it.id}',1)">+</button>
+  </div><span class="hint"># of ${label}: 1–10</span>
+  <button type="button" class="iconbtn" title="Delete" onclick="askDelete('${date}','${it.id}')">🗑</button></div>`;
 }
 function propMenu(date, id) {
-  const opts = [["tempo", "Tempo"], ["velocity", "Velocity"], ["power", "Peak Power"], ["pct", "%1RM"]];
-  return `<div class="pop" style="left:120px;top:78px;width:180px">${opts.map(([k, l]) => `<button class="opt" onclick="addProp('${date}','${id}','${k}')">${l}</button>`).join("")}</div>`;
+  const it = findItem(date, id);
+  const opts = [["load", "Load"], ["rest", "Rest"], ["tempo", "Tempo"], ["velocity", "Velocity"], ["power", "Peak Power"], ["pct", "%PR"]];
+  return `<div class="pop prop-menu" onclick="event.stopPropagation()">
+    <div class="prop-menu-h"><b>Add Property</b><span>Ctrl+P</span></div>
+    ${opts.map(([k, l]) => `<button type="button" class="opt ${(it.props || []).includes(k) ? "active" : ""}" onclick="addProp('${date}','${id}','${k}')">${(it.props || []).includes(k) ? "✓ " : ""}${l}</button>`).join("")}
+    <button type="button" class="opt about-prop" onclick="aboutProperties(event)">ⓘ About Properties</button>
+  </div>`;
+}
+function aboutProperties(ev) {
+  if (ev) ev.stopPropagation();
+  state.propMenu = false;
+  toast("Load, Rest, Tempo, Velocity, Peak Power, and %PR are entered on each set.");
+  render();
+}
+function propArray(it, key) {
+  const map = { reps: "reps", load: "loads", rest: "rests", tempo: "tempos", velocity: "velocities", power: "powers", pct: "pcts" };
+  const sets = it.sets || 1;
+  const arr = (it[map[key]] || []).slice(0, sets);
+  while (arr.length < sets) arr.push("");
+  return arr;
 }
 function propRow(date, it, key) {
-  const label = key === "reps" ? "Reps" : PROP_LABEL[key];
-  const arr = key === "reps" ? it.reps : it[key === "load" ? "loads" : key === "rest" ? "rests" : key === "tempo" ? "tempos" : key === "velocity" ? "velocities" : key === "power" ? "powers" : "pcts"];
-  if (!arr) return "";
   if (key === "reps" && it.trackReps === false && it.type !== "circuit") return "";
-  const cells = arr.map((v, i) => `<td><input data-focus="${key}-${it.id}-${i}" value="${esc(v)}" oninput="setCell('${date}','${it.id}','${key}',${i}, this.value)" onchange="render()"></td>`).join("");
-  return `<tr><th>${label}</th>${cells}</tr>`;
+  const label = key === "reps" ? "Reps" : PROP_LABEL[key];
+  const info = key === "reps" ? `<button type="button" class="iconbtn reps-info" title="Reps for each set" onclick="event.stopPropagation();toast('Reps prescribed for each set')">ⓘ</button>` : "";
+  const cells = propArray(it, key).map((v, i) => `<td><input aria-label="${label} set ${i + 1}" data-focus="${key}-${it.id}-${i}" value="${esc(v)}" oninput="setCell('${date}','${it.id}','${key}',${i}, this.value)" onchange="render()"></td>`).join("");
+  return `<tr><th>${label}${info}</th>${cells}</tr>`;
 }
 function optionsPop(date, it) {
   if (!state.optionsMenu) return "";
-  return `<div class="pop" style="left:8px;bottom:8px;width:200px">
-    <button class="opt" onclick="toggleFlag('${date}','${it.id}','completionOnly')">Completion only</button>
-    <button class="opt" onclick="duplicateItem('${date}','${it.id}')">Duplicate</button>
-    <button class="opt danger" onclick="askDelete('${date}','${it.id}')">Remove</button>
+  return `<div class="pop options-pop" onclick="event.stopPropagation()">
+    <button type="button" class="opt" onclick="toggleFlag('${date}','${it.id}','completionOnly')">${it.completionOnly ? "✓ " : ""}Completion only</button>
+    <button type="button" class="opt" onclick="duplicateItem('${date}','${it.id}')">Duplicate</button>
+    <button type="button" class="opt danger" onclick="askDelete('${date}','${it.id}')">Remove</button>
+  </div>`;
+}
+function supersetLabel(date, it) {
+  const day = ensureDay(date);
+  const partners = day.items.filter((x) => x.id !== it.id && x.letter && x.letter === it.letter && x.type !== "break" && x.type !== "rest" && x.type !== "video");
+  if (!partners.length) return "None";
+  const name = partners[0].name || "Exercise";
+  return name.length > 16 ? name.slice(0, 16) + "…" : name;
+}
+function supersetPop(date, it) {
+  const day = ensureDay(date);
+  const others = day.items.filter((x) => x.id !== it.id && x.type !== "break" && x.type !== "rest" && x.type !== "video");
+  const none = supersetLabel(date, it) === "None";
+  const rows = others.map((x) => `<button type="button" class="opt ${x.letter && x.letter === it.letter && !none ? "active" : ""}" onclick="joinSuperset('${date}','${it.id}','${x.id}')">${esc(letterCode(day, x))} ${esc(x.name)}</button>`).join("");
+  return `<div class="pop superset-pop" onclick="event.stopPropagation()">
+    <button type="button" class="opt ${none ? "active" : ""}" onclick="clearSuperset('${date}','${it.id}')">None</button>
+    ${rows || `<div class="hint">Add another exercise to superset</div>`}
   </div>`;
 }
 function setLetter(date, id, letter) {
@@ -1238,9 +1368,23 @@ function changeSets(date, id, d) {
 }
 function addProp(date, id, key) {
   const it = findItem(date, id);
-  if (!it.props.includes(key)) it.props.push(key);
-  if (key === "rest") it.rests = it.rests.map((x) => x || "90");
+  if (!it) return;
+  if (!it.props) it.props = [];
+  const map = { load: "loads", rest: "rests", tempo: "tempos", velocity: "velocities", power: "powers", pct: "pcts" };
+  if (it.props.includes(key)) {
+    it.props = it.props.filter((k) => k !== key);
+  } else {
+    it.props.push(key);
+    const arrKey = map[key];
+    const sets = it.sets || 1;
+    const fill = (it.libraryDefaults && it.libraryDefaults[key]) || "";
+    if (!it[arrKey]) it[arrKey] = [];
+    while (it[arrKey].length < sets) it[arrKey].push("");
+    it[arrKey] = it[arrKey].slice(0, sets);
+    if (fill && it[arrKey].every((x) => x === "" || x == null)) it[arrKey] = Array(sets).fill(String(fill));
+  }
   state.propMenu = false;
+  refreshFutureCopies(date);
   render();
 }
 function setCell(date, id, key, i, value) {
@@ -1282,16 +1426,38 @@ function toggleFlag(date, id, key) {
   render();
 }
 function itRequire(date, id, on) { findItem(date, id).requireResponse = on; }
+function clearSuperset(date, id) {
+  const day = ensureDay(date);
+  const it = findItem(date, id);
+  if (!it) return;
+  snapshot();
+  const used = day.items.filter((x) => x.id !== id).map((x) => x.letter);
+  if (used.includes(it.letter)) it.letter = LETTERS.find((L) => !used.includes(L)) || it.letter;
+  it.supersetWith = "";
+  state.supersetMenu = false;
+  refreshFutureCopies(date);
+  render();
+}
+function joinSuperset(date, id, otherId) {
+  const it = findItem(date, id);
+  const other = findItem(date, otherId);
+  if (!it || !other) { toast("Add another exercise to superset"); return; }
+  snapshot();
+  it.letter = other.letter || it.letter || "A";
+  if (!other.letter) other.letter = it.letter;
+  it.supersetWith = other.id;
+  state.supersetMenu = false;
+  refreshFutureCopies(date);
+  toast("Added to superset " + it.letter);
+  render();
+}
 function cycleSuperset(date, id) {
   const day = ensureDay(date);
   const it = findItem(date, id);
-  const others = day.items.filter((x) => x.id !== id && x.letter);
+  const others = day.items.filter((x) => x.id !== id && x.letter && x.type !== "break" && x.type !== "rest" && x.type !== "video");
   if (!others.length) { toast("Add another exercise to superset"); return; }
   const next = others.find((x) => x.letter !== it.letter) || others[0];
-  snapshot();
-  it.letter = next.letter;
-  it.supersetWith = next.id;
-  render();
+  joinSuperset(date, id, next.id);
 }
 function duplicateItem(date, id) {
   snapshot();
@@ -1568,12 +1734,12 @@ async function ensureUser(person, role) {
   state.serverUsers[person.id] = found;
   return found;
 }
-async function ensureExercise(name) {
+async function ensureExercise(name, category) {
   const list = await api("GET", "/api/exercises?search=" + encodeURIComponent(name));
   const exact = list.find((e) => e.name.toLowerCase() === name.toLowerCase());
   if (exact) return exact;
   try {
-    return await api("POST", "/api/exercises", { name, category: "Strength" });
+    return await api("POST", "/api/exercises", { name, category: category || "Strength" });
   } catch (err) {
     const again = await api("GET", "/api/exercises?search=" + encodeURIComponent(name));
     const hit = again.find((e) => e.name.toLowerCase() === name.toLowerCase());
@@ -1611,7 +1777,8 @@ async function publishDay(date, opts = {}) {
     const exercises = [];
     for (const it of day.items) {
       if (!it.name || it.type === "break") continue;
-      const ex = await ensureExercise(it.name);
+      const category = it.type === "circuit" ? "Circuit" : it.type === "questionnaire" ? "Questionnaire" : "Strength";
+      const ex = await ensureExercise(it.name, category);
       const sets = it.sets || 1;
       const reps = (it.reps || []).slice(0, sets);
       const loads = (it.loads || []).slice(0, sets);
@@ -1625,7 +1792,7 @@ async function publishDay(date, opts = {}) {
         target_reps: reps.join(",").slice(0, 50) || "1",
         target_weight: loads.join(",").slice(0, 50),
         rest_seconds: parseInt(rests.find((r) => r !== "" && r != null) || "0", 10) || 0,
-        notes: [it.note, it.detail, taggedList("Rests", rests), taggedList("Tempos", it.tempos), taggedList("Velocities", it.velocities), taggedList("Powers", it.powers), taggedList("Pcts", it.pcts)].filter(Boolean).join("\n")
+        notes: itemNotes(it)
       });
     }
     const payload = {
@@ -1809,33 +1976,7 @@ function savedDay(date) {
     title: workout.title,
     weekLabel: weekName(date),
     workoutId: workout.id,
-    items: (workout.exercises || []).slice().sort((a, b) => (a.order_index || 0) - (b.order_index || 0)).map((we) => {
-      const notes = we.notes || "";
-      const restLine = notes.split("\n").find((line) => line.indexOf("Rests:") === 0) || "";
-      const rests = restLine ? restLine.slice(6).split(",") : [we.rest_seconds ? String(we.rest_seconds) : ""];
-      const detail = notes.split("\n").filter((line) => line.indexOf("Rests:") !== 0).join("\n");
-      const tagged = (label) => {
-        const line = notes.split("\n").find((row) => row.indexOf(label + ":") === 0) || "";
-        return line ? line.slice(label.length + 1).split(",") : [];
-      };
-      return {
-        id: "wx" + we.id,
-        weId: we.id,
-        name: (we.exercise && we.exercise.name) || "Exercise",
-        letter: we.superset_group || "",
-        type: detail.indexOf("\n") >= 0 ? "circuit" : "lift",
-        sets: we.prescribed_sets || 1,
-        reps: String(we.target_reps || "1").split(","),
-        loads: String(we.target_weight || "").split(","),
-        rests,
-        tempos: tagged("Tempos"),
-        velocities: tagged("Velocities"),
-        powers: tagged("Powers"),
-        pcts: tagged("Pcts"),
-        detail,
-        note: ""
-      };
-    })
+    items: workoutToDayItems(workout)
   };
 }
 function athleteDayCol(date) {
@@ -3045,21 +3186,55 @@ function categoryChoice(category) {
   if (bucket === "Questionnaires") return "Questionnaire";
   return "Strength";
 }
+function exerciseFields(row) {
+  const bucket = exBucket(row.category);
+  const fields = [
+    { key: "name", label: "Name", value: row.name || "" },
+    { key: "category", label: "Category", value: row.category || "Strength", options: ["Strength", "Circuit", "Questionnaire"] },
+    { key: "video_url", label: "YouTube link", value: row.video_url || "" }
+  ];
+  if (bucket === "Circuits") {
+    fields.push(
+      { key: "default_stations", label: "Stations", value: row.default_stations || "", multiline: true },
+      { key: "default_sets", label: "Rounds", value: String(row.default_sets || 1), type: "number" },
+      { key: "default_notes", label: "Additional info", value: row.default_notes || "", multiline: true, maxlength: 255 }
+    );
+    return fields;
+  }
+  if (bucket === "Questionnaires") return fields;
+  fields.push(
+    { key: "default_sets", label: "Default sets", value: String(row.default_sets || 3), type: "number" },
+    { key: "default_reps", label: "Default reps", value: row.default_reps != null ? String(row.default_reps) : "10" },
+    { key: "default_load", label: "Default load", value: row.default_load || "" },
+    { key: "default_rest", label: "Default rest", value: row.default_rest || "" },
+    { key: "default_tempo", label: "Default tempo", value: row.default_tempo || "" },
+    { key: "default_velocity", label: "Default velocity", value: row.default_velocity || "" },
+    { key: "default_power", label: "Default peak power", value: row.default_power || "" },
+    { key: "default_pct", label: "Default %PR", value: row.default_pct || "" }
+  );
+  return fields;
+}
 function editExercise(id) {
   const row = state.serverExercises.find((e) => e.id === id);
   if (!row) return;
+  const circuit = exBucket(row.category) === "Circuits";
   openEdit({
-    title: "Edit exercise",
-    fields: [
-      { key: "name", label: "Name", value: row.name || "" },
-      { key: "category", label: "Category", value: categoryChoice(row.category), options: ["Strength", "Circuit", "Questionnaire"] }
-    ],
+    title: circuit ? "Edit circuit" : "Edit exercise",
+    fields: exerciseFields(row),
     onSave: async (values) => {
       const name = (values.name || "").trim();
       if (!name) { toast("Name the exercise"); return; }
+      const previous = row.name;
       row.name = name;
       row.category = values.category || "Strength";
-      const ok = await saveExerciseName(id);
+      row.video_url = values.video_url || "";
+      if (values.default_sets != null && values.default_sets !== "") {
+        row.default_sets = Math.max(1, Math.min(10, parseInt(values.default_sets, 10) || 1));
+      }
+      ["default_reps", "default_load", "default_rest", "default_tempo", "default_velocity", "default_power", "default_pct", "default_stations", "default_notes"].forEach((key) => {
+        if (values[key] != null) row[key] = key === "default_notes" ? String(values[key]).slice(0, 255) : values[key];
+      });
+      const ok = await saveExerciseName(id, previous);
       if (!ok) return;
       state.modal = null;
       render();
@@ -3079,12 +3254,12 @@ function liftsView() {
   return `<section class="stage" style="background:#eee">
     <div class="light-page">
       <div class="feed-top"><h1 style="display:flex;gap:8px;align-items:center">Master Database
-        <select class="plain" onchange="state.managing=this.value;render()">${["Lifts", "Circuits", "Questionnaires"].map((t) => `<option ${state.managing === t ? "selected" : ""}>${t}</option>`).join("")}</select>
+        <select class="plain" aria-label="Exercise list" onchange="state.managing=this.value;state.toolForm.exCat='';render()">${["Lifts", "Circuits", "Questionnaires"].map((t) => `<option ${state.managing === t ? "selected" : ""}>${t}</option>`).join("")}</select>
       </h1></div>
       <form class="toolbar" onsubmit="addExerciseRecord(); return false;">
         <input class="plain" placeholder="Exercise name" data-focus="ex-name" value="${esc(state.toolForm.exName || "")}" oninput="state.toolForm.exName=this.value">
-        <select class="plain" onchange="state.toolForm.exCat=this.value">
-          ${["Strength", "Circuit", "Questionnaire"].map((c) => `<option ${state.toolForm.exCat === c ? "selected" : ""}>${c}</option>`).join("")}
+        <select class="plain" aria-label="Category" onchange="state.toolForm.exCat=this.value">
+          ${["Strength", "Circuit", "Questionnaire"].map((c) => `<option ${managingCategory() === c ? "selected" : ""}>${c}</option>`).join("")}
         </select>
         <button class="req" type="submit">Add exercise</button>
       </form>
@@ -3104,32 +3279,50 @@ function rememberExercise(id, key, value) {
   const row = state.serverExercises.find((e) => e.id === id);
   if (row) row[key] = value;
 }
+function managingCategory() {
+  if (state.toolForm.exCat) return state.toolForm.exCat;
+  if (state.managing === "Circuits") return "Circuit";
+  if (state.managing === "Questionnaires") return "Questionnaire";
+  return "Strength";
+}
+function syncCatalogExercise(e, previousName) {
+  const bucket = exBucket(e.category);
+  const type = bucket === "Circuits" ? "circuit" : bucket === "Questionnaires" ? "questionnaire" : "lift";
+  const previous = String(previousName || e.name || "").toLowerCase();
+  const found = CATALOG.find((c) => c.name.toLowerCase() === previous)
+    || CATALOG.find((c) => c.name.toLowerCase() === String(e.name || "").toLowerCase());
+  if (found) {
+    if (found.type === "lift" || found.type === "circuit" || found.type === "questionnaire") found.type = type;
+    found.name = e.name;
+  } else {
+    CATALOG.push({ name: e.name, type });
+  }
+}
 async function loadExercises() {
   try {
     const list = await api("GET", "/api/exercises");
     state.serverExercises = list;
-    list.forEach((e) => {
-      if (!CATALOG.some((c) => c.name.toLowerCase() === e.name.toLowerCase())) {
-        const bucket = exBucket(e.category);
-        CATALOG.push({ name: e.name, type: bucket === "Circuits" ? "circuit" : bucket === "Questionnaires" ? "questionnaire" : "lift" });
-      }
-    });
+    list.forEach((e) => syncCatalogExercise(e));
     render();
   } catch (err) { console.error(err); }
 }
 async function addExerciseRecord() {
   const name = (state.toolForm.exName || "").trim();
-  const category = state.toolForm.exCat || "Strength";
+  const category = managingCategory();
   if (!name) { toast("Name the exercise"); return; }
+  const circuit = exBucket(category) === "Circuits";
   try {
-    const created = await api("POST", "/api/exercises", { name, category });
+    const created = await api("POST", "/api/exercises", {
+      name,
+      category,
+      default_sets: circuit ? 1 : 3,
+      default_reps: circuit ? "1" : "10"
+    });
     state.serverExercises.push(created);
-    const bucket = exBucket(category);
-    if (!CATALOG.some((c) => c.name.toLowerCase() === name.toLowerCase())) {
-      CATALOG.push({ name, type: bucket === "Circuits" ? "circuit" : bucket === "Questionnaires" ? "questionnaire" : "lift" });
-    }
-    state.managing = bucket;
+    syncCatalogExercise(created);
+    state.managing = exBucket(category);
     state.toolForm.exName = "";
+    state.toolForm.exCat = "";
     toast("Exercise added");
     render();
   } catch (err) {
@@ -3137,13 +3330,28 @@ async function addExerciseRecord() {
     console.error(err);
   }
 }
-async function saveExerciseName(id) {
+async function saveExerciseName(id, previousName) {
   const row = state.serverExercises.find((e) => e.id === id);
   if (!row || !String(row.name || "").trim()) return false;
+  const payload = {
+    name: row.name.trim(),
+    category: row.category || "Strength",
+    video_url: row.video_url || "",
+    default_notes: row.default_notes || "",
+    default_sets: Math.max(1, Math.min(10, parseInt(row.default_sets, 10) || 1)),
+    default_reps: row.default_reps != null ? String(row.default_reps) : "10",
+    default_load: row.default_load || "",
+    default_rest: row.default_rest || "",
+    default_tempo: row.default_tempo || "",
+    default_velocity: row.default_velocity || "",
+    default_power: row.default_power || "",
+    default_pct: row.default_pct || "",
+    default_stations: row.default_stations || ""
+  };
   try {
-    const updated = await api("PUT", "/api/exercises/" + id, { name: row.name.trim(), category: row.category || "Strength" });
-    row.name = updated.name;
-    row.category = updated.category;
+    const updated = await api("PUT", "/api/exercises/" + id, payload);
+    Object.assign(row, updated);
+    syncCatalogExercise(updated, previousName || updated.name);
     toast("Exercise saved");
     return true;
   } catch (err) {
@@ -3893,9 +4101,9 @@ document.addEventListener("click", (ev) => {
   if (ev.target.closest(".menu, .pop, .modal, .nav-anchor, .group-pop")) return;
   let changed = false;
   if (state.navMenu) { state.navMenu = null; changed = true; }
-  if (state.dayMenu || state.recurMenu || state.propMenu || state.letterMenu || state.optionsMenu || state.colorMenu || state.searchDay) {
+  if (state.dayMenu || state.recurMenu || state.propMenu || state.letterMenu || state.optionsMenu || state.supersetMenu || state.colorMenu || state.searchDay) {
     state.dayMenu = state.recurMenu = state.colorMenu = state.searchDay = null;
-    state.propMenu = state.letterMenu = state.optionsMenu = false;
+    state.propMenu = state.letterMenu = state.optionsMenu = state.supersetMenu = false;
     changed = true;
   }
   if (state.teamFilter) { state.teamFilter = false; changed = true; }

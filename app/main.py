@@ -105,6 +105,30 @@ def ensure_schema_migrations():
         if "details" not in lcols:
             statements.append("ALTER TABLE set_logs ADD COLUMN details TEXT DEFAULT ''")
 
+    if "exercises" in tables:
+        ecols = {c["name"] for c in inspector.get_columns("exercises")}
+        exercise_additions = (
+            ("default_sets", "INTEGER DEFAULT 3"),
+            ("default_reps", "VARCHAR(50) DEFAULT '10'"),
+            ("default_load", "VARCHAR(50) DEFAULT ''"),
+            ("default_rest", "VARCHAR(50) DEFAULT ''"),
+            ("default_tempo", "VARCHAR(50) DEFAULT ''"),
+            ("default_velocity", "VARCHAR(50) DEFAULT ''"),
+            ("default_power", "VARCHAR(50) DEFAULT ''"),
+            ("default_pct", "VARCHAR(50) DEFAULT ''"),
+            ("default_stations", "TEXT DEFAULT ''"),
+        )
+        added_sets = "default_sets" not in ecols
+        for name, ddl in exercise_additions:
+            if name not in ecols:
+                statements.append(f"ALTER TABLE exercises ADD COLUMN {name} {ddl}")
+        if added_sets:
+            statements.append(
+                "UPDATE exercises SET default_sets = 1, default_reps = '1' "
+                "WHERE LOWER(COALESCE(category, '')) LIKE '%circuit%' "
+                "OR LOWER(COALESCE(category, '')) LIKE '%question%'"
+            )
+
     if "personal_records" in tables:
         cols = {c["name"] for c in inspector.get_columns("personal_records")}
         if "user_id" not in cols:
