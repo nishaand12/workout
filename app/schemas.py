@@ -424,6 +424,7 @@ class GymPerson(BaseModel):
     team_name: Optional[str] = None
     led_teams: List[str] = []
     latest_note: str = ""
+    load_unit: str = "kg"
 
 class GymTeam(BaseModel):
     id: int

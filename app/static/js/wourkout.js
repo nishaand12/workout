@@ -469,6 +469,10 @@ function closeFloats() {
   state.teamFilter = false;
   state.athleteMenu = false;
 }
+function renderSoon() {
+  clearTimeout(renderSoon._t);
+  renderSoon._t = setTimeout(render, 0);
+}
 function render() {
   const root = document.getElementById("app");
   if (!root) return;
@@ -1382,7 +1386,7 @@ function toggleEditorMenu(which, ev) {
 function editorHead(date, it, day) {
   return `<div class="editor-h">
       <span class="letter" style="background:${LETTER_COLOR[it.letter] || "#666"}">${esc(it.letter || "•")}</span>
-      <input class="name-input" aria-label="Exercise name" data-focus="exname-${it.id}" value="${esc(it.name)}" oninput="setField('${date}','${it.id}','name', this.value)" onchange="render()">
+      <input class="name-input" aria-label="Exercise name" data-focus="exname-${it.id}" value="${esc(it.name)}" oninput="setField('${date}','${it.id}','name', this.value)" onchange="renderSoon()">
       <button type="button" class="pill" onclick="toggleEditorMenu('letterMenu', event)">${esc(letterCode(day, it))} ▾</button>
       <button type="button" class="iconbtn" title="Delete" onclick="askDelete('${date}','${it.id}')">🗑</button>
       <button type="button" class="iconbtn" title="Close" onclick="state.editor=null;render()">✕</button>
@@ -1454,15 +1458,15 @@ function editorPop(date) {
   if (it.type === "circuit") {
     return `<div class="editor build-editor" onclick="event.stopPropagation()">${head}
       <div class="hint">Stations, one per line</div>
-      <textarea data-focus="detail-${it.id}" oninput="setField('${date}','${it.id}','detail', this.value)" onchange="render()">${esc(it.detail || "")}</textarea>
+      <textarea data-focus="detail-${it.id}" oninput="setField('${date}','${it.id}','detail', this.value)" onchange="renderSoon()">${esc(it.detail || "")}</textarea>
       <div class="sets-line">${setRow(date, it, "Rounds")}</div>
       ${circuitActions(date, it)}
     </div>`;
   }
   if (it.type === "break" || it.type === "video" || it.type === "rest") {
     return `<div class="editor build-editor" onclick="event.stopPropagation()">${head}
-      ${it.type === "video" ? `<input data-focus="vid-${it.id}" placeholder="Video URL" value="${esc(it.videoUrl)}" oninput="setField('${date}','${it.id}','videoUrl', this.value)" onchange="render()">` : ""}
-      ${it.type === "rest" ? `<div class="row">Seconds <input style="width:80px" data-focus="rest-${it.id}" value="${esc(it.reps[0] || 60)}" oninput="setRestSeconds('${date}','${it.id}', this.value)" onchange="render()"></div>` : ""}
+      ${it.type === "video" ? `<input data-focus="vid-${it.id}" placeholder="Video URL" value="${esc(it.videoUrl)}" oninput="setField('${date}','${it.id}','videoUrl', this.value)" onchange="renderSoon()">` : ""}
+      ${it.type === "rest" ? `<div class="row">Seconds <input style="width:80px" data-focus="rest-${it.id}" value="${esc(it.reps[0] || 60)}" oninput="setRestSeconds('${date}','${it.id}', this.value)" onchange="renderSoon()"></div>` : ""}
     </div>`;
   }
   return `<div class="editor build-editor" onclick="event.stopPropagation()">${head}
@@ -1524,7 +1528,7 @@ function propRow(date, it, key) {
   if (key === "reps" && it.trackReps === false && !it.trackTime && it.type !== "circuit") return "";
   const label = fieldLabel(it, key);
   const info = key === "reps" ? `<button type="button" class="iconbtn reps-info" title="${it.trackTime ? "Seconds for each set" : "Reps for each set"}" onclick="event.stopPropagation();toast('${it.trackTime ? "Seconds prescribed for each set" : "Reps prescribed for each set"}')">ⓘ</button>` : "";
-  const cells = propArray(it, key).map((v, i) => `<td><input aria-label="${label} set ${i + 1}" data-focus="${key}-${it.id}-${i}" value="${esc(v)}" oninput="setCell('${date}','${it.id}','${key}',${i}, this.value)" onchange="render()"></td>`).join("");
+  const cells = propArray(it, key).map((v, i) => `<td><input aria-label="${label} set ${i + 1}" data-focus="${key}-${it.id}-${i}" value="${esc(v)}" oninput="setCell('${date}','${it.id}','${key}',${i}, this.value)" onchange="renderSoon()"></td>`).join("");
   return `<tr><th>${label}${info}</th>${cells}</tr>`;
 }
 function optionsPop(date, it) {
