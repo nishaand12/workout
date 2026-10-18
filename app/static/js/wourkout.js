@@ -365,8 +365,7 @@ function scriptLine(it) {
   const loadTxt = loads.some((x) => x !== "" && x != null) ? " · " + loads.map((x) => (x === "" || x == null ? "—" : x + "kg")).join("/") : "";
   const restTxt = rests.some((x) => x !== "" && x != null) ? " · rest " + rests.map((x) => x || "—").join("/") + "s" : "";
   if (it.type === "circuit") {
-    const first = (it.detail || "Complete 1 round").split("\n")[0];
-    return vol + restTxt + " · " + first;
+    return (it.detail || "Complete 1 round").split("\n")[0];
   }
   return vol + loadTxt + restTxt + (it.note ? " · " + it.note : "");
 }
@@ -1151,7 +1150,7 @@ function dayCol(date) {
   const st = stats(day);
   const sel = day.items.filter((it) => it.selected);
   const focused = state.focusDay === date ? "focus" : "";
-  const items = day.items.map((it) => exRow(date, day, it)).join("");
+  const items = gatedItems(date, day.items).map((it) => exRow(date, day, it)).join("");
   const search = state.searchDay === date ? searchPop(date) : "";
   const editor = state.editor && state.editor.day === date ? editorPop(date) : "";
   const menu = state.dayMenu === date ? dayMenu(date) : "";
@@ -1311,6 +1310,20 @@ function addPropButton(date, it) {
     ${state.propMenu ? propMenu(date, it.id) : ""}
   </div>`;
 }
+function circuitActions(date, it) {
+  return `<div class="row editor-actions">
+      <div class="superset-anchor">
+        <span>Superset</span>
+        <button type="button" class="pill" onclick="toggleEditorMenu('supersetMenu', event)">${esc(supersetLabel(date, it))} ▾</button>
+        ${state.supersetMenu ? supersetPop(date, it) : ""}
+      </div>
+      <div class="menu-anchor">
+        <button type="button" class="pill" onclick="toggleEditorMenu('optionsMenu', event)">Options ▾</button>
+        ${optionsPop(date, it)}
+      </div>
+      <button type="button" class="pill ${it.completionOnly ? "on" : ""}" onclick="toggleFlag('${date}','${it.id}','completionOnly')">${it.completionOnly ? "✓ " : ""}Completion Only</button>
+    </div>`;
+}
 function editorActions(date, it) {
   const volume = it.trackVolume ? `<div class="hint">Volume ${setVolume(it)}</div>` : "";
   return `<div class="row editor-actions">
@@ -1348,9 +1361,8 @@ function editorPop(date) {
     return `<div class="editor build-editor" onclick="event.stopPropagation()">${head}
       <div class="hint">Stations, one per line</div>
       <textarea data-focus="detail-${it.id}" oninput="setField('${date}','${it.id}','detail', this.value)" onchange="render()">${esc(it.detail || "")}</textarea>
-      <div class="sets-line">${setRow(date, it, "Rounds")}${addPropButton(date, it)}</div>
-      ${workTable(date, it)}
-      ${editorActions(date, it)}
+      <div class="sets-line">${setRow(date, it, "Rounds")}</div>
+      ${circuitActions(date, it)}
     </div>`;
   }
   if (it.type === "break" || it.type === "video" || it.type === "rest") {
@@ -1499,7 +1511,11 @@ function toggleFlag(date, id, key) {
   state.optionsMenu = false;
   render();
 }
-function itRequire(date, id, on) { findItem(date, id).requireResponse = on; }
+function itRequire(date, id, on) {
+  const it = findItem(date, id);
+  if (it) it.requireResponse = !!on;
+  render();
+}
 function clearSuperset(date, id) {
   const day = ensureDay(date);
   const it = findItem(date, id);
@@ -2399,8 +2415,23 @@ document.addEventListener("drop", (ev) => {
   dropOn(ev, day.dataset.day, null);
 });
 
+function itemLogDone(date, it) {
+  if (!it) return false;
+  const log = state.logs[state.athleteId + ":" + date + ":" + it.id];
+  return !!(log && log.done);
+}
+function gatedItems(date, items) {
+  const out = [];
+  let blocked = false;
+  (items || []).forEach((it) => {
+    if (blocked) return;
+    out.push(it);
+    if (it.type === "questionnaire" && it.requireResponse && !itemLogDone(date, it)) blocked = true;
+  });
+  return out;
+}
 function previewItems(day) {
-  return (day.items || []).filter((it) => it.type !== "break");
+  return gatedItems(day && day.date, day && day.items).filter((it) => it.type !== "break");
 }
 function previewLog(it, create) {
   if (!it || !state.preview) return {};
