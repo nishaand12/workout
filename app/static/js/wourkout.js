@@ -476,6 +476,10 @@ function renderSoon() {
 function render() {
   const root = document.getElementById("app");
   if (!root) return;
+  const active = document.activeElement;
+  const focusId = active && active.dataset ? active.dataset.focus : null;
+  const sel = active && active.selectionStart;
+  document.querySelectorAll("body > .search-pop").forEach((el) => el.remove());
   if (!state.auth || !state.auth.isAuthenticated) {
     root.className = "";
     root.innerHTML = renderLoginGate() + (state.toast ? `<div class="toast">${esc(state.toast)}</div>` : "");
@@ -488,16 +492,14 @@ function render() {
   }
   const light = state.view !== "build" && state.view !== "mine";
   root.className = light ? "light" : "";
-  const active = document.activeElement;
-  const focusId = active && active.dataset ? active.dataset.focus : null;
-  const sel = active && active.selectionStart;
   const toastHtml = state.toast ? `<div class="toast">${esc(state.toast)}</div>` : "";
   const pending = state.pendingFocus;
   if (pending) state.pendingFocus = "";
   root.innerHTML = nav() + '<div class="shell">' + body() + rightRail() + "</div>" + toastHtml + modalHtml() + fabHtml();
+  placeSearchPop();
   const focusKey = pending || focusId;
   if (focusKey) {
-    const el = root.querySelector(`[data-focus="${focusKey}"]`);
+    const el = document.querySelector(`[data-focus="${focusKey}"]`);
     if (el) {
       el.focus();
       if (!pending && sel != null && el.setSelectionRange) {
@@ -505,6 +507,45 @@ function render() {
       }
     }
   }
+}
+
+function placeSearchPop() {
+  const pop = document.querySelector(".search-pop");
+  if (!pop || !state.searchDay) return;
+  const day = document.querySelector('.day[data-day="' + state.searchDay + '"]');
+  const anchor = day && day.querySelector("button.add-ex");
+  if (!anchor) return;
+  document.body.appendChild(pop);
+  pop.classList.add("is-fixed");
+  const margin = 8;
+  const gap = 6;
+  const header = document.querySelector(".topnav");
+  const minTop = (header ? header.getBoundingClientRect().bottom : 0) + margin;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const maxW = Math.max(160, vw - margin * 2);
+  const maxH = Math.max(160, vh - minTop - margin);
+  pop.style.position = "fixed";
+  pop.style.right = "auto";
+  pop.style.bottom = "auto";
+  pop.style.width = Math.min(280, maxW) + "px";
+  pop.style.maxHeight = maxH + "px";
+  pop.style.left = "0px";
+  pop.style.top = minTop + "px";
+  const pw = pop.offsetWidth;
+  const ph = Math.min(pop.scrollHeight, maxH);
+  const rect = anchor.getBoundingClientRect();
+  let top = rect.top - ph - gap;
+  const below = rect.bottom + gap;
+  if (top < minTop && below + ph <= vh - margin) top = below;
+  if (top < minTop) top = minTop;
+  if (top + ph > vh - margin) top = Math.max(minTop, vh - margin - ph);
+  let left = rect.left;
+  if (left + pw > vw - margin) left = vw - margin - pw;
+  if (left < margin) left = margin;
+  pop.style.top = Math.round(top) + "px";
+  pop.style.left = Math.round(left) + "px";
+  pop.classList.add("is-placed");
 }
 
 function heldRoles(user) {
@@ -1310,7 +1351,7 @@ function searchPop(date) {
   const list = CATALOG.filter((c) => !q || c.name.toLowerCase().includes(q)).slice(0, 8);
   return `<div class="pop search-pop" onclick="event.stopPropagation()">
     <input data-focus="ex-search" type="text" autocomplete="off" placeholder="Search Exercises" value="${esc(state.searchQ)}" oninput="state.searchQ=this.value;render()">
-    <div style="margin-top:6px">
+    <div class="search-results">
       ${list.map((c) => `<button class="opt" onclick="addFromCatalog('${date}', ${CATALOG.indexOf(c)})">${esc(c.name)}</button>`).join("")}
       <button class="opt create-row" onclick="createExercise('${date}')">+ Create New Exercise <span class="tag">Shift+Enter</span></button>
     </div>
@@ -4687,6 +4728,8 @@ function onFab() {
   if (state.view === "maxes") { addGoalRecord(); return; }
 }
 
+window.addEventListener("resize", () => { if (state.searchDay) placeSearchPop(); });
+document.addEventListener("scroll", () => { if (state.searchDay) placeSearchPop(); }, true);
 document.addEventListener("click", (ev) => {
   if (ev.target.closest(".menu, .pop, .modal, .nav-anchor, .group-pop")) return;
   let changed = false;
