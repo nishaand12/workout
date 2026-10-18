@@ -193,6 +193,7 @@ class UserBase(BaseModel):
     avatar_color: Optional[str] = "#0ea5e9"
     status_badge: Optional[str] = "Active"
     position_tag: Optional[str] = "Athlete"
+    load_unit: str = "kg"  # 'lbs' or 'kg'. Lives on the athlete, not on a workout.
 
 class UserCreate(UserBase):
     password: Optional[str] = None
@@ -207,6 +208,7 @@ class UserUpdate(BaseModel):
     avatar_color: Optional[str] = None
     status_badge: Optional[str] = None
     position_tag: Optional[str] = None
+    load_unit: Optional[str] = None
     is_active: Optional[bool] = None
 
 class UserBrief(BaseModel):

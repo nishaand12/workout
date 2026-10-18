@@ -68,6 +68,7 @@ def ensure_schema_migrations():
             ("is_athlete", "BOOLEAN DEFAULT FALSE"),
             ("gym_id", "INTEGER"),
             ("team_id", "INTEGER"),
+            ("load_unit", "VARCHAR(8) DEFAULT 'kg'"),
         )
         for name, ddl in additions:
             if name not in cols:
@@ -79,6 +80,7 @@ def ensure_schema_migrations():
             "UPDATE users SET is_admin = TRUE WHERE LOWER(COALESCE(role, '')) = 'admin' AND is_admin = FALSE",
             "UPDATE users SET is_coach = TRUE WHERE LOWER(COALESCE(role, '')) = 'coach' AND is_coach = FALSE",
             "UPDATE users SET is_athlete = TRUE WHERE LOWER(COALESCE(role, '')) IN ('athlete', 'student') AND is_athlete = FALSE",
+            "UPDATE users SET load_unit = 'kg' WHERE load_unit IS NULL OR load_unit = ''",
         ))
 
     if "groups" in tables:

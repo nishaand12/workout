@@ -43,6 +43,8 @@ class User(Base):
     avatar_color = Column(String(20), default="#0ea5e9")
     status_badge = Column(String(50), default="Active")  # 'Active', 'Modified', 'Rehab'
     position_tag = Column(String(100), default="Athlete")  # 'Varsity RB', 'Sprinter', etc.
+    # Load labels for this athlete. Not stored on each workout.
+    load_unit = Column(String(8), default="kg", nullable=False)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 

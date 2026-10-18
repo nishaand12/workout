@@ -910,6 +910,111 @@ class TrainerFlowTests(unittest.TestCase):
         gone = self.client.get("/api/gym/context", headers=auth).json()
         self.assertFalse(any(row["id"] == item_id for row in gone["items"]))
 
+    def test_group_day_overwrites_members_and_load_unit_stays_on_athlete(self):
+        coach = self._user(f"Coach copy {self.stamp}", role="coach")
+        occupied = self._user(f"Nishaan {self.stamp}")
+        open_member = self._user(f"Open {self.stamp}")
+        outsider = self._user(f"Outsider {self.stamp}")
+        group = self.client.post("/api/groups", json={"name": f"Nish athletes {self.stamp}", "coach_id": coach["id"]})
+        self.assertEqual(group.status_code, 201, group.text)
+        group_id = group.json()["id"]
+        self.assertEqual(self.client.post(f"/api/groups/{group_id}/members/{occupied['id']}").status_code, 200)
+        self.assertEqual(self.client.post(f"/api/groups/{group_id}/members/{open_member['id']}").status_code, 200)
+
+        day = "2026-10-21"
+        old = self._workout(f"Old day {self.stamp}", "personal", day)
+        own = self.client.post("/api/assignments", json={
+            "workout_id": old["id"],
+            "user_id": occupied["id"],
+            "scheduled_date": day,
+            "notes": "Already programmed",
+        })
+        self.assertEqual(own.status_code, 201, own.text)
+
+        unit = self.client.put(f"/api/users/{occupied['id']}", json={"load_unit": "lbs"})
+        self.assertEqual(unit.status_code, 200, unit.text)
+        self.assertEqual(unit.json()["load_unit"], "lbs")
+        self.assertEqual(self.client.get(f"/api/users/{occupied['id']}").json()["load_unit"], "lbs")
+        self.assertEqual(self.client.put(f"/api/users/{occupied['id']}", json={"load_unit": "stones"}).json()["load_unit"], "kg")
+        self.client.put(f"/api/users/{occupied['id']}", json={"load_unit": "lbs"})
+
+        exercise = self._exercise()
+        group_workout = self.client.post("/api/workouts", json={
+            "title": f"Group day {self.stamp}",
+            "program_name": "wourkout",
+            "calendar_date": day,
+            "scheduled_date": day,
+            "day_of_week": "Wednesday",
+            "exercises": [{
+                "exercise_id": exercise["id"],
+                "prescribed_sets": 3,
+                "target_reps": "6,6,6",
+                "target_weight": "40,40,40",
+                "notes": "Flags:trackTime",
+            }],
+        })
+        self.assertEqual(group_workout.status_code, 201, group_workout.text)
+        saved = group_workout.json()
+        self.assertNotIn("load_unit", saved)
+        self.assertNotIn("lbs", saved["exercises"][0]["target_weight"])
+        self.assertNotIn("kg", saved["exercises"][0]["target_weight"])
+
+        assigned = self.client.post("/api/assignments", json={
+            "workout_id": saved["id"],
+            "group_id": group_id,
+            "scheduled_date": day,
+            "notes": "Saved from Build",
+        })
+        self.assertEqual(assigned.status_code, 201, assigned.text)
+
+        def names_on(user_id):
+            rows = self.client.get("/api/calendar/schedule", params={"user_id": user_id})
+            self.assertEqual(rows.status_code, 200, rows.text)
+            match = [row for row in rows.json() if row["scheduled_date"] == day]
+            self.assertEqual(len(match), 1)
+            return [ex["exercise"]["name"] for ex in match[0]["workout"]["exercises"]]
+
+        self.assertEqual(names_on(occupied["id"]), [exercise["name"]])
+        self.assertEqual(names_on(open_member["id"]), [exercise["name"]])
+        outsider_rows = self.client.get("/api/calendar/schedule", params={"user_id": outsider["id"]}).json()
+        self.assertFalse(any(row["scheduled_date"] == day for row in outsider_rows))
+
+        replacement = self._exercise()
+        updated = self.client.put(f"/api/workouts/{saved['id']}", json={
+            "title": f"Group day {self.stamp}",
+            "exercises": [{
+                "exercise_id": replacement["id"],
+                "prescribed_sets": 3,
+                "target_reps": "8",
+                "target_weight": "50",
+            }],
+        })
+        self.assertEqual(updated.status_code, 200, updated.text)
+        self.assertNotIn("load_unit", updated.json())
+        self.assertEqual(names_on(occupied["id"]), [replacement["name"]])
+        self.assertEqual(names_on(open_member["id"]), [replacement["name"]])
+
+        rest = self.client.post("/api/workouts", json={
+            "title": "Rest",
+            "program_name": "wourkout",
+            "calendar_date": "2026-10-22",
+            "scheduled_date": "2026-10-22",
+            "day_of_week": "Thursday",
+            "exercises": [],
+        })
+        self.assertEqual(rest.status_code, 201, rest.text)
+        self.assertEqual(rest.json()["exercises"], [])
+        rest_assign = self.client.post("/api/assignments", json={
+            "workout_id": rest.json()["id"],
+            "user_id": occupied["id"],
+            "scheduled_date": "2026-10-22",
+        })
+        self.assertEqual(rest_assign.status_code, 201, rest_assign.text)
+        rest_rows = self.client.get("/api/calendar/schedule", params={"user_id": occupied["id"]}).json()
+        rest_day = next(row for row in rest_rows if row["scheduled_date"] == "2026-10-22")
+        self.assertEqual(rest_day["workout"]["title"], "Rest")
+        self.assertEqual(rest_day["workout"]["exercises"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
