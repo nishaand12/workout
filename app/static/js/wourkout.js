@@ -137,7 +137,11 @@ function withPropertyDefaults(partial, defaults) {
 function fromCatalog(entry) {
   const defaults = libraryDefaultsFrom(exerciseRecord(entry.name));
   if (entry.type === "questionnaire") {
-    return item({ name: entry.name, type: "questionnaire", letter: "A", sets: 1, reps: [1], questions: QUESTIONS.slice(), requireResponse: true, trackReps: false });
+    return item({
+      name: entry.name, type: "questionnaire", letter: "A", sets: 1, reps: [1],
+      questions: QUESTIONS.slice(), requireResponse: true, trackReps: false,
+      videoUrl: defaults && defaults.videoUrl ? defaults.videoUrl : ""
+    });
   }
   if (entry.type === "circuit") {
     const detail = defaults
@@ -147,7 +151,8 @@ function fromCatalog(entry) {
     const rep = defaults ? (defaults.reps || "1") : "1";
     return item(withPropertyDefaults({
       name: entry.name, type: "circuit", letter: "A", sets, reps: Array(sets).fill(rep),
-      detail, note: defaults ? (defaults.note || "") : "", completionOnly: true, trackReps: false
+      detail, note: defaults ? (defaults.note || "") : "", completionOnly: true, trackReps: false,
+      videoUrl: defaults && defaults.videoUrl ? defaults.videoUrl : ""
     }, defaults));
   }
   if (entry.type === "break") return item({ name: "Session Break", type: "break", letter: "", sets: 0, reps: [], trackReps: false });
@@ -156,7 +161,8 @@ function fromCatalog(entry) {
   const sets = defaults ? Math.max(1, Math.min(10, parseInt(defaults.sets, 10) || 3)) : 3;
   const rep = defaults ? (defaults.reps != null ? defaults.reps : "10") : "10";
   return item(withPropertyDefaults({
-    name: entry.name, type: "lift", letter: "A", sets, reps: Array(sets).fill(rep)
+    name: entry.name, type: "lift", letter: "A", sets, reps: Array(sets).fill(rep),
+    videoUrl: defaults && defaults.videoUrl ? defaults.videoUrl : ""
   }, defaults));
 }
 
@@ -1378,12 +1384,74 @@ function addFromCatalog(date, index) {
   addItem(date, fromCatalog(entry));
 }
 function createExercise(date) {
-  const name = (state.searchQ || "").trim();
-  if (!name) { state.modal = { type: "create", date }; render(); return; }
-  const entry = { name, type: "lift" };
-  if (!CATALOG.some((c) => c.name.toLowerCase() === name.toLowerCase())) CATALOG.push(entry);
-  state.lifts.push({ id: uid(), name, type: "Lifts", tags: "N/A" });
-  addItem(date, fromCatalog(entry));
+  openNewLibraryExercise(date, (state.searchQ || "").trim());
+}
+function openNewLibraryExercise(date, name) {
+  state.searchDay = null;
+  const row = {
+    name: name || "",
+    category: "Strength",
+    video_url: "",
+    default_sets: 3,
+    default_reps: "10",
+    default_load: "",
+    default_rest: "",
+    default_tempo: "",
+    default_velocity: "",
+    default_power: "",
+    default_pct: "",
+    default_stations: "",
+    default_notes: ""
+  };
+  openEdit({
+    title: "Create exercise",
+    hint: "Saved to the exercise library.",
+    date,
+    liveCategory: true,
+    fields: exerciseFields(row),
+    onSave: (values) => saveNewLibraryExercise(date, values)
+  });
+}
+async function saveNewLibraryExercise(date, values) {
+  const name = (values.name || "").trim();
+  if (!name) { toast("Name the exercise"); return; }
+  const category = values.category || "Strength";
+  const circuit = exBucket(category) === "Circuits";
+  const payload = {
+    name,
+    category,
+    video_url: values.video_url || "",
+    default_notes: String(values.default_notes || "").slice(0, 255),
+    default_sets: Math.max(1, Math.min(10, parseInt(values.default_sets, 10) || (circuit ? 1 : 3))),
+    default_reps: values.default_reps != null && String(values.default_reps) !== "" ? String(values.default_reps) : (circuit ? "1" : "10"),
+    default_load: values.default_load || "",
+    default_rest: values.default_rest || "",
+    default_tempo: values.default_tempo || "",
+    default_velocity: values.default_velocity || "",
+    default_power: values.default_power || "",
+    default_pct: values.default_pct || "",
+    default_stations: values.default_stations || ""
+  };
+  let created;
+  try {
+    created = await api("POST", "/api/exercises", payload);
+  } catch (err) {
+    const message = err.message || "";
+    if (message.toLowerCase().indexOf("already exists") >= 0) toast("That exercise is already in the library");
+    else toast(message || "Could not save that exercise");
+    return;
+  }
+  const index = state.serverExercises.findIndex((row) => row.id === created.id);
+  if (index >= 0) state.serverExercises[index] = created;
+  else state.serverExercises.push(created);
+  syncCatalogExercise(created);
+  if (!state.lifts.some((row) => String(row.name || "").toLowerCase() === created.name.toLowerCase())) {
+    state.lifts.push({ id: "srv" + created.id, name: created.name, type: exBucket(created.category), tags: "N/A" });
+  }
+  const bucket = exBucket(created.category);
+  const type = bucket === "Circuits" ? "circuit" : bucket === "Questionnaires" ? "questionnaire" : "lift";
+  addItem(date, fromCatalog({ name: created.name, type }));
+  toast("Saved to the exercise library");
 }
 function addItem(date, it) {
   state.modal = null;
@@ -4689,7 +4757,8 @@ function openEdit(opts) {
       type: f.type || "text",
       options: f.options || null
     })),
-    onSave: opts.onSave
+    onSave: opts.onSave,
+    liveCategory: !!opts.liveCategory
   };
   render();
 }
@@ -4698,6 +4767,19 @@ function setEditField(key, value) {
   if (!m || m.type !== "edit" || !m.fields) return;
   const field = m.fields.find((f) => f.key === key);
   if (field) field.value = value;
+  if (key !== "category" || !m.liveCategory) return;
+  m.draft = Object.assign({}, m.draft || {});
+  m.fields.forEach((row) => { m.draft[row.key] = row.value; });
+  m.fields = exerciseFields(m.draft).map((row) => ({
+    key: row.key,
+    label: row.label,
+    value: row.value == null ? "" : String(row.value),
+    multiline: !!row.multiline,
+    maxlength: row.maxlength || 0,
+    type: row.type || "text",
+    options: row.options || null
+  }));
+  render();
 }
 function closeEdit() {
   state.modal = null;
@@ -4767,7 +4849,7 @@ function modalHtml() {
     return `<div class="modal-back"><div class="modal"><h3>Share Workout</h3><input class="field" value="${esc(link)}" readonly><button class="full primary" onclick="navigator.clipboard.writeText('${link}');toast('Link copied')">Copy link</button><button class="full" onclick="state.modal=null;render()">Close</button></div></div>`;
   }
   if (m.type === "create") {
-    return `<div class="modal-back"><div class="modal"><h3>Create New Exercise</h3><input class="field" data-focus="new-ex" placeholder="Exercise name" oninput="state.modal.name=this.value"><button class="full primary" onclick="const n=(state.modal.name||'').trim(); if(!n)return; CATALOG.push({name:n,type:'lift'}); state.lifts.push({id:uid(),name:n,type:'Lifts',tags:'N/A'}); addItem(state.modal.date, fromCatalog({name:n,type:'lift'})); state.modal=null;">CREATE</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
+    return `<div class="modal-back"><div class="modal"><h3>Create New Exercise</h3><input class="field" data-focus="new-ex" placeholder="Exercise name" oninput="state.modal.name=this.value"><button class="full primary" onclick="openNewLibraryExercise(state.modal.date, (state.modal.name||'').trim())">CREATE</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
   }
   if (m.type === "journal") {
     return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render();}"><div class="modal"><h3>Journal entry</h3><input class="field" placeholder="Title" data-focus="jtitle" oninput="state.modal.title=this.value"><textarea data-focus="jbody" oninput="state.modal.body=this.value"></textarea><button class="full primary" onclick="saveJournalEntry()">SAVE</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
