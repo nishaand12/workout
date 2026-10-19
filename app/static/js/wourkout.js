@@ -73,7 +73,7 @@ function item(partial) {
     tempos: Array(sets).fill(""), velocities: Array(sets).fill(""),
     powers: Array(sets).fill(""), pcts: Array(sets).fill(""),
     props: [], note: "", detail: "", questions: [], requireResponse: false,
-    completionOnly: false, trackReps: true, trackVolume: false, videoUrl: ""
+    completionOnly: false, trackReps: true, trackTime: false, trackVolume: false, videoUrl: ""
   };
   return Object.assign(base, partial, { reps: reps.slice() });
 }
@@ -224,8 +224,10 @@ const state = {
   hoverDay: APP_TODAY,
   searchDay: null,
   searchQ: "",
+  pendingFocus: "",
   editor: null,
   propMenu: false,
+  trackMenu: false,
   letterMenu: false,
   optionsMenu: false,
   supersetMenu: false,
@@ -351,18 +353,66 @@ function selectedItems(date) {
   return ensureDay(date).items.filter((it) => it.selected);
 }
 
-function scriptLine(it) {
-  if (it.type === "questionnaire") return it.questions.length + " items";
+function normalizeUnit(value) {
+  return String(value || "").toLowerCase() === "lbs" ? "lbs" : "kg";
+}
+function unitWord(unit) {
+  return unit === "lbs" ? "lbs" : "kg";
+}
+function unitTitle(unit) {
+  return unit === "lbs" ? "Lbs" : "Kg";
+}
+function entryPerson() {
+  if (state.role === "athlete") {
+    const me = state.auth && state.auth.user;
+    if (me) return { id: "u" + me.id, serverId: me.id, load_unit: me.load_unit, isGroup: false };
+  }
+  return ATHLETES.find((a) => a.id === state.entryAthlete)
+    || buildAthletes().find((a) => a.id === state.entryAthlete && !a.isGroup)
+    || null;
+}
+function entryUnit() {
+  const person = entryPerson();
+  return normalizeUnit(person && person.load_unit);
+}
+function displayUnit() {
+  if (state.view === "entry" || state.view === "mine" || state.role === "athlete") return entryUnit();
+  const person = athlete();
+  if (!person || person.isGroup || person.id === "none") return "";
+  return normalizeUnit(person.load_unit);
+}
+function doseText(it, reps) {
+  const count = it.sets || reps.length || 1;
+  const rep0 = reps.length ? reps[0] : (it.trackTime ? "0" : 1);
+  const same = !reps.length || reps.every((r) => String(r) === String(rep0));
+  if (it.trackTime) {
+    const mark = (v) => String(v == null || v === "" ? "0" : v).replace(/s$/i, "") + "s";
+    return same ? count + " x " + mark(rep0) : reps.map(mark).join(", ");
+  }
+  return same ? count + " x " + rep0 : reps.join(", ");
+}
+function loadPhrase(loads, unit) {
+  if (!(loads || []).some((x) => x !== "" && x != null)) return "";
+  const suffix = unit ? " " + unitWord(unit) : "";
+  return " · " + loads.map((x) => (x === "" || x == null ? "—" : String(x) + suffix)).join("/");
+}
+function dayHeading(day) {
+  if (!day) return "Add Workout Name";
+  if (!(day.items || []).length && (day.savedWorkoutId || day.title === "Rest")) return "Rest";
+  return day.title || "Add Workout Name";
+}
+function scriptLine(it, opts) {
+  if (it.type === "questionnaire") return (it.questions || []).length + " items";
   if (it.type === "break") return "Divider";
   if (it.type === "video") return it.videoUrl || "Video";
   if (it.type === "rest") return (it.reps[0] || 60) + "s";
   const reps = (it.reps || []).slice(0, it.sets || 1);
   const loads = (it.loads || []).slice(0, it.sets || 1);
   const rests = (it.rests || []).slice(0, it.sets || 1);
-  const rep0 = reps[0] || 1;
-  const same = reps.every((r) => String(r) === String(rep0));
-  const vol = same ? (it.sets || reps.length || 1) + " x " + rep0 : reps.join(", ");
-  const loadTxt = loads.some((x) => x !== "" && x != null) ? " · " + loads.map((x) => (x === "" || x == null ? "—" : x + "kg")).join("/") : "";
+  const plain = opts && opts.plain;
+  const unit = plain ? "" : (opts && Object.prototype.hasOwnProperty.call(opts, "unit") ? (opts.unit || "") : displayUnit());
+  const vol = doseText(it, reps);
+  const loadTxt = loadPhrase(loads, unit);
   const restTxt = rests.some((x) => x !== "" && x != null) ? " · rest " + rests.map((x) => x || "—").join("/") + "s" : "";
   if (it.type === "circuit") {
     return (it.detail || "Complete 1 round").split("\n")[0];
@@ -408,6 +458,7 @@ function closeFloats() {
   state.searchDay = null;
   state.editor = null;
   state.propMenu = false;
+  state.trackMenu = false;
   state.letterMenu = false;
   state.optionsMenu = false;
   state.supersetMenu = false;
@@ -417,6 +468,10 @@ function closeFloats() {
   state.navMenu = null;
   state.teamFilter = false;
   state.athleteMenu = false;
+}
+function renderSoon() {
+  clearTimeout(renderSoon._t);
+  renderSoon._t = setTimeout(render, 0);
 }
 function render() {
   const root = document.getElementById("app");
@@ -438,13 +493,16 @@ function render() {
   const light = state.view !== "build" && state.view !== "mine";
   root.className = light ? "light" : "";
   const toastHtml = state.toast ? `<div class="toast">${esc(state.toast)}</div>` : "";
+  const pending = state.pendingFocus;
+  if (pending) state.pendingFocus = "";
   root.innerHTML = nav() + '<div class="shell">' + body() + rightRail() + "</div>" + toastHtml + modalHtml() + fabHtml();
   placeSearchPop();
-  if (focusId) {
-    const el = document.querySelector(`[data-focus="${focusId}"]`);
+  const focusKey = pending || focusId;
+  if (focusKey) {
+    const el = document.querySelector(`[data-focus="${focusKey}"]`);
     if (el) {
       el.focus();
-      if (sel != null && el.setSelectionRange) {
+      if (!pending && sel != null && el.setSelectionRange) {
         try { el.setSelectionRange(sel, sel); } catch (e) { /* ignore */ }
       }
     }
@@ -581,9 +639,10 @@ function itemNotes(it) {
   }
   if ((it.props || []).length) lines.push("Props:" + it.props.join(","));
   const flags = [];
+  if (it.trackTime) flags.push("trackTime");
   if (it.type === "circuit" || it.type === "questionnaire") {
     if (it.trackReps) flags.push("trackReps");
-  } else if (it.trackReps === false) flags.push("noTrackReps");
+  } else if (it.trackReps === false && !it.trackTime) flags.push("noTrackReps");
   if (it.trackVolume) flags.push("trackVolume");
   if (it.type === "circuit" && it.completionOnly === false) flags.push("noCompletionOnly");
   else if (it.completionOnly) flags.push("completionOnly");
@@ -623,7 +682,10 @@ function workoutToDayItems(workout) {
       detail: type === "circuit" ? parsed.plainLines.join("\n") : "",
       note: type === "circuit" ? parsed.additional : parsed.plainLines.join("\n"),
       questions: type === "questionnaire" ? (parsed.plainLines.length ? parsed.plainLines : QUESTIONS.slice()) : [],
-      trackReps: (type === "circuit" || type === "questionnaire") ? flags.indexOf("trackReps") >= 0 : flags.indexOf("noTrackReps") < 0,
+      trackTime: flags.indexOf("trackTime") >= 0,
+      trackReps: flags.indexOf("trackTime") >= 0
+        ? false
+        : ((type === "circuit" || type === "questionnaire") ? flags.indexOf("trackReps") >= 0 : flags.indexOf("noTrackReps") < 0),
       trackVolume: flags.indexOf("trackVolume") >= 0,
       completionOnly: type === "circuit" ? flags.indexOf("noCompletionOnly") < 0 : flags.indexOf("completionOnly") >= 0
     });
@@ -686,7 +748,8 @@ function syncFromGymContext() {
       email: u.email || "",
       serverId: u.id,
       team_id: u.team_id,
-      team_name: u.team_name || ""
+      team_name: u.team_name || "",
+      load_unit: normalizeUnit(u.load_unit)
     });
     state.athletes.push({
       id,
@@ -697,6 +760,7 @@ function syncFromGymContext() {
       activity: u.latest_note ? "Logged note" : "Enrolled",
       groups: u.team_name || "—",
       team_id: u.team_id,
+      load_unit: normalizeUnit(u.load_unit),
       cals: "1",
       role: "athlete"
     });
@@ -1096,6 +1160,7 @@ function buildView() {
           </div>
         </div>
         <div class="sub-actions">
+          ${unitSelect(currentTarget.id)}
           <button class="ghost" onclick="saveFocused()">${saveLabel}</button>
           <button class="ghost" onclick="openAsAthlete(state.athleteId)">Open as athlete</button>
           <button class="ghost" onclick="undo()">↺ UNDO</button>
@@ -1139,7 +1204,8 @@ function buildAthletes() {
         email: u.email || "",
         serverId: u.id,
         team_id: u.team_id,
-        team_name: u.team_name || ""
+        team_name: u.team_name || "",
+        load_unit: normalizeUnit(u.load_unit)
       });
       if (!state.calendars[id]) state.calendars[id] = {};
     }
@@ -1158,6 +1224,7 @@ function buildAthletes() {
         name: user.name || user.username || "You",
         email: user.email || "",
         serverId: user.id,
+        load_unit: normalizeUnit(user.load_unit),
         self: true
       });
     }
@@ -1166,6 +1233,34 @@ function buildAthletes() {
     return [{ id: "none", name: "No athletes or groups yet", email: "" }];
   }
   return list;
+}
+function unitSelect(personId) {
+  const person = buildAthletes().find((a) => a.id === personId);
+  if (!person || person.isGroup || !person.serverId) return "";
+  const unit = normalizeUnit(person.load_unit);
+  return `<label class="unit-set">Load <select aria-label="Athlete load unit" onchange="setAthleteUnit('${esc(person.id)}', this.value)">
+    <option value="kg" ${unit === "kg" ? "selected" : ""}>kg</option>
+    <option value="lbs" ${unit === "lbs" ? "selected" : ""}>lbs</option>
+  </select></label>`;
+}
+function applyAthleteUnit(serverId, unit) {
+  const next = normalizeUnit(unit);
+  ((state.gymContext && state.gymContext.athletes) || []).forEach((u) => { if (u.id === serverId) u.load_unit = next; });
+  ATHLETES.forEach((a) => { if (a.serverId === serverId) a.load_unit = next; });
+  state.athletes.forEach((a) => { if (a.serverId === serverId) a.load_unit = next; });
+  if (state.auth && state.auth.user && state.auth.user.id === serverId) state.auth.user.load_unit = next;
+}
+async function setAthleteUnit(personId, unit) {
+  const person = buildAthletes().find((a) => a.id === personId);
+  if (!person || person.isGroup || !person.serverId) return;
+  applyAthleteUnit(person.serverId, unit);
+  render();
+  try {
+    await api("PUT", "/api/users/" + person.serverId, { load_unit: normalizeUnit(unit) });
+  } catch (err) {
+    toast("Could not save load unit");
+    console.error(err);
+  }
 }
 function athlete() {
   const list = buildAthletes();
@@ -1212,7 +1307,7 @@ function dayCol(date) {
       </span>
     </div>
     <div class="week-label">${esc(day.weekLabel || "")}</div>
-    <button type="button" class="day-title ${day.title ? "" : "placeholder"}" onclick="editWorkoutDay('${date}', event)">${esc(day.title || "Add Workout Name")}</button>
+    <button type="button" class="day-title ${dayHeading(day) === "Add Workout Name" ? "placeholder" : ""}" onclick="editWorkoutDay('${date}', event)">${esc(dayHeading(day))}</button>
     ${day.savedWorkoutId ? `<div class="saved-pill">Saved for ${esc((buildAthletes().find((a) => a.id === day.savedFor) || {}).name || "athlete")}</div>` : ""}
     <div class="row" style="margin-top:0">
       <input type="checkbox" title="Select all" ${sel.length && sel.length === day.items.length ? "checked" : ""} onclick="toggleAll('${date}', this.checked);event.stopPropagation()">
@@ -1243,18 +1338,19 @@ function exRow(date, day, it) {
 }
 
 function openSearch(date, ev) {
-  ev.stopPropagation();
+  if (ev) ev.stopPropagation();
   state.searchDay = date;
   state.searchQ = "";
   state.focusDay = date;
   state.editor = null;
+  state.pendingFocus = "ex-search";
   render();
 }
 function searchPop(date) {
   const q = state.searchQ.toLowerCase();
   const list = CATALOG.filter((c) => !q || c.name.toLowerCase().includes(q)).slice(0, 8);
   return `<div class="pop search-pop" onclick="event.stopPropagation()">
-    <input data-focus="ex-search" placeholder="Search Exercises" value="${esc(state.searchQ)}" oninput="state.searchQ=this.value;render()">
+    <input data-focus="ex-search" type="text" autocomplete="off" placeholder="Search Exercises" value="${esc(state.searchQ)}" oninput="state.searchQ=this.value;render()">
     <div class="search-results">
       ${list.map((c) => `<button class="opt" onclick="addFromCatalog('${date}', ${CATALOG.indexOf(c)})">${esc(c.name)}</button>`).join("")}
       <button class="opt create-row" onclick="createExercise('${date}')">+ Create New Exercise <span class="tag">Shift+Enter</span></button>
@@ -1313,6 +1409,7 @@ function openEditor(date, id, ev) {
   state.letterMenu = false;
   state.optionsMenu = false;
   state.supersetMenu = false;
+  state.trackMenu = false;
   state.editor = { day: date, id };
   render();
 }
@@ -1323,13 +1420,14 @@ function toggleEditorMenu(which, ev) {
   state.letterMenu = false;
   state.optionsMenu = false;
   state.supersetMenu = false;
+  state.trackMenu = false;
   state[which] = next;
   render();
 }
 function editorHead(date, it, day) {
   return `<div class="editor-h">
       <span class="letter" style="background:${LETTER_COLOR[it.letter] || "#666"}">${esc(it.letter || "•")}</span>
-      <input class="name-input" aria-label="Exercise name" data-focus="exname-${it.id}" value="${esc(it.name)}" oninput="setField('${date}','${it.id}','name', this.value)" onchange="render()">
+      <input class="name-input" aria-label="Exercise name" data-focus="exname-${it.id}" value="${esc(it.name)}" oninput="setField('${date}','${it.id}','name', this.value)" onchange="renderSoon()">
       <button type="button" class="pill" onclick="toggleEditorMenu('letterMenu', event)">${esc(letterCode(day, it))} ▾</button>
       <button type="button" class="iconbtn" title="Delete" onclick="askDelete('${date}','${it.id}')">🗑</button>
       <button type="button" class="iconbtn" title="Close" onclick="state.editor=null;render()">✕</button>
@@ -1340,7 +1438,7 @@ function editorHead(date, it, day) {
 }
 function workTable(date, it) {
   const keys = [];
-  if (it.trackReps !== false || it.type === "circuit") keys.push("reps");
+  if (it.trackTime || it.trackReps !== false || it.type === "circuit") keys.push("reps");
   (it.props || []).forEach((key) => { if (PROP_LABEL[key] && keys.indexOf(key) < 0) keys.push(key); });
   const propRows = keys.map((p) => propRow(date, it, p)).join("");
   return `<table class="prop-table"><tr><th></th>${Array.from({ length: it.sets || 1 }, (_, i) => `<th>Set ${i + 1}</th>`).join("")}</tr>${propRows}</table>`;
@@ -1377,7 +1475,7 @@ function editorActions(date, it) {
         <button type="button" class="pill" onclick="toggleEditorMenu('optionsMenu', event)">Options ▾</button>
         ${optionsPop(date, it)}
       </div>
-      <button type="button" class="pill ${it.trackReps ? "on" : ""}" onclick="toggleFlag('${date}','${it.id}','trackReps')">${it.trackReps ? "✓ " : ""}Track Reps ▾</button>
+      ${trackControl(date, it)}
       <button type="button" class="pill ${it.trackVolume ? "on" : ""}" onclick="toggleFlag('${date}','${it.id}','trackVolume')">${it.trackVolume ? "✓ " : ""}Track Volume ▾</button>
     </div>${volume}`;
 }
@@ -1401,15 +1499,15 @@ function editorPop(date) {
   if (it.type === "circuit") {
     return `<div class="editor build-editor" onclick="event.stopPropagation()">${head}
       <div class="hint">Stations, one per line</div>
-      <textarea data-focus="detail-${it.id}" oninput="setField('${date}','${it.id}','detail', this.value)" onchange="render()">${esc(it.detail || "")}</textarea>
+      <textarea data-focus="detail-${it.id}" oninput="setField('${date}','${it.id}','detail', this.value)" onchange="renderSoon()">${esc(it.detail || "")}</textarea>
       <div class="sets-line">${setRow(date, it, "Rounds")}</div>
       ${circuitActions(date, it)}
     </div>`;
   }
   if (it.type === "break" || it.type === "video" || it.type === "rest") {
     return `<div class="editor build-editor" onclick="event.stopPropagation()">${head}
-      ${it.type === "video" ? `<input data-focus="vid-${it.id}" placeholder="Video URL" value="${esc(it.videoUrl)}" oninput="setField('${date}','${it.id}','videoUrl', this.value)" onchange="render()">` : ""}
-      ${it.type === "rest" ? `<div class="row">Seconds <input style="width:80px" data-focus="rest-${it.id}" value="${esc(it.reps[0] || 60)}" oninput="setRestSeconds('${date}','${it.id}', this.value)" onchange="render()"></div>` : ""}
+      ${it.type === "video" ? `<input data-focus="vid-${it.id}" placeholder="Video URL" value="${esc(it.videoUrl)}" oninput="setField('${date}','${it.id}','videoUrl', this.value)" onchange="renderSoon()">` : ""}
+      ${it.type === "rest" ? `<div class="row">Seconds <input style="width:80px" data-focus="rest-${it.id}" value="${esc(it.reps[0] || 60)}" oninput="setRestSeconds('${date}','${it.id}', this.value)" onchange="renderSoon()"></div>` : ""}
     </div>`;
   }
   return `<div class="editor build-editor" onclick="event.stopPropagation()">${head}
@@ -1418,16 +1516,31 @@ function editorPop(date) {
     ${editorActions(date, it)}
   </div>`;
 }
+function trackControl(date, it) {
+  const label = it.trackTime ? "Track Time" : "Track Reps";
+  return `<div class="menu-anchor">
+    <button type="button" class="pill ${it.trackTime || it.trackReps ? "on" : ""}" onclick="toggleEditorMenu('trackMenu', event)">${label} ▾</button>
+    ${state.trackMenu ? `<div class="pop track-pop" onclick="event.stopPropagation()">
+      <button type="button" class="opt ${it.trackTime ? "" : "active"}" onclick="setTrack('${date}','${it.id}','reps')">${it.trackTime ? "" : "✓ "}Reps</button>
+      <button type="button" class="opt ${it.trackTime ? "active" : ""}" onclick="setTrack('${date}','${it.id}','time')">${it.trackTime ? "✓ " : ""}Seconds</button>
+    </div>` : ""}
+  </div>`;
+}
 function setRow(date, it, label) {
+  const fill = label === "Sets"
+    ? `<button type="button" class="pill" aria-label="Copy set 1 onto every set" onclick="fillSetsFromFirst('${date}','${it.id}')">Fill sets</button>`
+    : "";
   return `<div class="row sets-row"><span class="sets-label">${label}</span><div class="stepper">
     <button type="button" aria-label="Fewer ${label}" onclick="changeSets('${date}','${it.id}',-1)">−</button><b>${it.sets}</b>
     <button type="button" aria-label="More ${label}" onclick="changeSets('${date}','${it.id}',1)">+</button>
   </div><span class="hint"># of ${label}: 1–10</span>
+  ${fill}
   <button type="button" class="iconbtn" title="Delete" onclick="askDelete('${date}','${it.id}')">🗑</button></div>`;
 }
 function propMenu(date, id) {
   const it = findItem(date, id);
-  const opts = [["load", "Load"], ["rest", "Rest"], ["tempo", "Tempo"], ["velocity", "Velocity"], ["power", "Peak Power"], ["pct", "%PR"]];
+  const loadLabel = displayUnit() ? "Load (" + unitWord(displayUnit()) + ")" : "Load";
+  const opts = [["load", loadLabel], ["rest", "Rest"], ["tempo", "Tempo"], ["velocity", "Velocity"], ["power", "Peak Power"], ["pct", "%PR"]];
   return `<div class="pop prop-menu" onclick="event.stopPropagation()">
     <div class="prop-menu-h"><b>Add Property</b><span>Ctrl+P</span></div>
     ${opts.map(([k, l]) => `<button type="button" class="opt ${(it.props || []).includes(k) ? "active" : ""}" onclick="addProp('${date}','${id}','${k}')">${(it.props || []).includes(k) ? "✓ " : ""}${l}</button>`).join("")}
@@ -1447,11 +1560,16 @@ function propArray(it, key) {
   while (arr.length < sets) arr.push("");
   return arr;
 }
+function fieldLabel(it, key) {
+  if (key === "reps") return it && it.trackTime ? "Time" : "Reps";
+  if (key === "load") return displayUnit() ? "Load (" + unitWord(displayUnit()) + ")" : "Load";
+  return PROP_LABEL[key];
+}
 function propRow(date, it, key) {
-  if (key === "reps" && it.trackReps === false && it.type !== "circuit") return "";
-  const label = key === "reps" ? "Reps" : PROP_LABEL[key];
-  const info = key === "reps" ? `<button type="button" class="iconbtn reps-info" title="Reps for each set" onclick="event.stopPropagation();toast('Reps prescribed for each set')">ⓘ</button>` : "";
-  const cells = propArray(it, key).map((v, i) => `<td><input aria-label="${label} set ${i + 1}" data-focus="${key}-${it.id}-${i}" value="${esc(v)}" oninput="setCell('${date}','${it.id}','${key}',${i}, this.value)" onchange="render()"></td>`).join("");
+  if (key === "reps" && it.trackReps === false && !it.trackTime && it.type !== "circuit") return "";
+  const label = fieldLabel(it, key);
+  const info = key === "reps" ? `<button type="button" class="iconbtn reps-info" title="${it.trackTime ? "Seconds for each set" : "Reps for each set"}" onclick="event.stopPropagation();toast('${it.trackTime ? "Seconds prescribed for each set" : "Reps prescribed for each set"}')">ⓘ</button>` : "";
+  const cells = propArray(it, key).map((v, i) => `<td><input aria-label="${label} set ${i + 1}" data-focus="${key}-${it.id}-${i}" value="${esc(v)}" oninput="setCell('${date}','${it.id}','${key}',${i}, this.value)" onchange="renderSoon()"></td>`).join("");
   return `<tr><th>${label}${info}</th>${cells}</tr>`;
 }
 function optionsPop(date, it) {
@@ -1490,6 +1608,32 @@ function changeSets(date, id, d) {
   snapshot();
   const it = findItem(date, id);
   resizeSets(it, (it.sets || 1) + d);
+  refreshFutureCopies(date);
+  render();
+}
+function fillSetsFromFirst(date, id) {
+  const it = findItem(date, id);
+  if (!it) return;
+  snapshot();
+  const n = it.sets || 1;
+  const fill = (arr) => {
+    const first = arr && arr.length ? arr[0] : "";
+    return Array.from({ length: n }, () => (first == null ? "" : first));
+  };
+  it.reps = fill(it.reps || []);
+  ["loads", "rests", "tempos", "velocities", "powers", "pcts"].forEach((key) => {
+    it[key] = fill(it[key] || []);
+  });
+  refreshFutureCopies(date);
+  render();
+}
+function setTrack(date, id, mode) {
+  const it = findItem(date, id);
+  if (!it) return;
+  snapshot();
+  it.trackTime = mode === "time";
+  it.trackReps = mode !== "time";
+  state.trackMenu = false;
   refreshFutureCopies(date);
   render();
 }
@@ -1887,7 +2031,8 @@ async function publishDay(date, opts = {}) {
   const day = cal()[date];
   const person = athlete();
   if (!person || person.id === "none") { if (!opts.quiet) toast("Create a group or athlete first"); return; }
-  if (!day || !day.items.length) { if (!opts.quiet) toast("Add an exercise before saving"); return; }
+  if (!day) { if (!opts.quiet) toast("Pick a day before saving"); return; }
+  if (!(day.items || []).length) day.title = "Rest";
   try {
     if (!opts.quiet) toast("Saving for " + person.name + "…");
     let coachId = state.auth && state.auth.user && state.auth.user.id;
@@ -1918,7 +2063,7 @@ async function publishDay(date, opts = {}) {
         exercise_id: ex.id,
         superset_group: it.letter || "A",
         order_index: exercises.length,
-        prescription_text: scriptLine(it).slice(0, 100),
+        prescription_text: scriptLine(it, { plain: true }).slice(0, 100),
         prescribed_sets: sets,
         target_reps: reps.join(",").slice(0, 50) || "1",
         target_weight: loads.join(",").slice(0, 50),
@@ -2093,21 +2238,29 @@ async function logAthleteSet(weId, setNumber, field, value) {
 }
 function savedDay(date) {
   const day = (state.calendars[state.actingAthlete] || {})[date];
-  if (day && day.savedFor === state.actingAthlete && (day.items || []).length) {
-    return { title: day.title, weekLabel: day.weekLabel, items: day.items, workoutId: day.savedWorkoutId };
+  const fromCalendar = (row) => {
+    const items = row.items || [];
+    return {
+      title: items.length ? (row.title || "Workout") : "Rest",
+      weekLabel: row.weekLabel,
+      items,
+      workoutId: row.savedWorkoutId
+    };
+  };
+  if (day && day.savedFor === state.actingAthlete && (day.savedWorkoutId || (day.items || []).length)) {
+    return fromCalendar(day);
   }
   const workout = (state.athleteWorkouts || {})[date];
   if (!workout) {
-    if (day && (day.items || []).length) {
-      return { title: day.title, weekLabel: day.weekLabel, items: day.items, workoutId: day.savedWorkoutId };
-    }
+    if (day && ((day.items || []).length || day.savedWorkoutId)) return fromCalendar(day);
     return null;
   }
+  const items = workoutToDayItems(workout);
   return {
-    title: workout.title,
+    title: items.length ? (workout.title || "Workout") : "Rest",
     weekLabel: weekName(date),
     workoutId: workout.id,
-    items: workoutToDayItems(workout)
+    items
   };
 }
 function athleteDayCol(date) {
@@ -2118,11 +2271,12 @@ function athleteDayCol(date) {
     const letter = it.letter ? `<span class="letter" style="background:${color}">${esc(it.letter)}</span>` : `<span class="letter" style="background:#444;color:#fff">–</span>`;
     return `<div class="ex">${letter}<div class="ex-main"><div class="ex-name">${esc(it.name)}</div><div class="ex-sub">${esc(scriptLine(it))}</div></div></div>`;
   }).join("") : "";
+  const isRest = !day || !(day.items || []).length;
   const openAttr = day ? ` onclick="openAthleteDay('${date}')"` : "";
-  return `<div class="day ${day ? "read" : "rest-day"} ${open}" data-day="${date}"${openAttr}>
+  return `<div class="day ${isRest ? "rest-day" : "read"} ${open}" data-day="${date}"${openAttr}>
     <div class="day-top"><span>${fmtDay(date)}</span></div>
     <div class="week-label">${esc((day && day.weekLabel) || weekName(date))}</div>
-    <div class="day-title ${day ? "" : "placeholder"}">${day ? esc(day.title || "Workout") : "Rest"}</div>
+    <div class="day-title ${isRest ? "placeholder" : ""}">${esc(isRest ? "Rest" : (day.title || "Workout"))}</div>
     <div>${items}</div>
   </div>`;
 }
@@ -2259,6 +2413,9 @@ function noteForm(workoutId) {
     ${existing ? `<div class="hint">Sent: ${esc(existing)}</div>` : ""}
   </form>`;
 }
+function weTracksTime(we) {
+  return noteValues(we, "Flags").indexOf("trackTime") >= 0;
+}
 function noteValues(we, label) {
   const line = String(we.notes || "").split("\n").find((row) => row.indexOf(label + ":") === 0) || "";
   return line ? line.slice(label.length + 1).split(",") : [];
@@ -2296,7 +2453,7 @@ function athleteExercise(we) {
     }).join("");
     return `<tr><td>${n}</td>
       <td><input aria-label="Weight set ${n}" value="${esc(shownWeight)}" onchange="logAthleteSet(${we.id}, ${n}, 'weight', this.value)"></td>
-      <td><input aria-label="Reps set ${n}" value="${esc(shownReps)}" onchange="logAthleteSet(${we.id}, ${n}, 'reps', this.value)"></td>
+      <td><input aria-label="${weTracksTime(we) ? "Time" : "Reps"} set ${n}" value="${esc(shownReps)}" onchange="logAthleteSet(${we.id}, ${n}, 'reps', this.value)"></td>
       <td><input aria-label="Rest set ${n}" value="${esc(rest)}" onchange="logAthleteSet(${we.id}, ${n}, 'rest', this.value)"></td>
       ${extraCells}
       <td><input aria-label="Done set ${n}" type="checkbox" ${log.completed ? "checked" : ""} onchange="logAthleteSet(${we.id}, ${n}, 'completed', this.checked)"></td></tr>`;
@@ -2307,7 +2464,7 @@ function athleteExercise(we) {
   return `<div style="margin:12px 0">
     <strong>${esc(we.superset_group || "")} ${esc((we.exercise && we.exercise.name) || "Exercise")}</strong>
     <div class="hint">${esc(we.prescription_text || "")}${note ? " · " + esc(note) : ""}</div>
-    <table class="sets"><tr><th>Set</th><th>Kg</th><th>Reps</th><th>Rest (s)</th>${heads}<th>Done</th></tr>${rows}</table>
+    <table class="sets"><tr><th>Set</th><th>${esc(unitTitle(entryUnit()))}</th><th>${weTracksTime(we) ? "Time (s)" : "Reps"}</th><th>Rest (s)</th>${heads}<th>Done</th></tr>${rows}</table>
   </div>`;
 }
 function shareDay(date) { state.dayMenu = null; state.modal = { type: "share", date }; render(); }
@@ -2669,9 +2826,11 @@ function previewSheet(it, log) {
     }
     return `<tr><td>${i + 1}</td><td>${rep}</td></tr>`;
   }).join("");
+  const doseHead = it.trackTime ? "TIME" : "REPS";
+  const weightHead = displayUnit() === "lbs" ? "LBS" : (displayUnit() === "kg" ? "KG" : "WEIGHT");
   const head = loaded
-    ? "<tr><th>SET</th><th>WEIGHT</th><th>REPS</th></tr>"
-    : "<tr><th>SET</th><th>REPS</th></tr>";
+    ? `<tr><th>SET</th><th>${weightHead}</th><th>${doseHead}</th></tr>`
+    : `<tr><th>SET</th><th>${doseHead}</th></tr>`;
   return `${note}${detail}<table class="preview-sets">${head}${rows}</table>${button}`;
 }
 function completePreview() {
@@ -2797,6 +2956,7 @@ function entryView() {
         ${athleteObj ? `<div class="panel athlete-mini">
             <div class="bigav">${esc((athleteObj.name || "A").slice(0, 1))}</div>
             <strong>${esc(athleteObj.name)}</strong>
+            ${unitSelect(athleteObj.id)}
             <div><button class="switch" onclick="state.entryOpen=!state.entryOpen;render()">SWITCH ATHLETE</button></div>
             ${state.entryOpen ? athletePicker() : ""}
             <button class="blackbtn" onclick="goTool('exercises')">Program Library</button>
@@ -2847,6 +3007,7 @@ function athleteEntryView() {
         <div class="panel athlete-mini">
           <div class="bigav">${esc((who.name || "A").slice(0, 1))}</div>
           <strong>${esc(who.name)}</strong>
+          ${unitSelect(who.id)}
           <button class="blackbtn" type="button" onclick="go('mine')">My Schedule</button>
           <button class="blackbtn" type="button" onclick="window.print()">Print Workout</button>
         </div>
@@ -2892,7 +3053,7 @@ function pickAthlete(id) {
 function entryItem(aid, date, it) {
   const key = aid + ":" + date + ":" + it.id;
   const open = state.entryItem === it.id;
-  const fields = [["w", "Kg"], ["r", "Reps"]];
+  const fields = [["w", unitTitle(entryUnit())], ["r", it.trackTime ? "Time (s)" : "Reps"]];
   if (state.role === "athlete") {
     fields.push(["rest", "Rest (s)"]);
     if ((it.tempos || []).some((v) => String(v || "").trim())) fields.push(["tempo", "Tempo"]);
@@ -3308,7 +3469,8 @@ function editUser(id) {
     fields: [
       { key: "first", label: "First name", value: row.first || "" },
       { key: "last", label: "Last name", value: row.last || "" },
-      { key: "email", label: "Email", value: row.email || "", type: "email" }
+      { key: "email", label: "Email", value: row.email || "", type: "email" },
+      { key: "load_unit", label: "Load unit", value: normalizeUnit(row.load_unit), options: ["kg", "lbs"] }
     ],
     onSave: (values) => saveUserEdit(row, values)
   });
@@ -3546,10 +3708,13 @@ async function saveUserEdit(row, values) {
   const email = (values.email || "").trim();
   if (!first || !email) { toast("First name and email are required"); return; }
   const name = (first + " " + last).trim();
+  const loadUnit = normalizeUnit(values.load_unit);
   if (row.serverId) {
-    try { await api("PUT", "/api/users/" + row.serverId, { name, email }); }
+    try { await api("PUT", "/api/users/" + row.serverId, { name, email, load_unit: loadUnit }); }
     catch (err) { toast("Could not save user"); console.error(err); return; }
   }
+  row.load_unit = loadUnit;
+  if (row.serverId) applyAthleteUnit(row.serverId, loadUnit);
   const previousEmail = row.email;
   row.first = first;
   row.last = last;
@@ -4569,9 +4734,9 @@ document.addEventListener("click", (ev) => {
   if (ev.target.closest(".menu, .pop, .modal, .nav-anchor, .group-pop")) return;
   let changed = false;
   if (state.navMenu) { state.navMenu = null; changed = true; }
-  if (state.dayMenu || state.recurMenu || state.propMenu || state.letterMenu || state.optionsMenu || state.supersetMenu || state.colorMenu || state.searchDay) {
+  if (state.dayMenu || state.recurMenu || state.propMenu || state.letterMenu || state.optionsMenu || state.supersetMenu || state.trackMenu || state.colorMenu || state.searchDay) {
     state.dayMenu = state.recurMenu = state.colorMenu = state.searchDay = null;
-    state.propMenu = state.letterMenu = state.optionsMenu = state.supersetMenu = false;
+    state.propMenu = state.letterMenu = state.optionsMenu = state.supersetMenu = state.trackMenu = false;
     changed = true;
   }
   if (state.teamFilter) { state.teamFilter = false; changed = true; }

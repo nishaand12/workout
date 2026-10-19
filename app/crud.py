@@ -489,6 +489,9 @@ def update_workout(db: Session, workout_id: int, workout_in: WorkoutUpdate):
     db.commit()
     db.refresh(w)
     w.exercise_count = len(w.exercises)
+    sync_group_day_to_members(db, w)
+    db.refresh(w)
+    w.exercise_count = len(w.exercises)
     return w
 
 def add_workout_to_day(db: Session, req: AddWorkoutToDayRequest) -> Optional[Workout]:
@@ -1045,7 +1048,8 @@ def create_user(db: Session, user_in: UserCreate):
         title=user_in.title or ("Head Coach" if role == "coach" else "Athlete"),
         avatar_color=user_in.avatar_color or "#0ea5e9",
         status_badge=user_in.status_badge or "Active",
-        position_tag=user_in.position_tag or "Athlete"
+        position_tag=user_in.position_tag or "Athlete",
+        load_unit="lbs" if str(getattr(user_in, "load_unit", "") or "").lower() == "lbs" else "kg",
     )
     access.apply_role_flags(user, role)
     db.add(user)
@@ -1058,6 +1062,8 @@ def update_user(db: Session, user_id: int, user_in: UserUpdate):
     if not user:
         return None
     for field, val in user_in.model_dump(exclude_unset=True).items():
+        if field == "load_unit":
+            val = "lbs" if str(val or "").lower() == "lbs" else "kg"
         setattr(user, field, val)
     db.commit()
     db.refresh(user)
@@ -1224,6 +1230,86 @@ def assignment_for_student_on_date(db: Session, student: User, date_str: str):
         WorkoutAssignment.scheduled_date == date_str
     ).order_by(desc(WorkoutAssignment.id)).first()
 
+def _workout_exercise_snapshots(workout: Workout) -> list:
+    snaps = []
+    for we in sorted(list(workout.exercises or []), key=lambda row: row.order_index or 0):
+        snaps.append({
+            "exercise_id": we.exercise_id,
+            "superset_group": we.superset_group or "A",
+            "order_index": we.order_index or 0,
+            "prescription_text": we.prescription_text or "",
+            "prescribed_sets": we.prescribed_sets or 0,
+            "target_reps": we.target_reps or "",
+            "target_weight": we.target_weight or "",
+            "rest_seconds": we.rest_seconds or 0,
+            "notes": we.notes or "",
+            "is_ea": bool(we.is_ea),
+        })
+    return snaps
+
+
+def _group_athletes(db: Session, group: Group) -> list:
+    found = {}
+    for member in list(group.members or []):
+        found[member.id] = member
+    for user in db.query(User).filter(User.team_id == group.id).all():
+        found[user.id] = user
+    return list(found.values())
+
+
+def write_group_day_onto_members(db: Session, group: Optional[Group], source: Optional[Workout], scheduled_date: str, coach_id: Optional[int]):
+    """Copy a group day onto every athlete in the group, including athletes who already have that day."""
+    if group is None or source is None or not scheduled_date:
+        return
+    snaps = _workout_exercise_snapshots(source)
+    for member in _group_athletes(db, group):
+        personal = db.query(WorkoutAssignment).filter(
+            WorkoutAssignment.user_id == member.id,
+            WorkoutAssignment.scheduled_date == scheduled_date,
+        ).order_by(desc(WorkoutAssignment.id)).first()
+        clone = Workout(
+            title=source.title or "Workout",
+            # Keep the copy off the source program so assigning that program again
+            # does not treat each athlete's copy as another day to assign.
+            program_name=((source.program_name or "wourkout") + " (athlete)")[:255],
+            scheduled_date=scheduled_date,
+            calendar_date=scheduled_date,
+            week_number=source.week_number or 1,
+            day_of_week=source.day_of_week or "",
+            description=source.description or "",
+            video_url=source.video_url or "",
+            created_by_coach_id=coach_id or source.created_by_coach_id,
+            gym_id=source.gym_id,
+        )
+        db.add(clone)
+        db.flush()
+        for snap in snaps:
+            db.add(WorkoutExercise(workout_id=clone.id, **snap))
+        if personal:
+            personal.workout_id = clone.id
+        else:
+            db.add(WorkoutAssignment(
+                workout_id=clone.id,
+                assigned_by_coach_id=coach_id or source.created_by_coach_id,
+                user_id=member.id,
+                scheduled_date=scheduled_date,
+                notes="Saved from group",
+            ))
+    db.commit()
+
+
+def sync_group_day_to_members(db: Session, workout: Optional[Workout]):
+    if not workout:
+        return
+    rows = db.query(WorkoutAssignment).filter(
+        WorkoutAssignment.workout_id == workout.id,
+        WorkoutAssignment.group_id.isnot(None),
+    ).all()
+    for row in rows:
+        group = get_group(db, row.group_id)
+        write_group_day_onto_members(db, group, workout, row.scheduled_date, row.assigned_by_coach_id)
+
+
 def create_assignment(db: Session, assign_in: WorkoutAssignmentCreate):
     assign = WorkoutAssignment(
         workout_id=assign_in.workout_id,
@@ -1236,6 +1322,11 @@ def create_assignment(db: Session, assign_in: WorkoutAssignmentCreate):
     db.add(assign)
     db.commit()
     db.refresh(assign)
+    if assign.group_id:
+        group = get_group(db, assign.group_id)
+        workout = get_workout(db, assign.workout_id)
+        write_group_day_onto_members(db, group, workout, assign.scheduled_date, assign.assigned_by_coach_id)
+        db.refresh(assign)
     assign.workout_title = assign.workout.title if assign.workout else ""
     if assign.group:
         assign.target_name = f"Team: {assign.group.name}"
@@ -1410,13 +1501,22 @@ def push_assignment_to_tomorrow(db: Session, user_id: int, current_date: str):
         WorkoutAssignment.user_id == user_id,
         WorkoutAssignment.scheduled_date == current_date
     ).first()
+    u_group_ids = [g.id for g in user.groups]
+    if user.team_id and user.team_id not in u_group_ids:
+        u_group_ids.append(user.team_id)
     if assign:
         assign.scheduled_date = next_date
+        if u_group_ids:
+            group_same_day = db.query(WorkoutAssignment).filter(
+                WorkoutAssignment.group_id.in_(u_group_ids),
+                WorkoutAssignment.scheduled_date == current_date
+            ).first()
+            if group_same_day:
+                assign.notes = f"Rescheduled from {current_date}"
         db.commit()
         return next_date
 
     # Check for group assignment
-    u_group_ids = [g.id for g in user.groups]
     group_assign = db.query(WorkoutAssignment).filter(
         WorkoutAssignment.group_id.in_(u_group_ids),
         WorkoutAssignment.scheduled_date == current_date
@@ -2411,6 +2511,7 @@ def person_payload(db: Session, user: User) -> dict:
         "roles": list(user.roles),
         "team_id": user.team_id,
         "team_name": user.team_name,
+        "load_unit": "lbs" if str(getattr(user, "load_unit", "") or "").lower() == "lbs" else "kg",
         "led_teams": led,
         "latest_note": latest_athlete_note(db, user.id),
     }
