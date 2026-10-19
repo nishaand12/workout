@@ -478,7 +478,8 @@ function render() {
   if (!root) return;
   const active = document.activeElement;
   const focusId = active && active.dataset ? active.dataset.focus : null;
-  const sel = active && active.selectionStart;
+  const selStart = active && active.selectionStart;
+  const selEnd = active && active.selectionEnd;
   document.querySelectorAll("body > .search-pop").forEach((el) => el.remove());
   if (!state.auth || !state.auth.isAuthenticated) {
     root.className = "";
@@ -502,8 +503,8 @@ function render() {
     const el = document.querySelector(`[data-focus="${focusKey}"]`);
     if (el) {
       el.focus();
-      if (!pending && sel != null && el.setSelectionRange) {
-        try { el.setSelectionRange(sel, sel); } catch (e) { /* ignore */ }
+      if (!pending && selStart != null && el.setSelectionRange) {
+        try { el.setSelectionRange(selStart, selEnd == null ? selStart : selEnd); } catch (e) { /* ignore */ }
       }
     }
   }
@@ -588,7 +589,7 @@ async function enterApp(data) {
   } else await loadGymContext();
   if (state.role !== "athlete") loadExercises();
 }
-const NOTE_SKIP = { Rests: 1, Tempos: 1, Velocities: 1, Powers: 1, Pcts: 1, Props: 1, Flags: 1, Additional: 1 };
+const NOTE_SKIP = { Rests: 1, Tempos: 1, Velocities: 1, Powers: 1, Pcts: 1, Props: 1, Flags: 1, Additional: 1, Seeded: 1 };
 function taggedValue(lines, label) {
   const line = lines.find((row) => row.indexOf(label + ":") === 0) || "";
   return line ? line.slice(label.length + 1) : "";
@@ -612,6 +613,7 @@ function parseNotes(notes, restSeconds) {
     pcts: splitTag(lines, "Pcts"),
     props: splitTag(lines, "Props").filter(Boolean),
     flags: splitTag(lines, "Flags"),
+    seeded: splitTag(lines, "Seeded").filter(Boolean),
     additional
   };
 }
@@ -647,6 +649,8 @@ function itemNotes(it) {
   if (it.type === "circuit" && it.completionOnly === false) flags.push("noCompletionOnly");
   else if (it.completionOnly) flags.push("completionOnly");
   if (flags.length) lines.push("Flags:" + flags.join(","));
+  const seeded = Object.keys(it.fieldSeed || {}).filter((key) => it.fieldSeed[key]);
+  if (seeded.length) lines.push("Seeded:" + seeded.join(","));
   const keys = { Rests: "rests", Tempos: "tempos", Velocities: "velocities", Powers: "powers", Pcts: "pcts" };
   Object.keys(keys).forEach((label) => {
     const tagged = taggedList(label, (it[keys[label]] || []).slice(0, sets));
@@ -687,7 +691,8 @@ function workoutToDayItems(workout) {
         ? false
         : ((type === "circuit" || type === "questionnaire") ? flags.indexOf("trackReps") >= 0 : flags.indexOf("noTrackReps") < 0),
       trackVolume: flags.indexOf("trackVolume") >= 0,
-      completionOnly: type === "circuit" ? flags.indexOf("noCompletionOnly") < 0 : flags.indexOf("completionOnly") >= 0
+      completionOnly: type === "circuit" ? flags.indexOf("noCompletionOnly") < 0 : flags.indexOf("completionOnly") >= 0,
+      fieldSeed: Object.fromEntries((parsed.seeded || []).map((key) => [key, true]))
     });
   });
 }
@@ -1149,6 +1154,7 @@ function buildView() {
   }
   const currentTarget = athlete();
   const saveLabel = currentTarget.isGroup ? "Save for group" : "Save for athlete";
+  const floatingEditor = state.editor ? editorPop(state.editor.day) : "";
   return leftRail() + (state.sidebar ? sidebarHtml() : "") + (state.preview ? previewHtml() : "") +
     `<section class="stage">
       <div class="subhead">
@@ -1176,6 +1182,7 @@ function buildView() {
         </div>
       </div>
       <div class="cal-scroll">${weeksHtml}</div>
+      ${floatingEditor}
     </section>`;
 }
 function buildAthletes() {
@@ -1288,7 +1295,6 @@ function dayCol(date) {
   const focused = state.focusDay === date ? "focus" : "";
   const items = gatedItems(date, day.items).map((it) => exRow(date, day, it)).join("");
   const search = state.searchDay === date ? searchPop(date) : "";
-  const editor = state.editor && state.editor.day === date ? editorPop(date) : "";
   const menu = state.dayMenu === date ? dayMenu(date) : "";
   const recur = state.recurMenu === date ? recurMenu(date) : "";
   const color = state.colorMenu === date ? colorMenu(date) : "";
@@ -1315,7 +1321,6 @@ function dayCol(date) {
     </div>
     ${recur}${color}${menu}
     <div>${items}</div>
-    ${editor}
     <button class="add-ex" onclick="openSearch('${date}', event)">+ Add Exercise</button>
     ${state.clipboard && (state.clipboard.items || []).length ? `<button class="add-ex" onclick="pasteOn('${date}')">Paste ${state.clipboard.items.length} item(s)</button>` : ""}
     ${search}
@@ -1484,20 +1489,26 @@ function setVolume(it) {
   (it.reps || []).forEach((rep, i) => { total += (+rep || 0) * (+((it.loads || [])[i]) || 0); });
   return total;
 }
+function editorFrameWidth(it) {
+  if (!it || it.type === "questionnaire" || it.type === "break" || it.type === "video" || it.type === "rest") return 680;
+  const sets = Math.max(1, it.sets || 1);
+  return Math.min(980, Math.max(680, 188 + sets * 84));
+}
 function editorPop(date) {
   const it = findItem(date, state.editor.id);
   if (!it) return "";
   const day = ensureDay(date);
   const head = editorHead(date, it, day);
+  const frame = `style="width:min(${editorFrameWidth(it)}px, calc(100vw - 32px))"`;
   if (it.type === "questionnaire") {
-    return `<div class="editor build-editor" onclick="event.stopPropagation()">${head}
+    return `<div class="editor build-editor" ${frame} onclick="event.stopPropagation()">${head}
       ${it.questions.map((q, i) => `<div class="q">${i + 1}. ${esc(q)}</div>`).join("")}
       <label class="chk" style="color:#ddd"><input type="checkbox" ${it.requireResponse ? "checked" : ""} onchange="itRequire('${date}','${it.id}', this.checked)"> Require Response</label>
       <div class="hint">All questionnaire items must be fully completed before showing workout.</div>
     </div>`;
   }
   if (it.type === "circuit") {
-    return `<div class="editor build-editor" onclick="event.stopPropagation()">${head}
+    return `<div class="editor build-editor" ${frame} onclick="event.stopPropagation()">${head}
       <div class="hint">Stations, one per line</div>
       <textarea data-focus="detail-${it.id}" oninput="setField('${date}','${it.id}','detail', this.value)" onchange="renderSoon()">${esc(it.detail || "")}</textarea>
       <div class="sets-line">${setRow(date, it, "Rounds")}</div>
@@ -1505,12 +1516,12 @@ function editorPop(date) {
     </div>`;
   }
   if (it.type === "break" || it.type === "video" || it.type === "rest") {
-    return `<div class="editor build-editor" onclick="event.stopPropagation()">${head}
+    return `<div class="editor build-editor" ${frame} onclick="event.stopPropagation()">${head}
       ${it.type === "video" ? `<input data-focus="vid-${it.id}" placeholder="Video URL" value="${esc(it.videoUrl)}" oninput="setField('${date}','${it.id}','videoUrl', this.value)" onchange="renderSoon()">` : ""}
       ${it.type === "rest" ? `<div class="row">Seconds <input style="width:80px" data-focus="rest-${it.id}" value="${esc(it.reps[0] || 60)}" oninput="setRestSeconds('${date}','${it.id}', this.value)" onchange="renderSoon()"></div>` : ""}
     </div>`;
   }
-  return `<div class="editor build-editor" onclick="event.stopPropagation()">${head}
+  return `<div class="editor build-editor" ${frame} onclick="event.stopPropagation()">${head}
     <div class="sets-line">${setRow(date, it, "Sets")}${addPropButton(date, it)}</div>
     ${workTable(date, it)}
     ${editorActions(date, it)}
@@ -1569,7 +1580,7 @@ function propRow(date, it, key) {
   if (key === "reps" && it.trackReps === false && !it.trackTime && it.type !== "circuit") return "";
   const label = fieldLabel(it, key);
   const info = key === "reps" ? `<button type="button" class="iconbtn reps-info" title="${it.trackTime ? "Seconds for each set" : "Reps for each set"}" onclick="event.stopPropagation();toast('${it.trackTime ? "Seconds prescribed for each set" : "Reps prescribed for each set"}')">ⓘ</button>` : "";
-  const cells = propArray(it, key).map((v, i) => `<td><input aria-label="${label} set ${i + 1}" data-focus="${key}-${it.id}-${i}" value="${esc(v)}" oninput="setCell('${date}','${it.id}','${key}',${i}, this.value)" onchange="renderSoon()"></td>`).join("");
+  const cells = propArray(it, key).map((v, i) => `<td><input aria-label="${label} set ${i + 1}" data-focus="${key}-${it.id}-${i}" data-set-field="${key}" autocomplete="off" value="${esc(v)}" oninput="setCell('${date}','${it.id}','${key}',${i}, this.value)" onchange="commitSetCell('${date}','${it.id}','${key}',${i});renderSoon()" onkeydown="tabSetField(event,'${date}','${it.id}','${key}',${i})" onfocus="this.select()"></td>`).join("");
   return `<tr><th>${label}${info}</th>${cells}</tr>`;
 }
 function optionsPop(date, it) {
@@ -1624,7 +1635,87 @@ function fillSetsFromFirst(date, id) {
   ["loads", "rests", "tempos", "velocities", "powers", "pcts"].forEach((key) => {
     it[key] = fill(it[key] || []);
   });
+  it.touchedCells = {};
   refreshFutureCopies(date);
+  render();
+}
+const SET_ARRAY = { reps: "reps", load: "loads", rest: "rests", tempo: "tempos", velocity: "velocities", power: "powers", pct: "pcts" };
+function setArray(it, key) {
+  const name = SET_ARRAY[key];
+  if (!name) return [];
+  if (!it[name]) it[name] = [];
+  return it[name];
+}
+function setFieldOrder(it) {
+  const keys = [];
+  if (it.trackTime || it.trackReps !== false || it.type === "circuit") keys.push("reps");
+  (it.props || []).forEach((key) => { if (PROP_LABEL[key] && keys.indexOf(key) < 0) keys.push(key); });
+  const order = [];
+  const n = it.sets || 1;
+  keys.forEach((key) => {
+    if (key === "reps" && it.trackReps === false && !it.trackTime && it.type !== "circuit") return;
+    for (let i = 0; i < n; i++) order.push({ key, i, focus: key + "-" + it.id + "-" + i });
+  });
+  return order;
+}
+function rememberUntouched(it, key) {
+  const arr = setArray(it, key);
+  const baseline = arr.length ? String(arr[0] ?? "") : "";
+  const touched = it.touchedCells || (it.touchedCells = {});
+  const n = it.sets || 1;
+  for (let j = 1; j < n; j++) {
+    if (String(arr[j] ?? "") !== baseline) touched[key + ":" + j] = true;
+  }
+  it._set1Session = { key, baseline };
+}
+function propagateSet1(it, key, value) {
+  const arr = setArray(it, key);
+  const touched = it.touchedCells || {};
+  const n = it.sets || 1;
+  for (let j = 1; j < n; j++) {
+    if (touched[key + ":" + j]) continue;
+    while (arr.length <= j) arr.push("");
+    arr[j] = value;
+  }
+}
+function paintSetFields(it, key) {
+  const arr = setArray(it, key);
+  const n = it.sets || 1;
+  for (let j = 0; j < n; j++) {
+    const el = document.querySelector('[data-focus="' + key + "-" + it.id + "-" + j + '"]');
+    if (!el || document.activeElement === el) continue;
+    el.value = arr[j] == null ? "" : String(arr[j]);
+  }
+}
+function commitSet1Session(it) {
+  if (!it || !it._set1Session) return;
+  const session = it._set1Session;
+  it._set1Session = null;
+  if (!session.dirty) return;
+  const arr = setArray(it, session.key);
+  if (String(arr[0] ?? "") === session.baseline) return;
+  if (!it.fieldSeed) it.fieldSeed = {};
+  it.fieldSeed[session.key] = true;
+}
+function commitSetCell(date, id, key, i) {
+  const it = findItem(date, id);
+  if (!it || i !== 0) return;
+  const before = JSON.stringify(it.fieldSeed || {});
+  commitSet1Session(it);
+  if (JSON.stringify(it.fieldSeed || {}) !== before) refreshFutureCopies(date);
+}
+function tabSetField(ev, date, id, key, i) {
+  if (!ev || ev.key !== "Tab" || ev.altKey || ev.metaKey || ev.ctrlKey) return;
+  const it = findItem(date, id);
+  if (!it) return;
+  const order = setFieldOrder(it);
+  const idx = order.findIndex((row) => row.key === key && row.i === i);
+  if (idx < 0) return;
+  const dest = order[ev.shiftKey ? idx - 1 : idx + 1];
+  if (!dest) return;
+  ev.preventDefault();
+  if (i === 0) commitSet1Session(it);
+  state.pendingFocus = dest.focus;
   render();
 }
 function setTrack(date, id, mode) {
@@ -1660,10 +1751,24 @@ function addProp(date, id, key) {
 }
 function setCell(date, id, key, i, value) {
   const it = findItem(date, id);
-  const map = { reps: "reps", load: "loads", rest: "rests", tempo: "tempos", velocity: "velocities", power: "powers", pct: "pcts" };
-  if (!it[map[key]]) it[map[key]] = [];
-  while (it[map[key]].length <= i) it[map[key]].push("");
-  it[map[key]][i] = value;
+  if (!it || !SET_ARRAY[key]) return;
+  const arr = setArray(it, key);
+  while (arr.length <= i) arr.push("");
+  const seeded = !!(it.fieldSeed && it.fieldSeed[key]);
+  if (i > 0) {
+    if (!it.touchedCells) it.touchedCells = {};
+    it.touchedCells[key + ":" + i] = true;
+  }
+  if (i === 0 && !seeded) {
+    if (it._set1Session && it._set1Session.key !== key) commitSet1Session(it);
+    if (!it._set1Session || it._set1Session.key !== key) rememberUntouched(it, key);
+    arr[0] = value;
+    it._set1Session.dirty = String(value) !== it._set1Session.baseline;
+    propagateSet1(it, key, value);
+    paintSetFields(it, key);
+  } else {
+    arr[i] = value;
+  }
   refreshFutureCopies(date);
 }
 function setField(date, id, key, value) {
