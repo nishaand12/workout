@@ -331,7 +331,10 @@ function cal() {
 }
 function ensureDay(date, athleteId = state.athleteId) {
   const c = state.calendars[athleteId] || (state.calendars[athleteId] = {});
-  if (!c[date]) c[date] = blankDay(date);
+  if (!c[date]) {
+    c[date] = blankDay(date);
+    if (state.calendarLoaded[athleteId]) c[date].hydrated = true;
+  }
   return c[date];
 }
 function findItem(day, id) {
@@ -703,6 +706,240 @@ function workoutToDayItems(workout) {
   });
 }
 
+const autosaveTimers = {};
+const daySaveLock = {};
+const AUTOSAVE_MS = 500;
+
+function daySaveKey(athleteId, date) {
+  return athleteId + "\n" + date;
+}
+function draftStoreKey() {
+  const id = state.auth && state.auth.user && state.auth.user.id;
+  return "wourkout_day_drafts:" + (id || "local");
+}
+function readDrafts() {
+  try {
+    const raw = localStorage.getItem(draftStoreKey());
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (err) {
+    return {};
+  }
+}
+function writeDrafts(all) {
+  try {
+    if (!all || !Object.keys(all).length) localStorage.removeItem(draftStoreKey());
+    else localStorage.setItem(draftStoreKey(), JSON.stringify(all));
+  } catch (err) { /* the in-memory day still autosaves */ }
+}
+function draftPayload(day) {
+  const items = JSON.parse(JSON.stringify(day.items || [])).map((it) => {
+    delete it.selected;
+    delete it._set1Session;
+    return it;
+  });
+  return {
+    editSeq: day.editSeq || 1,
+    title: day.title || "",
+    weekLabel: day.weekLabel || "",
+    color: day.color || "",
+    recurring: day.recurring || 0,
+    recurWeeks: day.recurWeeks || 0,
+    recurFrom: day.recurFrom || null,
+    savedWorkoutId: day.savedWorkoutId || null,
+    assignmentId: day.assignmentId || null,
+    items
+  };
+}
+function storeDraft(athleteId, date, day) {
+  const all = readDrafts();
+  if (!all[athleteId]) all[athleteId] = {};
+  all[athleteId][date] = draftPayload(day);
+  writeDrafts(all);
+}
+function clearDraft(athleteId, date) {
+  const all = readDrafts();
+  if (!all[athleteId] || !all[athleteId][date]) return;
+  delete all[athleteId][date];
+  if (!Object.keys(all[athleteId]).length) delete all[athleteId];
+  writeDrafts(all);
+}
+function noteDayEdit(date, athleteId) {
+  athleteId = athleteId || state.athleteId;
+  if (!date || !athleteId || athleteId === "none") return;
+  const day = ensureDay(date, athleteId);
+  day.edited = true;
+  day.editSeq = (day.editSeq || 0) + 1;
+  if (!day.hydrated) return;
+  storeDraft(athleteId, date, day);
+  scheduleAutosave(athleteId, date);
+}
+function scheduleAutosave(athleteId, date) {
+  const day = (state.calendars[athleteId] || {})[date];
+  if (!day || !day.edited || !day.hydrated) return;
+  const key = daySaveKey(athleteId, date);
+  clearTimeout(autosaveTimers[key]);
+  autosaveTimers[key] = setTimeout(() => {
+    delete autosaveTimers[key];
+    queueDaySave(athleteId, date, { explicit: false });
+  }, AUTOSAVE_MS);
+}
+function queueDaySave(athleteId, date, opts) {
+  const key = daySaveKey(athleteId, date);
+  const prev = daySaveLock[key] || Promise.resolve();
+  const run = prev.then(() => saveDayNow(athleteId, date, opts)).catch((err) => { console.error(err); });
+  daySaveLock[key] = run;
+  return run;
+}
+async function saveDayNow(athleteId, date, opts) {
+  const day = (state.calendars[athleteId] || {})[date];
+  if (!day) return;
+  if (!day.hydrated) {
+    if (opts.explicit) toast("That day is still loading");
+    return;
+  }
+  if (!opts.explicit && !day.edited) return;
+  const seq = day.editSeq || 0;
+  const ok = await publishDay(date, { quiet: !opts.explicit, athleteId });
+  const after = (state.calendars[athleteId] || {})[date];
+  if (!after) return;
+  if (!ok) {
+    after.saveFails = (after.saveFails || 0) + 1;
+    if (!opts.explicit && after.edited && after.saveFails <= 3) {
+      setTimeout(() => scheduleAutosave(athleteId, date), Math.min(8000, 1000 * after.saveFails));
+    }
+    return;
+  }
+  after.saveFails = 0;
+  if ((after.editSeq || 0) === seq) {
+    after.edited = false;
+    clearDraft(athleteId, date);
+  } else if (after.edited) scheduleAutosave(athleteId, date);
+}
+function flushAutosaves() {
+  Object.keys(autosaveTimers).forEach((key) => {
+    clearTimeout(autosaveTimers[key]);
+    delete autosaveTimers[key];
+  });
+  Object.keys(state.calendars || {}).forEach((athleteId) => {
+    Object.keys(state.calendars[athleteId] || {}).forEach((date) => {
+      const day = state.calendars[athleteId][date];
+      if (day && day.edited && day.hydrated) queueDaySave(athleteId, date, { explicit: false });
+    });
+  });
+}
+function dayFromDraft(athleteId, date, draft, local) {
+  const day = blankDay(date, {
+    title: draft.title || "",
+    weekLabel: draft.weekLabel || weekName(date),
+    recurring: draft.recurring || 0,
+    color: draft.color || (local && local.color) || "#3b82f6",
+    items: draft.items || [],
+    savedFor: athleteId,
+    savedWorkoutId: (local && local.savedWorkoutId) || draft.savedWorkoutId || null,
+    assignmentId: (local && local.assignmentId) || draft.assignmentId || null
+  });
+  day.recurWeeks = draft.recurWeeks || 0;
+  day.recurFrom = draft.recurFrom || null;
+  day.hydrated = true;
+  day.edited = true;
+  day.editSeq = draft.editSeq || 1;
+  if (local && local.savedAt) day.savedAt = local.savedAt;
+  return day;
+}
+function applyDrafts(athleteId) {
+  const bucket = readDrafts()[athleteId] || {};
+  const calObj = state.calendars[athleteId] || (state.calendars[athleteId] = {});
+  Object.keys(bucket).forEach((date) => {
+    const local = calObj[date];
+    if (local && local.hydrated && local.edited) return;
+    calObj[date] = dayFromDraft(athleteId, date, bucket[date], local);
+    scheduleAutosave(athleteId, date);
+  });
+}
+function mergeShellEdit(athleteId, date, local, entry) {
+  const w = entry.workout;
+  const serverItems = workoutToDayItems(w);
+  const localItems = local.items || [];
+  const cleared = !localItems.length && local.title === "Rest" && serverItems.length > 0;
+  const added = localItems.filter((it) => !serverItems.some((row) => row.id === it.id));
+  const titleChanged = !!(local.title && local.title !== (w.title || ""));
+  const day = blankDay(date, {
+    title: cleared ? "Rest" : ((added.length || titleChanged) && local.title ? local.title : (w.title || "Workout")),
+    weekLabel: w.description || local.weekLabel || weekName(date),
+    items: cleared ? [] : serverItems.concat(added),
+    savedFor: athleteId,
+    savedWorkoutId: w.id,
+    assignmentId: entry.assignment_id,
+    color: local.color,
+    recurring: local.recurring
+  });
+  day.recurWeeks = local.recurWeeks || 0;
+  day.recurFrom = local.recurFrom || null;
+  day.hydrated = true;
+  day.edited = cleared || added.length > 0 || titleChanged;
+  day.editSeq = local.editSeq || 1;
+  if (day.edited) {
+    storeDraft(athleteId, date, day);
+    scheduleAutosave(athleteId, date);
+  }
+  return day;
+}
+function daySignature(day) {
+  if (!day) return "";
+  const items = (day.items || []).map((it) => ({
+    name: it.name || "",
+    type: it.type || "",
+    letter: it.letter || "",
+    sets: it.sets || 0,
+    reps: it.reps || [],
+    loads: it.loads || [],
+    rests: it.rests || [],
+    tempos: it.tempos || [],
+    velocities: it.velocities || [],
+    powers: it.powers || [],
+    pcts: it.pcts || [],
+    props: it.props || [],
+    detail: it.detail || "",
+    note: it.note || "",
+    questions: it.questions || [],
+    trackTime: !!it.trackTime,
+    trackReps: it.trackReps !== false,
+    trackVolume: !!it.trackVolume,
+    completionOnly: !!it.completionOnly,
+    requireResponse: !!it.requireResponse,
+    videoUrl: it.videoUrl || "",
+    fieldSeed: it.fieldSeed || {}
+  }));
+  return JSON.stringify({
+    title: day.title || "",
+    color: day.color || "",
+    recurWeeks: day.recurWeeks || 0,
+    recurFrom: day.recurFrom || "",
+    items
+  });
+}
+function markCalendarDiff(before, after) {
+  const athleteIds = new Set(Object.keys(before || {}).concat(Object.keys(after || {})));
+  athleteIds.forEach((athleteId) => {
+    const dates = new Set(Object.keys((before && before[athleteId]) || {}).concat(Object.keys((after && after[athleteId]) || {})));
+    dates.forEach((date) => {
+      const prev = before && before[athleteId] && before[athleteId][date];
+      const next = after && after[athleteId] && after[athleteId][date];
+      if (!next || daySignature(prev) === daySignature(next)) return;
+      noteDayEdit(date, athleteId);
+    });
+  });
+}
+function installBuildAutosave() {
+  if (installBuildAutosave.done) return;
+  installBuildAutosave.done = true;
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushAutosaves();
+  });
+  window.addEventListener("pagehide", () => flushAutosaves());
+}
+
 async function loadCalendarSchedule(targetId) {
   if (!targetId || targetId === "none") return;
   const person = buildAthletes().find((a) => a.id === targetId);
@@ -715,31 +952,51 @@ async function loadCalendarSchedule(targetId) {
   } else {
     return;
   }
+  const gen = (loadCalendarSchedule.gen[targetId] = (loadCalendarSchedule.gen[targetId] || 0) + 1);
+  const started = Date.now();
   state.calendarLoading[targetId] = true;
   try {
     const entries = await api("GET", "/api/calendar/schedule" + query);
+    if (loadCalendarSchedule.gen[targetId] !== gen) return;
     state.calendarLoaded[targetId] = true;
     if (!state.calendars[targetId]) state.calendars[targetId] = {};
     const calObj = state.calendars[targetId];
+    const seen = {};
     (entries || []).forEach((entry) => {
       if (!entry.workout || !entry.scheduled_date) return;
+      const date = entry.scheduled_date;
+      seen[date] = true;
+      const local = calObj[date];
+      if (local && local.hydrated && local.edited) return;
+      if (local && local.savedAt && local.savedAt > started) return;
+      if (local && local.edited && !local.hydrated) {
+        calObj[date] = mergeShellEdit(targetId, date, local, entry);
+        return;
+      }
       const w = entry.workout;
-      calObj[entry.scheduled_date] = blankDay(entry.scheduled_date, {
+      calObj[date] = blankDay(date, {
         title: w.title || "Workout",
-        weekLabel: w.description || weekName(entry.scheduled_date),
+        weekLabel: w.description || weekName(date),
         items: workoutToDayItems(w),
         savedFor: targetId,
         savedWorkoutId: w.id,
         assignmentId: entry.assignment_id
       });
+      calObj[date].hydrated = true;
     });
+    Object.keys(calObj).forEach((date) => {
+      if (!seen[date] && calObj[date] && !calObj[date].hydrated) calObj[date].hydrated = true;
+    });
+    applyDrafts(targetId);
     render();
   } catch (err) {
     console.error("Failed to load calendar schedule:", err);
+    if (loadCalendarSchedule.gen[targetId] === gen) applyDrafts(targetId);
   } finally {
-    state.calendarLoading[targetId] = false;
+    if (loadCalendarSchedule.gen[targetId] === gen) state.calendarLoading[targetId] = false;
   }
 }
+loadCalendarSchedule.gen = {};
 
 function syncFromGymContext() {
   const ctx = state.gymContext;
@@ -1467,6 +1724,7 @@ function addItem(date, it) {
   state.editor = null;
   state.focusDay = date;
   refreshFutureCopies(date);
+  noteDayEdit(date);
   noteHist("Added " + it.name);
   openEditor(date, it.id);
 }
@@ -1681,6 +1939,7 @@ function setLetter(date, id, letter) {
   findItem(date, id).letter = letter;
   state.letterMenu = false;
   refreshFutureCopies(date);
+  noteDayEdit(date);
   render();
 }
 function changeSets(date, id, d) {
@@ -1688,6 +1947,7 @@ function changeSets(date, id, d) {
   const it = findItem(date, id);
   resizeSets(it, (it.sets || 1) + d);
   refreshFutureCopies(date);
+  noteDayEdit(date);
   render();
 }
 function fillSetsFromFirst(date, id) {
@@ -1705,6 +1965,7 @@ function fillSetsFromFirst(date, id) {
   });
   it.touchedCells = {};
   refreshFutureCopies(date);
+  noteDayEdit(date);
   render();
 }
 const SET_ARRAY = { reps: "reps", load: "loads", rest: "rests", tempo: "tempos", velocity: "velocities", power: "powers", pct: "pcts" };
@@ -1770,7 +2031,10 @@ function commitSetCell(date, id, key, i) {
   if (!it || i !== 0) return;
   const before = JSON.stringify(it.fieldSeed || {});
   commitSet1Session(it);
-  if (JSON.stringify(it.fieldSeed || {}) !== before) refreshFutureCopies(date);
+  if (JSON.stringify(it.fieldSeed || {}) !== before) {
+    refreshFutureCopies(date);
+    noteDayEdit(date);
+  }
 }
 function tabSetField(ev, date, id, key, i) {
   if (!ev || ev.key !== "Tab" || ev.altKey || ev.metaKey || ev.ctrlKey) return;
@@ -1794,6 +2058,7 @@ function setTrack(date, id, mode) {
   it.trackReps = mode !== "time";
   state.trackMenu = false;
   refreshFutureCopies(date);
+  noteDayEdit(date);
   render();
 }
 function addProp(date, id, key) {
@@ -1815,6 +2080,7 @@ function addProp(date, id, key) {
   }
   state.propMenu = false;
   refreshFutureCopies(date);
+  noteDayEdit(date);
   render();
 }
 function setCell(date, id, key, i, value) {
@@ -1838,18 +2104,21 @@ function setCell(date, id, key, i, value) {
     arr[i] = value;
   }
   refreshFutureCopies(date);
+  noteDayEdit(date);
 }
 function setField(date, id, key, value) {
   const it = findItem(date, id);
   if (!it) return;
   it[key] = value;
   refreshFutureCopies(date);
+  noteDayEdit(date);
 }
 function setRestSeconds(date, id, value) {
   const it = findItem(date, id);
   it.reps[0] = value;
   it.note = value + "s";
   refreshFutureCopies(date);
+  noteDayEdit(date);
 }
 function moveItem(date, id, dir) {
   snapshot();
@@ -1860,6 +2129,7 @@ function moveItem(date, id, dir) {
   const [it] = day.items.splice(i, 1);
   day.items.splice(j, 0, it);
   refreshFutureCopies(date);
+  noteDayEdit(date);
   noteHist("Reordered " + it.name);
   render();
 }
@@ -1867,11 +2137,13 @@ function toggleFlag(date, id, key) {
   const it = findItem(date, id);
   it[key] = !it[key];
   state.optionsMenu = false;
+  noteDayEdit(date);
   render();
 }
 function itRequire(date, id, on) {
   const it = findItem(date, id);
   if (it) it.requireResponse = !!on;
+  noteDayEdit(date);
   render();
 }
 function clearSuperset(date, id) {
@@ -1884,6 +2156,7 @@ function clearSuperset(date, id) {
   it.supersetWith = "";
   state.supersetMenu = false;
   refreshFutureCopies(date);
+  noteDayEdit(date);
   render();
 }
 function joinSuperset(date, id, otherId) {
@@ -1896,6 +2169,7 @@ function joinSuperset(date, id, otherId) {
   it.supersetWith = other.id;
   state.supersetMenu = false;
   refreshFutureCopies(date);
+  noteDayEdit(date);
   toast("Added to superset " + it.letter);
   render();
 }
@@ -1916,6 +2190,7 @@ function duplicateItem(date, id) {
   copy.selected = false;
   day.items.splice(day.items.indexOf(it) + 1, 0, copy);
   state.optionsMenu = false;
+  noteDayEdit(date);
   render();
 }
 function editDetail(date, id) {
@@ -1929,6 +2204,7 @@ function editDetail(date, id) {
     onSave: (values) => {
       it.detail = values.text || "";
       refreshFutureCopies(date);
+      noteDayEdit(date);
       state.modal = null;
       render();
     }
@@ -1962,6 +2238,7 @@ function editWorkoutDay(date, ev) {
 function renameDay(date, value) {
   snapshot();
   ensureDay(date).title = value;
+  noteDayEdit(date);
   noteHist("Renamed workout");
 }
 
@@ -2028,14 +2305,14 @@ function clearFutureCopies(sourceDate) {
   });
   return removed;
 }
-function refreshFutureCopies(date) {
-  const day = ensureDay(date);
+function refreshFutureCopies(date, athleteId = state.athleteId) {
+  const calendar = state.calendars[athleteId] || (state.calendars[athleteId] = {});
+  const day = calendar[date] || (calendar[date] = blankDay(date));
   if (day.recurFrom && day.recurFrom !== date) return [];
   const sourceDate = date;
   const source = day;
   const weeks = source.recurWeeks || 0;
   if (!weeks) return [];
-  const calendar = cal();
   const written = [];
   for (let i = 1; i <= weeks; i++) {
     const next = addDays(sourceDate, i * 7);
@@ -2051,6 +2328,11 @@ function refreshFutureCopies(date) {
     copy.savedFor = source.savedFor || null;
     copy.savedWorkoutId = prev ? prev.savedWorkoutId : null;
     copy.assignmentId = prev ? prev.assignmentId : null;
+    copy.edited = false;
+    copy.editSeq = 0;
+    copy.savedAt = null;
+    copy.hydrated = true;
+    copy.saveFails = 0;
     calendar[next] = copy;
     written.push(next);
   }
@@ -2089,6 +2371,7 @@ async function setRecur(date, weeks) {
     source.recurring = 0;
     source.recurWeeks = 0;
     source.recurFrom = null;
+    noteDayEdit(sourceDate);
     noteHist("Stopped recurring");
     toast("Future copies removed");
     render();
@@ -2101,6 +2384,7 @@ async function setRecur(date, weeks) {
   source.recurWeeks = weeks;
   source.recurFrom = sourceDate;
   const created = refreshFutureCopies(sourceDate);
+  noteDayEdit(sourceDate);
   noteHist("Recurring for " + weeks + " weeks");
   toast(created.length ? "Repeats through " + fmtShort(created[created.length - 1]) : "No future weeks in that range");
   render();
@@ -2119,11 +2403,15 @@ function colorMenu(date) {
   const colors = ["#3b82f6", "#22c55e", "#eab308", "#ef4444", "#a855f7", "#f97316", "#14b8a6", "#e5e5e5"];
   return `<div class="pop" style="right:8px;top:28px;width:160px"><div class="row">${colors.map((c) => `<button onclick="setColor('${date}','${c}')" style="width:22px;height:22px;border-radius:50%;border:0;background:${c}"></button>`).join("")}</div></div>`;
 }
-function setColor(date, c) { snapshot(); ensureDay(date).color = c; state.colorMenu = null; render(); }
+function setColor(date, c) { snapshot(); ensureDay(date).color = c; noteDayEdit(date); state.colorMenu = null; render(); }
 function saveFocused() { saveDay(state.focusDay || APP_TODAY); }
 function saveDay(date) {
   state.dayMenu = null;
-  publishDay(date);
+  const athleteId = state.athleteId;
+  const key = daySaveKey(athleteId, date);
+  clearTimeout(autosaveTimers[key]);
+  delete autosaveTimers[key];
+  return queueDaySave(athleteId, date, { explicit: true });
 }
 
 function errorText(payload, raw) {
@@ -2201,11 +2489,15 @@ function taggedList(label, arr) {
   return label + ":" + values.join(",");
 }
 async function publishDay(date, opts = {}) {
-  const day = cal()[date];
-  const person = athlete();
-  if (!person || person.id === "none") { if (!opts.quiet) toast("Create a group or athlete first"); return; }
-  if (!day) { if (!opts.quiet) toast("Pick a day before saving"); return; }
+  const athleteId = opts.athleteId || state.athleteId;
+  const day = (state.calendars[athleteId] || {})[date];
+  const person = buildAthletes().find((a) => a.id === athleteId) || null;
+  if (!person || person.id === "none") { if (!opts.quiet) toast("Create a group or athlete first"); return false; }
+  if (!day) { if (!opts.quiet) toast("Pick a day before saving"); return false; }
   if (!(day.items || []).length) day.title = "Rest";
+  const snapItems = JSON.parse(JSON.stringify(day.items || []));
+  const snapTitle = day.title || ("Workout " + fmtDay(date));
+  const snapWeek = day.weekLabel || "";
   try {
     if (!opts.quiet) toast("Saving for " + person.name + "…");
     let coachId = state.auth && state.auth.user && state.auth.user.id;
@@ -2224,7 +2516,7 @@ async function publishDay(date, opts = {}) {
       targetUserId = user.id;
     }
     const exercises = [];
-    for (const it of day.items) {
+    for (const it of snapItems) {
       if (!it.name || it.type === "break") continue;
       const category = it.type === "circuit" ? "Circuit" : it.type === "questionnaire" ? "Questionnaire" : "Strength";
       const ex = await ensureExercise(it.name, category);
@@ -2245,13 +2537,13 @@ async function publishDay(date, opts = {}) {
       });
     }
     const payload = {
-      title: day.title || ("Workout " + fmtDay(date)),
+      title: snapTitle,
       program_name: "wourkout " + person.name,
       calendar_date: date,
       scheduled_date: date,
       day_of_week: new Date(date + "T12:00:00").toLocaleDateString("en-US", { weekday: "long" }),
       week_number: 5,
-      description: day.weekLabel || "",
+      description: snapWeek,
       exercises
     };
     const assignQuery = targetGroupId
@@ -2277,22 +2569,25 @@ async function publishDay(date, opts = {}) {
     }
     day.savedWorkoutId = workout.id;
     day.savedFor = person.id;
+    day.savedAt = Date.now();
     state.athleteWorkouts[date] = workout;
-    if (!opts.quiet && day.recurWeeks) {
-      const copies = refreshFutureCopies(date);
+    if (day.recurWeeks && !opts.skipCopies) {
+      const copies = refreshFutureCopies(date, athleteId);
       for (const copyDate of copies) {
-        try { await publishDay(copyDate, { quiet: true }); } catch (err) { console.error(err); }
+        try { await publishDay(copyDate, { quiet: true, athleteId, skipCopies: true }); } catch (err) { console.error(err); }
       }
     }
     if (!opts.quiet && state.auth && state.auth.token) {
       loadGymContext();
     }
-    noteHist("Saved " + fmtDay(date) + " for " + person.name);
+    if (!opts.quiet) noteHist("Saved " + fmtDay(date) + " for " + person.name);
     if (!opts.quiet) toast("Saved for " + person.name);
     render();
+    return true;
   } catch (err) {
     if (!opts.quiet) toast("Save failed: " + (err.message || "error"));
     console.error(err);
+    return false;
   }
 }
 function backToCoach() {
@@ -2641,13 +2936,14 @@ function athleteExercise(we) {
   </div>`;
 }
 function shareDay(date) { state.dayMenu = null; state.modal = { type: "share", date }; render(); }
-function clearTitle(date) { snapshot(); ensureDay(date).title = ""; state.dayMenu = null; render(); }
+function clearTitle(date) { snapshot(); ensureDay(date).title = ""; noteDayEdit(date); state.dayMenu = null; render(); }
 function resetOrder(date) {
   snapshot();
   const day = ensureDay(date);
   day.items.sort((a, b) => String(a.letter || "Z").localeCompare(String(b.letter || "Z")));
   state.dayMenu = null;
   refreshFutureCopies(date);
+  noteDayEdit(date);
   toast("Order grouped by letter");
   render();
 }
@@ -2682,7 +2978,19 @@ function doDelete(date, ids) {
   if (state.editor && ids.includes(state.editor.id)) state.editor = null;
   state.modal = null;
   refreshFutureCopies(date);
+  noteDayEdit(date);
   noteHist("Deleted " + ids.length + " item(s)");
+  render();
+}
+function confirmClear(date) {
+  snapshot();
+  const day = ensureDay(date);
+  day.items = [];
+  day.title = "Rest";
+  if (state.editor && state.editor.day === date) state.editor = null;
+  state.modal = null;
+  noteDayEdit(date);
+  noteHist("Cleared " + fmtDay(date));
   render();
 }
 
@@ -2722,8 +3030,12 @@ function applyCopy() {
       day.color = source.color;
     }
     if (!m.includeLoads) clones.forEach((it) => { it.loads = it.loads.map(() => ""); it.props = it.props.filter((p) => p !== "load"); });
+    noteDayEdit(d, athleteId);
   });
-  if (m.mode === "move") source.items = source.items.filter((it) => !m.ids.includes(it.id));
+  if (m.mode === "move") {
+    source.items = source.items.filter((it) => !m.ids.includes(it.id));
+    noteDayEdit(m.date);
+  }
   state.clipboard = { from: m.date, items: items.map((it) => JSON.parse(JSON.stringify(it))), mode: "copy" };
   toast(items.length + " item(s) copied");
   noteHist("Copied " + items.length + " item(s)");
@@ -2740,8 +3052,10 @@ function pasteOn(date) {
     const src = ensureDay(state.clipboard.from);
     const names = new Set(state.clipboard.items.map((it) => it.id));
     src.items = src.items.filter((it) => !names.has(it.id));
+    noteDayEdit(state.clipboard.from);
     state.clipboard = null;
   }
+  noteDayEdit(date);
   toast(clones.length + " item(s) pasted");
   render();
 }
@@ -2770,6 +3084,8 @@ function dropOn(ev, date, beforeId) {
   const clones = drag.date === date ? moving : moving.map((it) => Object.assign(JSON.parse(JSON.stringify(it)), { id: uid(), selected: false }));
   dest.items.splice(idx, 0, ...clones);
   refreshFutureCopies(date);
+  if (drag.date !== date) noteDayEdit(drag.date);
+  noteDayEdit(date);
   noteHist("Moved " + moving.length + " item(s)");
   drag = null;
   render();
@@ -3063,8 +3379,12 @@ function undo() {
   if (!state.undo.length) return;
   const prev = state.undo.pop();
   if (!prev) return;
-  state.calendars = JSON.parse(prev);
+  const before = state.calendars;
+  let restored;
+  try { restored = JSON.parse(prev); } catch (err) { return; }
+  state.calendars = restored;
   state.editor = null;
+  markCalendarDiff(before, restored);
   toast("Undone");
   render();
 }
@@ -4842,7 +5162,7 @@ function modalHtml() {
     </div></div>`;
   }
   if (m.type === "clear") {
-    return `<div class="modal-back"><div class="modal"><h3>Clear all workout items on ${fmtDay(m.date)}?</h3><button class="full red" onclick="snapshot();ensureDay('${m.date}').items=[];state.modal=null;render()">CLEAR</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
+    return `<div class="modal-back"><div class="modal"><h3>Clear all workout items on ${fmtDay(m.date)}?</h3><button class="full red" onclick="confirmClear('${m.date}')">CLEAR</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
   }
   if (m.type === "share") {
     const link = location.origin + "/?day=" + m.date + "&athlete=" + state.athleteId;
@@ -4882,6 +5202,7 @@ function saveInfo() {
   snapshot();
   it.note = String((field && field.value) || "").slice(0, 255);
   refreshFutureCopies(m.date);
+  noteDayEdit(m.date);
   state.modal = null;
   render();
 }
@@ -5002,6 +5323,7 @@ window.shareDay = shareDay;
 window.clearTitle = clearTitle;
 window.resetOrder = resetOrder;
 window.clearItems = clearItems;
+window.confirmClear = confirmClear;
 window.toggleAll = toggleAll;
 window.toggleItem = toggleItem;
 window.askDelete = askDelete;
@@ -5904,6 +6226,8 @@ window.deleteGoalRecord = deleteGoalRecord;
 window.filterGoalsAthlete = filterGoalsAthlete;
 window.toggleAttendance = toggleAttendance;
 window.loadCalendarSchedule = loadCalendarSchedule;
+
+installBuildAutosave();
 
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", () => {
