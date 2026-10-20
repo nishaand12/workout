@@ -45,6 +45,8 @@ class User(Base):
     position_tag = Column(String(100), default="Athlete")  # 'Varsity RB', 'Sprinter', etc.
     # Load labels for this athlete. Not stored on each workout.
     load_unit = Column(String(8), default="kg", nullable=False)
+    # Distance labels for this athlete. Not stored on each exercise.
+    distance_unit = Column(String(16), default="m", nullable=False)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -164,6 +166,10 @@ class Exercise(Base):
     default_velocity = Column(String(50), default="")
     default_power = Column(String(50), default="")
     default_pct = Column(String(50), default="")
+    default_rest_rep = Column(String(50), default="")
+    default_distance = Column(String(50), default="")
+    intensity_kind = Column(String(20), default="")
+    intensity_value = Column(String(20), default="")
     default_stations = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
 

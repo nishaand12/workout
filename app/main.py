@@ -69,6 +69,7 @@ def ensure_schema_migrations():
             ("gym_id", "INTEGER"),
             ("team_id", "INTEGER"),
             ("load_unit", "VARCHAR(8) DEFAULT 'kg'"),
+            ("distance_unit", "VARCHAR(16) DEFAULT 'm'"),
         )
         for name, ddl in additions:
             if name not in cols:
@@ -81,6 +82,7 @@ def ensure_schema_migrations():
             "UPDATE users SET is_coach = TRUE WHERE LOWER(COALESCE(role, '')) = 'coach' AND is_coach = FALSE",
             "UPDATE users SET is_athlete = TRUE WHERE LOWER(COALESCE(role, '')) IN ('athlete', 'student') AND is_athlete = FALSE",
             "UPDATE users SET load_unit = 'kg' WHERE load_unit IS NULL OR load_unit = ''",
+            "UPDATE users SET distance_unit = 'm' WHERE distance_unit IS NULL OR distance_unit = ''",
         ))
 
     if "groups" in tables:
@@ -119,6 +121,10 @@ def ensure_schema_migrations():
             ("default_velocity", "VARCHAR(50) DEFAULT ''"),
             ("default_power", "VARCHAR(50) DEFAULT ''"),
             ("default_pct", "VARCHAR(50) DEFAULT ''"),
+            ("default_rest_rep", "VARCHAR(50) DEFAULT ''"),
+            ("default_distance", "VARCHAR(50) DEFAULT ''"),
+            ("intensity_kind", "VARCHAR(20) DEFAULT ''"),
+            ("intensity_value", "VARCHAR(20) DEFAULT ''"),
             ("default_stations", "TEXT DEFAULT ''"),
         )
         added_sets = "default_sets" not in ecols

@@ -1015,6 +1015,166 @@ class TrainerFlowTests(unittest.TestCase):
         self.assertEqual(rest_day["workout"]["title"], "Rest")
         self.assertEqual(rest_day["workout"]["exercises"], [])
 
+    def test_exercise_categories_tracking_and_distance_unit(self):
+        blank = self.client.post("/api/exercises", json={"name": f"Plain {self.stamp}", "category": ""})
+        self.assertEqual(blank.status_code, 201, blank.text)
+        self.assertEqual(blank.json()["category"], "Strength")
+
+        warm = self.client.post("/api/exercises", json={
+            "name": f"Warm {self.stamp}",
+            "category": "warmup",
+            "default_sets": 2,
+            "default_reps": "8",
+            "default_rest": "30",
+            "default_rest_rep": "5",
+            "default_distance": "20",
+        })
+        self.assertEqual(warm.status_code, 201, warm.text)
+        self.assertEqual(warm.json()["category"], "Warm up")
+        self.assertEqual(warm.json()["default_rest_rep"], "5")
+        self.assertEqual(warm.json()["default_distance"], "20")
+
+        speed = self.client.post("/api/exercises", json={
+            "name": f"Fly {self.stamp}",
+            "category": "Speed/agility/cardio",
+            "default_sets": 4,
+            "default_reps": "3",
+            "default_load": "20",
+            "default_rest": "60",
+            "default_rest_rep": "2",
+            "default_distance": "30",
+            "default_tempo": "20X1",
+            "default_velocity": "1.1",
+            "default_power": "300",
+            "default_pct": "70",
+            "intensity_kind": "rpe",
+            "intensity_value": "8",
+        })
+        self.assertEqual(speed.status_code, 201, speed.text)
+        body = speed.json()
+        self.assertEqual(body["intensity_kind"], "rpe")
+        self.assertEqual(body["intensity_value"], "8")
+        self.assertEqual(body["default_pct"], "70")
+        self.assertEqual(body["default_tempo"], "20X1")
+
+        renamed = self.client.put(f"/api/exercises/{body['id']}", json={"name": f"Fly renamed {self.stamp}"})
+        self.assertEqual(renamed.status_code, 200, renamed.text)
+        self.assertEqual(renamed.json()["intensity_kind"], "rpe")
+        self.assertEqual(renamed.json()["default_pct"], "70")
+
+        switched = self.client.put(f"/api/exercises/{body['id']}", json={
+            "intensity_kind": "rir",
+            "intensity_value": "2",
+        })
+        self.assertEqual(switched.status_code, 200, switched.text)
+        self.assertEqual(switched.json()["intensity_kind"], "rir")
+        self.assertEqual(switched.json()["intensity_value"], "2")
+        self.assertEqual(switched.json()["default_pct"], "70")
+
+        cleared = self.client.put(f"/api/exercises/{body['id']}", json={"intensity_kind": ""})
+        self.assertEqual(cleared.status_code, 200, cleared.text)
+        self.assertEqual(cleared.json()["intensity_kind"], "")
+        self.assertEqual(cleared.json()["intensity_value"], "")
+
+        too_high = self.client.post("/api/exercises", json={
+            "name": f"Too hard {self.stamp}",
+            "intensity_kind": "rpe",
+            "intensity_value": "11",
+        })
+        self.assertEqual(too_high.status_code, 400, too_high.text)
+        both = self.client.post("/api/exercises", json={
+            "name": f"Both {self.stamp}",
+            "intensity_kind": "rpe",
+            "intensity_value": "8",
+            "rir": "3",
+        })
+        self.assertEqual(both.status_code, 400, both.text)
+        mixed = self.client.post("/api/exercises", json={
+            "name": f"Mixed {self.stamp}",
+            "rpe": "8",
+            "rir": "3",
+        })
+        self.assertEqual(mixed.status_code, 400, mixed.text)
+
+        note = self.client.post("/api/exercises", json={
+            "name": f"Cue {self.stamp}",
+            "category": "Notes",
+            "default_sets": 4,
+            "default_notes": "Stay tall",
+            "intensity_kind": "rpe",
+            "intensity_value": "5",
+        })
+        self.assertEqual(note.status_code, 201, note.text)
+        self.assertEqual(note.json()["category"], "Notes")
+        self.assertEqual(note.json()["default_sets"], 0)
+        self.assertEqual(note.json()["default_notes"], "Stay tall")
+        self.assertEqual(note.json()["intensity_kind"], "")
+
+        circuit = self.client.post("/api/exercises", json={
+            "name": f"Stations {self.stamp}",
+            "category": "Circuit",
+            "default_sets": 3,
+            "default_stations": "Inchworm\nCalf raise",
+            "default_notes": "Easy pace",
+        })
+        self.assertEqual(circuit.status_code, 201, circuit.text)
+        self.assertEqual(circuit.json()["default_sets"], 3)
+        self.assertEqual(circuit.json()["default_stations"], "Inchworm\nCalf raise")
+        self.assertEqual(circuit.json()["default_notes"], "Easy pace")
+
+        warm_only = self.client.get("/api/exercises", params={"category": "Warm up"}).json()
+        self.assertTrue(any(row["id"] == warm.json()["id"] for row in warm_only))
+        self.assertTrue(all(row["category"] == "Warm up" for row in warm_only))
+        self.assertFalse(any(row["id"] == speed.json()["id"] for row in warm_only))
+        everyone = self.client.get("/api/exercises", params={"category": "All"}).json()
+        ids = {row["id"] for row in everyone}
+        self.assertIn(warm.json()["id"], ids)
+        self.assertIn(note.json()["id"], ids)
+        self.assertIn(circuit.json()["id"], ids)
+
+        athlete = self._user(f"Runner {self.stamp}")
+        yards = self.client.put(f"/api/users/{athlete['id']}", json={"distance_unit": "yards", "load_unit": "lbs"})
+        self.assertEqual(yards.status_code, 200, yards.text)
+        self.assertEqual(yards.json()["distance_unit"], "yd")
+        self.assertEqual(yards.json()["load_unit"], "lbs")
+        odd = self.client.put(f"/api/users/{athlete['id']}", json={"distance_unit": "furlongs"})
+        self.assertEqual(odd.json()["distance_unit"], "m")
+        self.assertEqual(odd.json()["load_unit"], "lbs")
+
+        logged = self.client.post("/api/exercises", json={
+            "name": f"Logged fly {self.stamp}",
+            "category": "Speed/agility/cardio",
+        })
+        workout = self.client.post("/api/workouts", json={
+            "title": f"Track {self.stamp}",
+            "calendar_date": "2026-10-20",
+            "scheduled_date": "2026-10-20",
+            "exercises": [
+                {
+                    "exercise_id": logged.json()["id"],
+                    "prescribed_sets": 1,
+                    "target_reps": "3",
+                    "notes": "RestReps:5\nDistances:30\nIntensityKind:rpe\nIntensities:8",
+                },
+                {
+                    "exercise_id": note.json()["id"],
+                    "prescribed_sets": 0,
+                    "target_reps": "",
+                    "notes": "Stay tall",
+                },
+            ],
+        })
+        self.assertEqual(workout.status_code, 201, workout.text)
+        session = self.client.get(f"/api/sessions/active/{workout.json()['id']}", params={"user_id": athlete["id"]})
+        self.assertEqual(session.status_code, 200, session.text)
+        logs = session.json()["set_logs"]
+        self.assertEqual(len(logs), 1)
+        details = logs[0]["details"]
+        self.assertIn("restRep", details)
+        self.assertIn("distance", details)
+        self.assertIn("intensity", details)
+        self.assertIn("rpe", details)
+
 
 if __name__ == "__main__":
     unittest.main()
