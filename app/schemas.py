@@ -67,6 +67,12 @@ class WorkoutExerciseBase(BaseModel):
     rest_seconds: Optional[int] = 0
     notes: Optional[str] = ""
     is_ea: Optional[bool] = False
+    id: Optional[int] = None
+    chain_id: Optional[int] = None
+    chain_instance: Optional[str] = ""
+    chain_name: Optional[str] = ""
+    chain_kind: Optional[str] = ""
+    chain_order: Optional[int] = 0
 
 class WorkoutExerciseCreate(WorkoutExerciseBase):
     pass
@@ -76,6 +82,48 @@ class WorkoutExerciseResponse(WorkoutExerciseBase):
     workout_id: int
     exercise: ExerciseResponse
     model_config = ConfigDict(from_attributes=True)
+
+class ChainMemberInput(BaseModel):
+    exercise_id: int
+
+class ChainWrite(BaseModel):
+    name: str
+    kind: str
+    members: List[ChainMemberInput] = []
+
+class ChainEditRequest(BaseModel):
+    scope: str
+    source: str
+    workout_id: Optional[int] = None
+    name: str
+    kind: str
+    members: List[ChainMemberInput] = []
+
+class ChainMemberExercise(BaseModel):
+    id: int
+    name: str
+    category: Optional[str] = ""
+    video_url: Optional[str] = ""
+    model_config = ConfigDict(from_attributes=True)
+
+class ChainMemberResponse(BaseModel):
+    id: int
+    exercise_id: int
+    order_index: int
+    exercise: ChainMemberExercise
+    model_config = ConfigDict(from_attributes=True)
+
+class ChainResponse(BaseModel):
+    id: int
+    name: str
+    kind: str
+    created_at: datetime
+    members: List[ChainMemberResponse] = []
+    model_config = ConfigDict(from_attributes=True)
+
+class ChainEditResponse(BaseModel):
+    chain: ChainResponse
+    updated_workout_ids: List[int] = []
 
 # Set Log Schemas
 class SetLogBase(BaseModel):

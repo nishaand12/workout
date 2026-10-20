@@ -33,7 +33,8 @@ from app.schemas import (
     GymContext, GymMemberCreate, GymMemberCreated, MoveTeamRequest,
     GymSavedItem, GymItemCreate, GymItemUpdate, HideExerciseRequest,
     CoachAssignRequest, AthleteNoteRequest, ScheduleItem,
-    BulkAthleteUploadRequest, BulkAthleteUploadResponse, CalendarScheduleEntry
+    BulkAthleteUploadRequest, BulkAthleteUploadResponse, CalendarScheduleEntry,
+    ChainResponse, ChainWrite, ChainEditRequest, ChainEditResponse,
 )
 from app import crud
 
@@ -137,6 +138,19 @@ def ensure_schema_migrations():
                 "WHERE LOWER(COALESCE(category, '')) LIKE '%circuit%' "
                 "OR LOWER(COALESCE(category, '')) LIKE '%question%'"
             )
+
+    if "workout_exercises" in tables:
+        wecols = {c["name"] for c in inspector.get_columns("workout_exercises")}
+        chain_columns = (
+            ("chain_id", "INTEGER"),
+            ("chain_instance", "VARCHAR(64) DEFAULT ''"),
+            ("chain_name", "VARCHAR(255) DEFAULT ''"),
+            ("chain_kind", "VARCHAR(32) DEFAULT ''"),
+            ("chain_order", "INTEGER DEFAULT 0"),
+        )
+        for name, ddl in chain_columns:
+            if name not in wecols:
+                statements.append(f"ALTER TABLE workout_exercises ADD COLUMN {name} {ddl}")
 
     if "personal_records" in tables:
         cols = {c["name"] for c in inspector.get_columns("personal_records")}
@@ -283,6 +297,18 @@ def delete_exercise(exercise_id: int, db: Session = Depends(get_db)):
     if not success:
         raise HTTPException(status_code=404, detail="Exercise not found")
     return {"message": "Exercise deleted"}
+
+@app.get("/api/chains", response_model=List[ChainResponse])
+def list_chains(db: Session = Depends(get_db)):
+    return crud.list_chains(db)
+
+@app.post("/api/chains", response_model=ChainResponse, status_code=status.HTTP_201_CREATED)
+def create_chain(chain_in: ChainWrite, db: Session = Depends(get_db)):
+    return crud.create_chain(db, chain_in)
+
+@app.post("/api/chains/{chain_id}/edit", response_model=ChainEditResponse)
+def edit_chain(chain_id: int, req: ChainEditRequest, db: Session = Depends(get_db)):
+    return crud.edit_chain(db, chain_id, req)
 
 # Workout Endpoints
 def _workout_visible(db: Session, viewer: Optional[crud.User], workout) -> bool:

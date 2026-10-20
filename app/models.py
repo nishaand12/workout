@@ -176,6 +176,33 @@ class Exercise(Base):
     workout_links = relationship("WorkoutExercise", back_populates="exercise", cascade="all, delete-orphan")
     records = relationship("PersonalRecord", back_populates="exercise", cascade="all, delete-orphan")
 
+class ExerciseChain(Base):
+    """A saved library group. Not an A/B/C superset and not a stations/rounds circuit."""
+    __tablename__ = "exercise_chains"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False, index=True)
+    kind = Column(String(32), nullable=False, default="Warm up")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    members = relationship(
+        "ExerciseChainMember",
+        back_populates="chain",
+        cascade="all, delete-orphan",
+        order_by="ExerciseChainMember.order_index",
+    )
+
+class ExerciseChainMember(Base):
+    __tablename__ = "exercise_chain_members"
+
+    id = Column(Integer, primary_key=True, index=True)
+    chain_id = Column(Integer, ForeignKey("exercise_chains.id", ondelete="CASCADE"), nullable=False, index=True)
+    exercise_id = Column(Integer, ForeignKey("exercises.id", ondelete="CASCADE"), nullable=False, index=True)
+    order_index = Column(Integer, default=0, nullable=False)
+
+    chain = relationship("ExerciseChain", back_populates="members")
+    exercise = relationship("Exercise")
+
 class Workout(Base):
     __tablename__ = "workouts"
 
@@ -211,9 +238,16 @@ class WorkoutExercise(Base):
     rest_seconds = Column(Integer, default=0)
     notes = Column(Text, default="")
     is_ea = Column(Boolean, default=False)
+    # One placement of a library chain. Members that share chain_instance stay a block.
+    chain_id = Column(Integer, ForeignKey("exercise_chains.id", ondelete="SET NULL"), nullable=True, index=True)
+    chain_instance = Column(String(64), default="")
+    chain_name = Column(String(255), default="")
+    chain_kind = Column(String(32), default="")
+    chain_order = Column(Integer, default=0)
 
     workout = relationship("Workout", back_populates="exercises")
     exercise = relationship("Exercise", back_populates="workout_links")
+    chain = relationship("ExerciseChain")
     set_logs = relationship("SetLog", back_populates="workout_exercise", cascade="all, delete-orphan")
 
 class WorkoutSession(Base):

@@ -8,17 +8,19 @@ import re
 import secrets
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
+from zoneinfo import ZoneInfo
 import httpx
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, desc, asc
 
-from app.models import Exercise, Workout, WorkoutExercise, WorkoutSession, SetLog, PersonalRecord, User, Group, WorkoutAssignment, Gym, JoinCode, GymItem, GymHiddenExercise
+from app.models import Exercise, ExerciseChain, ExerciseChainMember, Workout, WorkoutExercise, WorkoutSession, SetLog, PersonalRecord, User, Group, WorkoutAssignment, Gym, JoinCode, GymItem, GymHiddenExercise
 from app import access
 from app.schemas import (
     ExerciseCreate, ExerciseUpdate, WorkoutCreate, WorkoutUpdate, PersonalRecordCreate,
     CopyWeekRequest, AddWorkoutToDayRequest, SaveProgramTemplateRequest,
-    UserCreate, UserUpdate, GroupCreate, GroupUpdate, WorkoutAssignmentCreate, UserRegister
+    UserCreate, UserUpdate, GroupCreate, GroupUpdate, WorkoutAssignmentCreate, UserRegister,
+    ChainWrite, ChainEditRequest,
 )
 from app.config import settings
 
@@ -536,6 +538,309 @@ def delete_exercise(db: Session, exercise_id: int) -> bool:
     db.commit()
     return True
 
+
+CHAIN_KINDS = ("Warm up", "Circuit", "Cooldown")
+
+
+def canonical_chain_kind(value: str) -> str:
+    text = " ".join((value or "").strip().lower().replace("_", " ").replace("-", " ").split())
+    if text in ("warm up", "warmup"):
+        return "Warm up"
+    if text in ("circuit", "circuits"):
+        return "Circuit"
+    if text in ("cool down", "cooldown"):
+        return "Cooldown"
+    return ""
+
+
+def eastern_today_iso() -> str:
+    return datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+
+
+def _chain_member_ids(members) -> List[int]:
+    ids = []
+    for member in members or []:
+        exercise_id = member.exercise_id if hasattr(member, "exercise_id") else member.get("exercise_id")
+        if not exercise_id:
+            raise HTTPException(status_code=400, detail="Each chain member needs a library exercise")
+        ids.append(int(exercise_id))
+    if not ids:
+        raise HTTPException(status_code=400, detail="Add an exercise to the chain")
+    return ids
+
+
+def _require_chain_exercises(db: Session, exercise_ids: List[int]) -> dict:
+    found = {
+        row.id: row
+        for row in db.query(Exercise).filter(Exercise.id.in_(exercise_ids)).all()
+    }
+    missing = [exercise_id for exercise_id in exercise_ids if exercise_id not in found]
+    if missing:
+        raise HTTPException(status_code=400, detail="Chain members must be exercises already in the library")
+    return found
+
+
+def _replace_chain_members(db: Session, chain: ExerciseChain, exercise_ids: List[int]) -> None:
+    db.query(ExerciseChainMember).filter(ExerciseChainMember.chain_id == chain.id).delete()
+    for index, exercise_id in enumerate(exercise_ids):
+        db.add(ExerciseChainMember(chain_id=chain.id, exercise_id=exercise_id, order_index=index))
+
+
+def _chain_name_taken(db: Session, name: str, ignore_id: Optional[int] = None) -> bool:
+    query = db.query(ExerciseChain).filter(ExerciseChain.name.ilike(name.strip()))
+    if ignore_id is not None:
+        query = query.filter(ExerciseChain.id != ignore_id)
+    return query.first() is not None
+
+
+def list_chains(db: Session) -> List[ExerciseChain]:
+    return db.query(ExerciseChain).order_by(ExerciseChain.name.asc(), ExerciseChain.id.asc()).all()
+
+
+def create_chain(db: Session, chain_in: ChainWrite) -> ExerciseChain:
+    name = (chain_in.name or "").strip()
+    kind = canonical_chain_kind(chain_in.kind)
+    if not name:
+        raise HTTPException(status_code=400, detail="Name the chain")
+    if not kind:
+        raise HTTPException(status_code=400, detail="A chain is a warm-up, a circuit, or a cooldown")
+    if _chain_name_taken(db, name):
+        raise HTTPException(status_code=400, detail="A chain with this name already exists")
+    exercise_ids = _chain_member_ids(chain_in.members)
+    _require_chain_exercises(db, exercise_ids)
+    chain = ExerciseChain(name=name, kind=kind)
+    db.add(chain)
+    db.flush()
+    _replace_chain_members(db, chain, exercise_ids)
+    db.commit()
+    db.refresh(chain)
+    return chain
+
+
+def _we_has_set_logs(db: Session, workout_exercise_id: int) -> bool:
+    return db.query(SetLog.id).filter(SetLog.workout_exercise_id == workout_exercise_id).first() is not None
+
+
+def _next_superset_letter(used: set) -> str:
+    for letter in "ABCDEFGHIJ":
+        if letter not in used:
+            used.add(letter)
+            return letter
+    return "A"
+
+
+def _tagged_defaults(exercise: Exercise, sets: int) -> str:
+    lines = []
+    category = (exercise.category or "").lower()
+    if "circuit" in category:
+        if exercise.default_stations:
+            lines.append(exercise.default_stations)
+        for line in (exercise.default_notes or "").split("\n"):
+            if line:
+                lines.append("Additional:" + line)
+    elif exercise.default_notes:
+        lines.append(exercise.default_notes)
+    count = max(sets, 1)
+    props = []
+
+    def add(key, label, value):
+        if value is None or str(value) == "":
+            return
+        props.append(key)
+        lines.append(label + ":" + ",".join([str(value)] * count))
+
+    add("rest", "Rests", exercise.default_rest or "")
+    add("restRep", "RestReps", exercise.default_rest_rep or "")
+    add("distance", "Distances", exercise.default_distance or "")
+    add("tempo", "Tempos", exercise.default_tempo or "")
+    add("velocity", "Velocities", exercise.default_velocity or "")
+    add("power", "Powers", exercise.default_power or "")
+    add("pct", "Pcts", exercise.default_pct or "")
+    if exercise.intensity_kind and str(exercise.intensity_value or "") != "":
+        props.append("intensity")
+        lines.append("IntensityKind:" + exercise.intensity_kind)
+        lines.append("Intensities:" + ",".join([str(exercise.intensity_value)] * count))
+    if props:
+        lines.append("Props:" + ",".join(props))
+    return "\n".join(lines)
+
+
+def _new_chain_member(workout: Workout, exercise: Exercise, chain_id: int, instance: str, name: str, kind: str, index: int, used_letters: set) -> WorkoutExercise:
+    category = (exercise.category or "").lower()
+    note = category in ("note", "notes")
+    sets = 0 if note else (exercise.default_sets if exercise.default_sets is not None else 3)
+    if not note and sets < 1:
+        sets = 1
+    reps = "" if note else (exercise.default_reps if exercise.default_reps is not None else "10")
+    loads = ""
+    if not note and exercise.default_load:
+        loads = ",".join([str(exercise.default_load)] * sets)
+    rest_seconds = 0
+    if not note and exercise.default_rest:
+        digits = "".join(ch for ch in str(exercise.default_rest) if ch.isdigit())
+        rest_seconds = int(digits or "0")
+    target_reps = "" if note else ",".join([str(reps)] * sets)[:50]
+    return WorkoutExercise(
+        workout_id=workout.id,
+        exercise_id=exercise.id,
+        superset_group=_next_superset_letter(used_letters),
+        order_index=10 ** 6,
+        prescription_text=((exercise.default_notes or "Note") if note else f"{sets} X {reps}")[:100],
+        prescribed_sets=sets,
+        target_reps=target_reps or ("" if note else "1"),
+        target_weight=loads[:50],
+        rest_seconds=rest_seconds,
+        notes=(exercise.default_notes or "") if note else _tagged_defaults(exercise, sets),
+        is_ea=False,
+        chain_id=chain_id,
+        chain_instance=instance,
+        chain_name=name,
+        chain_kind=kind,
+        chain_order=index,
+    )
+
+
+def _ordered_workout_exercises(workout: Workout) -> List[WorkoutExercise]:
+    return sorted(list(workout.exercises or []), key=lambda row: ((row.order_index or 0), row.id or 0))
+
+
+def _rewrite_chain_instance(db: Session, workout: Workout, chain_id: int, instance: str, name: str, kind: str, exercise_ids: List[int], exercises: dict) -> None:
+    before = [we for we in _ordered_workout_exercises(workout) if we not in db.deleted]
+    rows = [
+        we for we in before
+        if we.chain_id == chain_id and (we.chain_instance or "") == (instance or "")
+    ]
+    if not rows:
+        return
+    before_ids = []
+    for we in before:
+        if we.chain_id == chain_id and (we.chain_instance or "") == (instance or ""):
+            break
+        before_ids.append(we.id)
+    used = set()
+    kept = []
+    used_letters = {(we.superset_group or "").strip() for we in before if (we.superset_group or "").strip()}
+    for index, exercise_id in enumerate(exercise_ids):
+        match = next((we for we in rows if we.id not in used and we.exercise_id == exercise_id), None)
+        if match is not None:
+            used.add(match.id)
+            match.chain_id = chain_id
+            match.chain_instance = instance or ""
+            match.chain_name = name
+            match.chain_kind = kind
+            match.chain_order = index
+            kept.append(match)
+            continue
+        exercise = exercises.get(exercise_id)
+        if exercise is None:
+            continue
+        created = _new_chain_member(workout, exercise, chain_id, instance or "", name, kind, index, used_letters)
+        db.add(created)
+        db.flush()
+        kept.append(created)
+    detached = []
+    for we in rows:
+        if we.id in used:
+            continue
+        if _we_has_set_logs(db, we.id):
+            we.chain_id = None
+            we.chain_instance = ""
+            we.chain_name = ""
+            we.chain_kind = ""
+            we.chain_order = 0
+            detached.append(we)
+        else:
+            db.delete(we)
+    db.flush()
+    block = kept + detached
+    block_ids = {we.id for we in block}
+    before_set = set(before_ids)
+    others = [
+        we for we in _ordered_workout_exercises(workout)
+        if we not in db.deleted and we.id not in block_ids
+    ]
+    insert_at = sum(1 for we in others if we.id in before_set)
+    sequence = others[:insert_at] + block + others[insert_at:]
+    for index, we in enumerate(sequence):
+        we.order_index = index
+
+
+def _apply_chain_to_workout(db: Session, workout: Workout, chain_id: int, name: str, kind: str, exercise_ids: List[int], exercises: dict) -> bool:
+    instances = []
+    seen = set()
+    for we in _ordered_workout_exercises(workout):
+        if we.chain_id != chain_id or we in db.deleted:
+            continue
+        key = we.chain_instance or ""
+        if key in seen:
+            continue
+        seen.add(key)
+        instances.append(key)
+    if not instances:
+        return False
+    for instance in instances:
+        _rewrite_chain_instance(db, workout, chain_id, instance, name, kind, exercise_ids, exercises)
+    return True
+
+
+def _workouts_for_chain_scope(db: Session, chain_id: int, scope: str, workout_id: Optional[int]) -> List[Workout]:
+    if scope == "one":
+        workout = db.query(Workout).filter(Workout.id == workout_id).first() if workout_id else None
+        if workout is None:
+            raise HTTPException(status_code=400, detail="Choose the day this edit applies to")
+        return [workout]
+    ids = [
+        row[0]
+        for row in db.query(WorkoutExercise.workout_id).filter(WorkoutExercise.chain_id == chain_id).distinct().all()
+    ]
+    workouts = db.query(Workout).filter(Workout.id.in_(ids or [-1])).all() if ids else []
+    if scope == "everywhere":
+        return workouts
+    today = eastern_today_iso()
+    return [workout for workout in workouts if (workout.calendar_date or "") >= today]
+
+
+def edit_chain(db: Session, chain_id: int, req: ChainEditRequest) -> dict:
+    chain = db.query(ExerciseChain).filter(ExerciseChain.id == chain_id).first()
+    if not chain:
+        raise HTTPException(status_code=404, detail="Chain not found")
+    scope = (req.scope or "").strip().lower()
+    source = (req.source or "").strip().lower()
+    if scope not in ("one", "future", "everywhere"):
+        raise HTTPException(status_code=400, detail="Choose only this one, future workouts, or change everywhere")
+    if source not in ("library", "day"):
+        raise HTTPException(status_code=400, detail="Edit a chain from the library or from a day")
+    name = (req.name or "").strip()
+    kind = canonical_chain_kind(req.kind)
+    if not name:
+        raise HTTPException(status_code=400, detail="Name the chain")
+    if not kind:
+        raise HTTPException(status_code=400, detail="A chain is a warm-up, a circuit, or a cooldown")
+    if _chain_name_taken(db, name, ignore_id=chain.id):
+        raise HTTPException(status_code=400, detail="A chain with this name already exists")
+    exercise_ids = _chain_member_ids(req.members)
+    exercises = _require_chain_exercises(db, exercise_ids)
+    update_template = source == "library" or scope == "everywhere"
+    if update_template:
+        chain.name = name
+        chain.kind = kind
+        _replace_chain_members(db, chain, exercise_ids)
+        db.flush()
+    if source == "library" and scope == "one":
+        workouts = []
+    else:
+        workouts = _workouts_for_chain_scope(db, chain.id, "one" if scope == "one" else scope, req.workout_id)
+    updated = []
+    for workout in workouts:
+        if _apply_chain_to_workout(db, workout, chain.id, name, kind, exercise_ids, exercises):
+            updated.append(workout.id)
+    if source == "day" and scope == "one" and not updated:
+        raise HTTPException(status_code=400, detail="That day does not use this chain")
+    db.commit()
+    chain = db.query(ExerciseChain).filter(ExerciseChain.id == chain_id).first()
+    return {"chain": chain, "updated_workout_ids": updated}
+
+
 # Workout Queries
 def get_workouts(db: Session, skip: int = 0, limit: int = 500, program: Optional[str] = None):
     query = db.query(Workout)
@@ -552,6 +857,62 @@ def get_workout(db: Session, workout_id: int):
     if w:
         w.exercise_count = len(w.exercises)
     return w
+
+def _payload_get(item, name, default=None):
+    if isinstance(item, dict):
+        return item.get(name, default)
+    return getattr(item, name, default)
+
+
+def _workout_exercise_values(item, idx: int) -> dict:
+    p_sets = _payload_get(item, "prescribed_sets", 3)
+    t_reps = _payload_get(item, "target_reps", "10")
+    presc = _payload_get(item, "prescription_text", "") or ""
+    if not presc:
+        presc = f"{p_sets} X {str(t_reps).upper()}"
+    chain_id = _payload_get(item, "chain_id", None)
+    chain_order = _payload_get(item, "chain_order", 0)
+    return {
+        "exercise_id": _payload_get(item, "exercise_id"),
+        "superset_group": _payload_get(item, "superset_group", "A") or "A",
+        "order_index": idx,
+        "prescription_text": presc,
+        "prescribed_sets": 3 if p_sets is None else p_sets,
+        "target_reps": str(t_reps if t_reps is not None else "10"),
+        "target_weight": str(_payload_get(item, "target_weight", "0") or "0"),
+        "rest_seconds": _payload_get(item, "rest_seconds", 0) or 0,
+        "notes": _payload_get(item, "notes", "") or "",
+        "is_ea": bool(_payload_get(item, "is_ea", False)),
+        "chain_id": chain_id or None,
+        "chain_instance": _payload_get(item, "chain_instance", "") or "",
+        "chain_name": _payload_get(item, "chain_name", "") or "",
+        "chain_kind": _payload_get(item, "chain_kind", "") or "",
+        "chain_order": 0 if chain_order is None else chain_order,
+    }
+
+
+def _clone_workout_exercise(src: WorkoutExercise, workout_id: int, **overrides) -> WorkoutExercise:
+    values = {
+        "workout_id": workout_id,
+        "exercise_id": src.exercise_id,
+        "superset_group": src.superset_group,
+        "order_index": src.order_index,
+        "prescription_text": src.prescription_text,
+        "prescribed_sets": src.prescribed_sets,
+        "target_reps": src.target_reps,
+        "target_weight": src.target_weight,
+        "rest_seconds": src.rest_seconds,
+        "notes": src.notes,
+        "is_ea": src.is_ea,
+        "chain_id": src.chain_id,
+        "chain_instance": src.chain_instance or "",
+        "chain_name": src.chain_name or "",
+        "chain_kind": src.chain_kind or "",
+        "chain_order": src.chain_order or 0,
+    }
+    values.update(overrides)
+    return WorkoutExercise(**values)
+
 
 def create_workout(db: Session, workout_in: WorkoutCreate):
     cal_date, dow = parse_calendar_date(workout_in.calendar_date or workout_in.scheduled_date)
@@ -570,24 +931,47 @@ def create_workout(db: Session, workout_in: WorkoutCreate):
     db.flush()
 
     for idx, item in enumerate(workout_in.exercises or []):
-        we = WorkoutExercise(
-            workout_id=workout.id,
-            exercise_id=item.exercise_id,
-            superset_group=item.superset_group or "A",
-            order_index=item.order_index if item.order_index is not None else idx,
-            prescription_text=item.prescription_text or f"{item.prescribed_sets} X {item.target_reps}",
-            prescribed_sets=3 if item.prescribed_sets is None else item.prescribed_sets,
-            target_reps=item.target_reps or "10",
-            target_weight=item.target_weight or "0",
-            rest_seconds=item.rest_seconds or 0,
-            notes=item.notes or "",
-            is_ea=item.is_ea or False
-        )
-        db.add(we)
+        values = _workout_exercise_values(item, idx)
+        given_order = _payload_get(item, "order_index", None)
+        if given_order is not None:
+            values["order_index"] = given_order
+        db.add(WorkoutExercise(workout_id=workout.id, **values))
 
     db.commit()
     db.refresh(workout)
     return workout
+
+def _replace_workout_exercises(db: Session, workout: Workout, exercises_data) -> None:
+    """Replace a day's exercises. Rows the client still names by id are updated in place so their SetLog rows stay."""
+    existing = {we.id: we for we in list(workout.exercises or [])}
+    named = False
+    for item in exercises_data:
+        item_id = _payload_get(item, "id", None)
+        if item_id and item_id in existing:
+            named = True
+            break
+    if not named:
+        db.query(WorkoutExercise).filter(WorkoutExercise.workout_id == workout.id).delete()
+        for idx, item in enumerate(exercises_data):
+            db.add(WorkoutExercise(workout_id=workout.id, **_workout_exercise_values(item, idx)))
+        return
+
+    seen = set()
+    for idx, item in enumerate(exercises_data):
+        item_id = _payload_get(item, "id", None)
+        we = existing.get(item_id) if item_id else None
+        values = _workout_exercise_values(item, idx)
+        if we is None or we.id in seen:
+            db.add(WorkoutExercise(workout_id=workout.id, **values))
+            continue
+        seen.add(we.id)
+        for field, val in values.items():
+            setattr(we, field, val)
+    for we in list(existing.values()):
+        if we.id in seen:
+            continue
+        db.delete(we)
+
 
 def update_workout(db: Session, workout_id: int, workout_in: WorkoutUpdate):
     w = db.query(Workout).filter(Workout.id == workout_id).first()
@@ -607,29 +991,7 @@ def update_workout(db: Session, workout_id: int, workout_in: WorkoutUpdate):
         setattr(w, field, val)
 
     if exercises_data is not None:
-        db.query(WorkoutExercise).filter(WorkoutExercise.workout_id == workout_id).delete()
-        for idx, item in enumerate(exercises_data):
-            ex_id = item.get("exercise_id") if isinstance(item, dict) else item.exercise_id
-            p_sets = item.get("prescribed_sets", 3) if isinstance(item, dict) else getattr(item, "prescribed_sets", 3)
-            t_reps = item.get("target_reps", "10") if isinstance(item, dict) else getattr(item, "target_reps", "10")
-            presc = item.get("prescription_text") if isinstance(item, dict) else getattr(item, "prescription_text", "")
-            if not presc:
-                presc = f"{p_sets} X {str(t_reps).upper()}"
-
-            we = WorkoutExercise(
-                workout_id=w.id,
-                exercise_id=ex_id,
-                superset_group=item.get("superset_group", "A") if isinstance(item, dict) else getattr(item, "superset_group", "A"),
-                order_index=idx,
-                prescription_text=presc,
-                prescribed_sets=p_sets,
-                target_reps=str(t_reps),
-                target_weight=str(item.get("target_weight", "0") if isinstance(item, dict) else getattr(item, "target_weight", "0")),
-                rest_seconds=item.get("rest_seconds", 0) if isinstance(item, dict) else getattr(item, "rest_seconds", 0),
-                notes=item.get("notes", "") if isinstance(item, dict) else getattr(item, "notes", ""),
-                is_ea=item.get("is_ea", False) if isinstance(item, dict) else getattr(item, "is_ea", False)
-            )
-            db.add(we)
+        _replace_workout_exercises(db, w, exercises_data)
 
     db.commit()
     db.refresh(w)
@@ -660,20 +1022,7 @@ def add_workout_to_day(db: Session, req: AddWorkoutToDayRequest) -> Optional[Wor
         db.flush()
 
         for src_we in src_w.exercises:
-            we = WorkoutExercise(
-                workout_id=new_w.id,
-                exercise_id=src_we.exercise_id,
-                superset_group=src_we.superset_group,
-                order_index=src_we.order_index,
-                prescription_text=src_we.prescription_text,
-                prescribed_sets=src_we.prescribed_sets,
-                target_reps=src_we.target_reps,
-                target_weight=src_we.target_weight,
-                rest_seconds=src_we.rest_seconds,
-                notes=src_we.notes,
-                is_ea=src_we.is_ea
-            )
-            db.add(we)
+            db.add(_clone_workout_exercise(src_we, new_w.id))
         db.commit()
         db.refresh(new_w)
         new_w.exercise_count = len(new_w.exercises)
@@ -713,20 +1062,7 @@ def save_program_template(db: Session, req: SaveProgramTemplateRequest) -> List[
         db.add(new_w)
         db.flush()
         for src_we in src_w.exercises:
-            we = WorkoutExercise(
-                workout_id=new_w.id,
-                exercise_id=src_we.exercise_id,
-                superset_group=src_we.superset_group,
-                order_index=src_we.order_index,
-                prescription_text=src_we.prescription_text,
-                prescribed_sets=src_we.prescribed_sets,
-                target_reps=src_we.target_reps,
-                target_weight=src_we.target_weight,
-                rest_seconds=src_we.rest_seconds,
-                notes=src_we.notes,
-                is_ea=src_we.is_ea
-            )
-            db.add(we)
+            db.add(_clone_workout_exercise(src_we, new_w.id))
         created.append(new_w)
     db.commit()
     return created
@@ -1027,20 +1363,7 @@ def copy_week(db: Session, req: CopyWeekRequest) -> List[Workout]:
                     except Exception:
                         pass
 
-                cloned_we = WorkoutExercise(
-                    workout_id=new_w.id,
-                    exercise_id=src_we.exercise_id,
-                    superset_group=src_we.superset_group,
-                    order_index=src_we.order_index,
-                    prescription_text=src_we.prescription_text,
-                    prescribed_sets=src_we.prescribed_sets,
-                    target_reps=src_we.target_reps,
-                    target_weight=new_wt,
-                    rest_seconds=src_we.rest_seconds,
-                    notes=src_we.notes,
-                    is_ea=src_we.is_ea
-                )
-                db.add(cloned_we)
+                db.add(_clone_workout_exercise(src_we, new_w.id, target_weight=new_wt))
 
             new_w.exercise_count = len(src_w.exercises)
             created_workouts.append(new_w)
@@ -1406,6 +1729,11 @@ def _workout_exercise_snapshots(workout: Workout) -> list:
             "rest_seconds": we.rest_seconds or 0,
             "notes": we.notes or "",
             "is_ea": bool(we.is_ea),
+            "chain_id": we.chain_id,
+            "chain_instance": we.chain_instance or "",
+            "chain_name": we.chain_name or "",
+            "chain_kind": we.chain_kind or "",
+            "chain_order": we.chain_order or 0,
         })
     return snaps
 
@@ -2018,9 +2346,9 @@ def clone_workout_for_gym(db: Session, workout: Workout, coach: User) -> Workout
     db.add(copy)
     db.flush()
     for we in sorted(workout.exercises, key=lambda x: x.order_index or 0):
-        db.add(WorkoutExercise(
-            workout_id=copy.id,
-            exercise_id=we.exercise_id,
+        db.add(_clone_workout_exercise(
+            we,
+            copy.id,
             superset_group=we.superset_group or "A",
             order_index=we.order_index or 0,
             prescription_text=we.prescription_text or "",
