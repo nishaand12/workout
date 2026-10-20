@@ -1690,7 +1690,7 @@ function dayCol(date) {
        <button class="iconbtn" title="Move" onclick="openCopy('${date}','move')">→</button>
        <button class="iconbtn" title="Delete" onclick="askDelete('${date}')">🗑</button>`
     : `<button class="recur" onclick="openRecur('${date}', event)">${recurLabel}</button>`;
-  return `<div class="day ${focused}" data-day="${date}" style="border-left:3px solid ${day.color || "#3b82f6"}" onmouseenter="state.hoverDay='${date}'" onclick="state.focusDay='${date}';render()">
+  return `<div class="day ${focused}" data-day="${date}" style="border-left:3px solid ${day.color || "#3b82f6"}" onmouseenter="state.hoverDay='${date}'" onclick="state.focusDay='${date}';render()" ondragover="dragOver(event)" ondrop="dropOn(event,'${date}',null)">
     <div class="day-top"><span>${fmtDay(date)}</span>
       <span class="tools">
         <button class="iconbtn" title="Copy Workout" onclick="openCopy('${date}','workout')">⧉</button>
@@ -1705,7 +1705,7 @@ function dayCol(date) {
       ${header}
     </div>
     ${recur}${color}${menu}
-    <div>${items}</div>
+    <div class="day-items">${items}</div>
     <button class="add-ex" onclick="openSearch('${date}', event)">+ Add Exercise</button>
     ${state.clipboard && (state.clipboard.items || []).length ? `<button class="add-ex" onclick="pasteOn('${date}')">Paste ${state.clipboard.items.length} item(s)</button>` : ""}
     ${search}
@@ -1715,7 +1715,7 @@ function dayCol(date) {
 function exRow(date, day, it) {
   const color = LETTER_COLOR[it.letter] || "#888";
   const letter = it.letter ? `<span class="letter" style="background:${color}">${esc(it.letter)}</span>` : `<span class="letter" style="background:#444;color:#fff">–</span>`;
-  return `<div class="ex ${it.selected ? "selected" : ""}" draggable="true" ondragstart="dragStart(event,'${date}','${it.id}')" ondragover="dragOver(event)" ondrop="dropOn(event,'${date}','${it.id}')">
+  return `<div class="ex ${it.selected ? "selected" : ""}" data-id="${esc(it.id)}" draggable="true" ondragstart="dragStart(event,'${date}','${it.id}')">
     <input class="check" type="checkbox" ${it.selected ? "checked" : ""} onclick="toggleItem('${date}','${it.id}', this.checked);event.stopPropagation()">
     ${letter}
     <button class="ex-main" style="background:transparent;border:0;color:inherit;text-align:left;padding:0" onclick="openEditor('${date}','${it.id}', event)">
@@ -1839,11 +1839,7 @@ function addItem(date, it) {
   state.modal = null;
   snapshot();
   const day = ensureDay(date);
-  const used = day.items.map((x) => x.letter).filter(Boolean);
-  if (it.letter) {
-    const next = LETTERS.find((L) => !used.includes(L)) || "A";
-    it.letter = it.type === "break" || it.type === "rest" || it.type === "video" ? "" : next;
-  }
+  if (it.letter) it.letter = letterForNewItem(day.items, it, LETTERS);
   day.items.push(it);
   state.searchDay = null;
   state.editor = null;
@@ -2094,7 +2090,7 @@ function supersetPop(date, it) {
 }
 function setLetter(date, id, letter) {
   snapshot();
-  findItem(date, id).letter = letter;
+  reorderForLetter(ensureDay(date).items, id, letter);
   state.letterMenu = false;
   refreshFutureCopies(date);
   noteDayEdit(date);
@@ -3146,7 +3142,7 @@ function clearTitle(date) { snapshot(); ensureDay(date).title = ""; noteDayEdit(
 function resetOrder(date) {
   snapshot();
   const day = ensureDay(date);
-  day.items.sort((a, b) => String(a.letter || "Z").localeCompare(String(b.letter || "Z")));
+  sortByResetOrder(day.items);
   state.dayMenu = null;
   refreshFutureCopies(date);
   noteDayEdit(date);
@@ -3270,30 +3266,99 @@ let drag = null;
 function dragStart(ev, date, id) {
   const day = ensureDay(date);
   const it = findItem(date, id);
+  if (!it) return;
   const ids = it.selected ? day.items.filter((x) => x.selected).map((x) => x.id) : [id];
-  drag = { date, ids };
+  drag = { date, ids, landing: null, marked: false, gapHeight: 32 };
   ev.dataTransfer.effectAllowed = "move";
   ev.dataTransfer.setData("text/plain", ids.join(","));
 }
-function dragOver(ev) { ev.preventDefault(); ev.currentTarget.closest(".day")?.classList.add("drop"); }
+function placeDragGap(list, beforeId, height) {
+  let gap = list.querySelector(".drag-gap");
+  if (!gap) {
+    gap = document.createElement("div");
+    gap.className = "drag-gap";
+    gap.setAttribute("aria-hidden", "true");
+  }
+  gap.style.height = Math.max(28, height || 32) + "px";
+  gap.dataset.dropBefore = beforeId || "";
+  let beforeEl = null;
+  if (beforeId != null && beforeId !== "") {
+    list.querySelectorAll(".ex").forEach((el) => {
+      if (!beforeEl && el.dataset.id === beforeId) beforeEl = el;
+    });
+  }
+  if (beforeEl) list.insertBefore(gap, beforeEl);
+  else list.appendChild(gap);
+  document.querySelectorAll(".drag-gap").forEach((el) => { if (el !== gap) el.remove(); });
+  return gap;
+}
+function dragOver(ev) {
+  ev.preventDefault();
+  if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+  if (!drag) return;
+  const dayEl = ev.currentTarget;
+  if (!dayEl || !dayEl.dataset || !dayEl.dataset.day) return;
+  const list = dayEl.querySelector(".day-items");
+  if (!list) return;
+  const date = dayEl.dataset.day;
+  dayEl.classList.add("drop");
+  document.querySelectorAll(".day.drop").forEach((el) => { if (el !== dayEl) el.classList.remove("drop"); });
+  const existing = list.querySelector(".drag-gap");
+  if (drag.marked && existing && drag.landing && drag.landing.date === date) {
+    const box = existing.getBoundingClientRect();
+    if (ev.clientY >= box.top && ev.clientY <= box.bottom) return;
+  }
+  const rects = [];
+  list.querySelectorAll(".ex").forEach((el) => {
+    if (drag.ids.indexOf(el.dataset.id) >= 0) return;
+    const rect = el.getBoundingClientRect();
+    if (rect.height <= 0) return;
+    rects.push({ id: el.dataset.id, top: rect.top, height: rect.height });
+  });
+  if (!drag.marked) {
+    let gapHeight = 0;
+    document.querySelectorAll(".ex").forEach((el) => {
+      if (drag.ids.indexOf(el.dataset.id) < 0) return;
+      gapHeight += el.getBoundingClientRect().height;
+    });
+    drag.gapHeight = gapHeight || 32;
+    document.querySelectorAll(".ex").forEach((el) => {
+      if (drag.ids.indexOf(el.dataset.id) >= 0) el.classList.add("is-dragging");
+    });
+    drag.marked = true;
+  }
+  const landing = dragLandingIndex(rects, ev.clientY);
+  drag.landing = { date, beforeId: landing.beforeId };
+  placeDragGap(list, landing.beforeId, drag.gapHeight);
+}
+function clearDragChrome() {
+  document.querySelectorAll(".drag-gap").forEach((el) => el.remove());
+  document.querySelectorAll(".ex.is-dragging").forEach((el) => el.classList.remove("is-dragging"));
+  document.querySelectorAll(".day.drop").forEach((el) => el.classList.remove("drop"));
+}
 function dropOn(ev, date, beforeId) {
   ev.preventDefault();
   ev.stopPropagation();
-  if (!drag) return;
-  snapshot();
-  const src = ensureDay(drag.date);
-  const moving = src.items.filter((it) => drag.ids.includes(it.id));
-  src.items = src.items.filter((it) => !drag.ids.includes(it.id));
-  const dest = ensureDay(date);
-  let idx = dest.items.findIndex((it) => it.id === beforeId);
-  if (idx < 0) idx = dest.items.length;
-  const clones = drag.date === date ? moving : moving.map((it) => Object.assign(JSON.parse(JSON.stringify(it)), { id: uid(), selected: false }));
-  dest.items.splice(idx, 0, ...clones);
-  refreshFutureCopies(date);
-  if (drag.date !== date) noteDayEdit(drag.date);
-  noteDayEdit(date);
-  noteHist("Moved " + moving.length + " item(s)");
+  const active = drag;
+  if (!active) return;
   drag = null;
+  const landingBefore = active.landing && active.landing.date === date ? active.landing.beforeId : beforeId;
+  snapshot();
+  const src = ensureDay(active.date);
+  if (active.date === date) {
+    src.items = placeDroppedItems(src.items, active.ids, landingBefore);
+  } else {
+    const moving = src.items.filter((it) => active.ids.indexOf(it.id) >= 0);
+    src.items = src.items.filter((it) => active.ids.indexOf(it.id) < 0);
+    const dest = ensureDay(date);
+    const clones = moving.map((it) => Object.assign(JSON.parse(JSON.stringify(it)), { id: uid(), selected: false }));
+    dest.items = insertAtLanding(dest.items, clones, landingBefore);
+    noteDayEdit(active.date);
+  }
+  refreshFutureCopies(date);
+  noteDayEdit(date);
+  noteHist("Moved " + active.ids.length + " item(s)");
+  clearDragChrome();
   render();
 }
 document.addEventListener("dragover", (ev) => {
@@ -3303,9 +3368,12 @@ document.addEventListener("dragover", (ev) => {
 document.addEventListener("drop", (ev) => {
   const day = ev.target.closest && ev.target.closest(".day");
   if (!day || !drag) return;
-  if (ev.target.closest(".ex")) return;
   ev.preventDefault();
   dropOn(ev, day.dataset.day, null);
+});
+document.addEventListener("dragend", () => {
+  clearDragChrome();
+  drag = null;
 });
 
 function itemLogDone(date, it) {
