@@ -5,16 +5,28 @@ const LETTER_COLOR = {
   F: "#ef4444", G: "#14b8a6", H: "#ec4899", I: "#84cc16", J: "#6366f1"
 };
 const PROP_LABEL = {
-  load: "Load", rest: "Rest", tempo: "Tempo", velocity: "Velocity",
-  power: "Peak Power", pct: "%PR"
+  load: "Load", rest: "Rest", restRep: "Rest/Rep", distance: "Distance",
+  tempo: "Tempo", velocity: "Velocity",
+  power: "Peak Power", pct: "%PR", intensity: "Intensity"
 };
 const PROP_FIELDS = [
   ["load", "loads"],
   ["rest", "rests"],
+  ["restRep", "restReps"],
+  ["distance", "distances"],
   ["tempo", "tempos"],
   ["velocity", "velocities"],
   ["power", "powers"],
   ["pct", "pcts"]
+];
+const EXERCISE_CATEGORIES = [
+  "Strength",
+  "Warm up",
+  "Speed/agility/cardio",
+  "Cooldown",
+  "Circuit",
+  "Questionnaire",
+  "Notes"
 ];
 const ATHLETES = [];
 const COACHES = [];
@@ -65,11 +77,13 @@ const uid = () => "i" + (seq++);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 function item(partial) {
-  const sets = partial.sets || 1;
-  const reps = partial.reps || Array(sets).fill(partial.rep || 1);
+  const sets = partial && partial.sets === 0 ? 0 : ((partial && partial.sets) || 1);
+  const reps = (partial && partial.reps) || (sets ? Array(sets).fill((partial && partial.rep) || 1) : []);
   const base = {
     id: uid(), type: "lift", letter: "A", sets, reps,
     loads: Array(sets).fill(""), rests: Array(sets).fill(""),
+    restReps: Array(sets).fill(""), distances: Array(sets).fill(""),
+    intensities: Array(sets).fill(""), intensityKind: "",
     tempos: Array(sets).fill(""), velocities: Array(sets).fill(""),
     powers: Array(sets).fill(""), pcts: Array(sets).fill(""),
     props: [], note: "", detail: "", questions: [], requireResponse: false,
@@ -109,6 +123,10 @@ function libraryDefaultsFrom(record) {
     velocity: record.default_velocity || "",
     power: record.default_power || "",
     pct: record.default_pct || "",
+    restRep: record.default_rest_rep || "",
+    distance: record.default_distance || "",
+    intensityKind: record.intensity_kind || "",
+    intensityValue: record.intensity_value || "",
     stations: record.default_stations || "",
     note: record.default_notes || "",
     videoUrl: record.video_url || ""
@@ -126,9 +144,16 @@ function withPropertyDefaults(partial, defaults) {
         extra[arr] = Array(sets).fill(String(value));
       }
     });
+    if (defaults.intensityKind && String(defaults.intensityValue || "") !== "") {
+      props.push("intensity");
+      extra.intensityKind = defaults.intensityKind;
+      extra.intensities = Array(sets).fill(String(defaults.intensityValue));
+    }
     partial.libraryDefaults = {
       sets: defaults.sets, reps: defaults.reps, load: defaults.load, rest: defaults.rest,
-      tempo: defaults.tempo, velocity: defaults.velocity, power: defaults.power, pct: defaults.pct
+      restRep: defaults.restRep, distance: defaults.distance,
+      tempo: defaults.tempo, velocity: defaults.velocity, power: defaults.power, pct: defaults.pct,
+      intensityKind: defaults.intensityKind || "", intensity: defaults.intensityValue || ""
     };
   }
   partial.props = props;
@@ -136,6 +161,13 @@ function withPropertyDefaults(partial, defaults) {
 }
 function fromCatalog(entry) {
   const defaults = libraryDefaultsFrom(exerciseRecord(entry.name));
+  if (entry.type === "note") {
+    return item({
+      name: entry.name, type: "note", letter: "A", sets: 0, reps: [],
+      note: defaults ? (defaults.note || "") : "", trackReps: false, completionOnly: false,
+      videoUrl: defaults && defaults.videoUrl ? defaults.videoUrl : ""
+    });
+  }
   if (entry.type === "questionnaire") {
     return item({
       name: entry.name, type: "questionnaire", letter: "A", sets: 1, reps: [1],
@@ -270,7 +302,7 @@ const state = {
   joinCodes: [],
   lifts: CATALOG.filter((c) => c.type !== "break").map((c, i) => ({ id: "l" + i, name: c.name, type: c.type === "lift" ? "Lifts" : c.type === "circuit" ? "Circuits" : c.type === "questionnaire" ? "Questionnaires" : "Lifts", tags: "N/A" })),
   liftQ: "",
-  managing: "Lifts",
+  managing: "All",
   goals: [],
   docs: [],
   packets: [],
@@ -365,6 +397,19 @@ function selectedItems(date) {
 function normalizeUnit(value) {
   return String(value || "").toLowerCase() === "lbs" ? "lbs" : "kg";
 }
+function normalizeDistanceUnit(value) {
+  const v = String(value || "").trim().toLowerCase();
+  if (v === "km" || v === "kilometres" || v === "kilometers" || v === "kilometre" || v === "kilometer") return "km";
+  if (v === "yd" || v === "yard" || v === "yards") return "yd";
+  if (v === "mi" || v === "mile" || v === "miles") return "mi";
+  return "m";
+}
+function distanceWord(unit) {
+  return { m: "metres", km: "km", yd: "yards", mi: "miles" }[normalizeDistanceUnit(unit)] || "metres";
+}
+function distanceChoice(unit) {
+  return distanceWord(unit);
+}
 function unitWord(unit) {
   return unit === "lbs" ? "lbs" : "kg";
 }
@@ -374,7 +419,7 @@ function unitTitle(unit) {
 function entryPerson() {
   if (state.role === "athlete") {
     const me = state.auth && state.auth.user;
-    if (me) return { id: "u" + me.id, serverId: me.id, load_unit: me.load_unit, isGroup: false };
+    if (me) return { id: "u" + me.id, serverId: me.id, load_unit: me.load_unit, distance_unit: me.distance_unit, isGroup: false };
   }
   return ATHLETES.find((a) => a.id === state.entryAthlete)
     || buildAthletes().find((a) => a.id === state.entryAthlete && !a.isGroup)
@@ -389,6 +434,16 @@ function displayUnit() {
   const person = athlete();
   if (!person || person.isGroup || person.id === "none") return "";
   return normalizeUnit(person.load_unit);
+}
+function entryDistanceUnit() {
+  const person = entryPerson();
+  return normalizeDistanceUnit(person && person.distance_unit);
+}
+function displayDistanceUnit() {
+  if (state.view === "entry" || state.view === "mine" || state.role === "athlete") return entryDistanceUnit();
+  const person = athlete();
+  if (!person || person.isGroup || person.id === "none") return "m";
+  return normalizeDistanceUnit(person.distance_unit);
 }
 function doseText(it, reps) {
   const count = it.sets || reps.length || 1;
@@ -411,6 +466,10 @@ function dayHeading(day) {
   return day.title || "Add Workout Name";
 }
 function scriptLine(it, opts) {
+  if (it.type === "note") {
+    const line = String(it.note || "").split("\n").filter(Boolean)[0] || "";
+    return line || "Note";
+  }
   if (it.type === "questionnaire") return (it.questions || []).length + " items";
   if (it.type === "break") return "Divider";
   if (it.type === "video") return it.videoUrl || "Video";
@@ -423,15 +482,20 @@ function scriptLine(it, opts) {
   const vol = doseText(it, reps);
   const loadTxt = loadPhrase(loads, unit);
   const restTxt = rests.some((x) => x !== "" && x != null) ? " · rest " + rests.map((x) => x || "—").join("/") + "s" : "";
+  const restReps = (it.restReps || []).slice(0, it.sets || 1);
+  const restRepTxt = restReps.some((x) => x !== "" && x != null) ? " · rest/rep " + restReps.map((x) => x || "—").join("/") + "s" : "";
+  const distances = (it.distances || []).slice(0, it.sets || 1);
+  const distUnit = plain ? "" : (" " + distanceWord(displayDistanceUnit()));
+  const distTxt = distances.some((x) => x !== "" && x != null) ? " · " + distances.map((x) => (x === "" || x == null ? "—" : String(x) + distUnit)).join("/") : "";
   if (it.type === "circuit") {
     return (it.detail || "Complete 1 round").split("\n")[0];
   }
-  return vol + loadTxt + restTxt + (it.note ? " · " + it.note : "");
+  return vol + loadTxt + restTxt + restRepTxt + distTxt + (it.note ? " · " + it.note : "");
 }
 function stats(day) {
   let s = 0, r = 0, v = 0;
   day.items.forEach((it) => {
-    if (it.type === "break" || it.type === "video" || it.type === "questionnaire") return;
+    if (it.type === "break" || it.type === "video" || it.type === "questionnaire" || it.type === "note") return;
     s += it.sets || 0;
     (it.reps || []).forEach((rep, i) => {
       r += +rep || 0;
@@ -460,7 +524,7 @@ function resizeSets(it, n) {
   };
   it.sets = n;
   it.reps = grow(it.reps, it.reps[0] || 1);
-  ["loads", "rests", "tempos", "velocities", "powers", "pcts"].forEach((k) => { it[k] = grow(it[k] || [], ""); });
+  ["loads", "rests", "restReps", "distances", "intensities", "tempos", "velocities", "powers", "pcts"].forEach((k) => { it[k] = grow(it[k] || [], ""); });
 }
 
 function closeFloats() {
@@ -598,7 +662,10 @@ async function enterApp(data) {
   } else await loadGymContext();
   if (state.role !== "athlete") loadExercises();
 }
-const NOTE_SKIP = { Rests: 1, Tempos: 1, Velocities: 1, Powers: 1, Pcts: 1, Props: 1, Flags: 1, Additional: 1, Seeded: 1 };
+const NOTE_SKIP = {
+  Rests: 1, RestReps: 1, Distances: 1, Intensities: 1, IntensityKind: 1,
+  Tempos: 1, Velocities: 1, Powers: 1, Pcts: 1, Props: 1, Flags: 1, Additional: 1, Seeded: 1
+};
 function taggedValue(lines, label) {
   const line = lines.find((row) => row.indexOf(label + ":") === 0) || "";
   return line ? line.slice(label.length + 1) : "";
@@ -620,6 +687,10 @@ function parseNotes(notes, restSeconds) {
     velocities: splitTag(lines, "Velocities"),
     powers: splitTag(lines, "Powers"),
     pcts: splitTag(lines, "Pcts"),
+    restReps: splitTag(lines, "RestReps"),
+    distances: splitTag(lines, "Distances"),
+    intensities: splitTag(lines, "Intensities"),
+    intensityKind: taggedValue(lines, "IntensityKind"),
     props: splitTag(lines, "Props").filter(Boolean),
     flags: splitTag(lines, "Flags"),
     seeded: splitTag(lines, "Seeded").filter(Boolean),
@@ -633,10 +704,13 @@ function inferProps(parsed, loads) {
   };
   add("load", loads);
   add("rest", parsed.rests);
+  add("restRep", parsed.restReps);
+  add("distance", parsed.distances);
   add("tempo", parsed.tempos);
   add("velocity", parsed.velocities);
   add("power", parsed.powers);
   add("pct", parsed.pcts);
+  if (parsed.intensityKind && props.indexOf("intensity") < 0) props.push("intensity");
   return props;
 }
 function itemNotes(it) {
@@ -660,7 +734,11 @@ function itemNotes(it) {
   if (flags.length) lines.push("Flags:" + flags.join(","));
   const seeded = Object.keys(it.fieldSeed || {}).filter((key) => it.fieldSeed[key]);
   if (seeded.length) lines.push("Seeded:" + seeded.join(","));
-  const keys = { Rests: "rests", Tempos: "tempos", Velocities: "velocities", Powers: "powers", Pcts: "pcts" };
+  if (it.intensityKind) lines.push("IntensityKind:" + it.intensityKind);
+  const keys = {
+    Rests: "rests", RestReps: "restReps", Distances: "distances", Intensities: "intensities",
+    Tempos: "tempos", Velocities: "velocities", Powers: "powers", Pcts: "pcts"
+  };
   Object.keys(keys).forEach((label) => {
     const tagged = taggedList(label, (it[keys[label]] || []).slice(0, sets));
     if (tagged) lines.push(tagged);
@@ -672,15 +750,15 @@ function workoutToDayItems(workout) {
   return workout.exercises.slice().sort((a, b) => (a.order_index || 0) - (b.order_index || 0)).map((we) => {
     const parsed = parseNotes(we.notes, we.rest_seconds);
     const flags = parsed.flags;
-    const sets = we.prescribed_sets || 1;
     const trackTime = flags.indexOf("trackTime") >= 0;
     const reps = String(we.target_reps || "1").split(",").map((part) => {
       const value = part.trim();
       return trackTime ? value.replace(/s$/i, "") : value;
     });
     const loads = String(we.target_weight || "").split(",");
-    const cat = String((we.exercise && we.exercise.category) || "").toLowerCase();
-    const type = cat.includes("question") ? "questionnaire" : (cat.includes("circuit") || parsed.plainLines.length > 1 ? "circuit" : "lift");
+    const cat = String((we.exercise && we.exercise.category) || "");
+    const type = dayItemType(cat, parsed);
+    const sets = type === "note" ? 0 : (we.prescribed_sets || 1);
     return item({
       id: "wx" + we.id,
       weId: we.id,
@@ -688,16 +766,22 @@ function workoutToDayItems(workout) {
       letter: we.superset_group || "A",
       type,
       sets,
-      reps,
+      reps: type === "note" ? [] : reps,
       loads,
       rests: parsed.rests.length ? parsed.rests : Array(sets).fill(""),
+      restReps: parsed.restReps.length ? parsed.restReps : Array(sets).fill(""),
+      distances: parsed.distances.length ? parsed.distances : Array(sets).fill(""),
+      intensities: parsed.intensities.length ? parsed.intensities : Array(sets).fill(""),
+      intensityKind: parsed.intensityKind || "",
       tempos: parsed.tempos,
       velocities: parsed.velocities,
       powers: parsed.powers,
       pcts: parsed.pcts,
       props: inferProps(parsed, loads),
       detail: type === "circuit" ? parsed.plainLines.join("\n") : "",
-      note: type === "circuit" ? parsed.additional : parsed.plainLines.join("\n"),
+      note: type === "circuit"
+        ? parsed.additional
+        : (parsed.plainLines.join("\n") || (type === "note" ? ((we.exercise && we.exercise.default_notes) || "") : "")),
       questions: type === "questionnaire" ? (parsed.plainLines.length ? parsed.plainLines : QUESTIONS.slice()) : [],
       trackTime,
       trackReps: trackTime
@@ -899,6 +983,10 @@ function daySignature(day) {
     reps: it.reps || [],
     loads: it.loads || [],
     rests: it.rests || [],
+    restReps: it.restReps || [],
+    distances: it.distances || [],
+    intensities: it.intensities || [],
+    intensityKind: it.intensityKind || "",
     tempos: it.tempos || [],
     velocities: it.velocities || [],
     powers: it.powers || [],
@@ -1021,7 +1109,8 @@ function syncFromGymContext() {
       serverId: u.id,
       team_id: u.team_id,
       team_name: u.team_name || "",
-      load_unit: normalizeUnit(u.load_unit)
+      load_unit: normalizeUnit(u.load_unit),
+      distance_unit: normalizeDistanceUnit(u.distance_unit)
     });
     state.athletes.push({
       id,
@@ -1033,6 +1122,7 @@ function syncFromGymContext() {
       groups: u.team_name || "—",
       team_id: u.team_id,
       load_unit: normalizeUnit(u.load_unit),
+      distance_unit: normalizeDistanceUnit(u.distance_unit),
       cals: "1",
       role: "athlete"
     });
@@ -1479,7 +1569,8 @@ function buildAthletes() {
         serverId: u.id,
         team_id: u.team_id,
         team_name: u.team_name || "",
-        load_unit: normalizeUnit(u.load_unit)
+        load_unit: normalizeUnit(u.load_unit),
+        distance_unit: normalizeDistanceUnit(u.distance_unit)
       });
       if (!state.calendars[id]) state.calendars[id] = {};
     }
@@ -1499,6 +1590,7 @@ function buildAthletes() {
         email: user.email || "",
         serverId: user.id,
         load_unit: normalizeUnit(user.load_unit),
+        distance_unit: normalizeDistanceUnit(user.distance_unit),
         self: true
       });
     }
@@ -1512,9 +1604,16 @@ function unitSelect(personId) {
   const person = buildAthletes().find((a) => a.id === personId);
   if (!person || person.isGroup || !person.serverId) return "";
   const unit = normalizeUnit(person.load_unit);
+  const distance = normalizeDistanceUnit(person.distance_unit);
   return `<label class="unit-set">Load <select aria-label="Athlete load unit" onchange="setAthleteUnit('${esc(person.id)}', this.value)">
     <option value="kg" ${unit === "kg" ? "selected" : ""}>kg</option>
     <option value="lbs" ${unit === "lbs" ? "selected" : ""}>lbs</option>
+  </select></label>
+  <label class="unit-set">Distance <select aria-label="Athlete distance unit" onchange="setAthleteDistanceUnit('${esc(person.id)}', this.value)">
+    <option value="m" ${distance === "m" ? "selected" : ""}>metres</option>
+    <option value="km" ${distance === "km" ? "selected" : ""}>km</option>
+    <option value="yd" ${distance === "yd" ? "selected" : ""}>yards</option>
+    <option value="mi" ${distance === "mi" ? "selected" : ""}>miles</option>
   </select></label>`;
 }
 function applyAthleteUnit(serverId, unit) {
@@ -1523,6 +1622,13 @@ function applyAthleteUnit(serverId, unit) {
   ATHLETES.forEach((a) => { if (a.serverId === serverId) a.load_unit = next; });
   state.athletes.forEach((a) => { if (a.serverId === serverId) a.load_unit = next; });
   if (state.auth && state.auth.user && state.auth.user.id === serverId) state.auth.user.load_unit = next;
+}
+function applyAthleteDistance(serverId, unit) {
+  const next = normalizeDistanceUnit(unit);
+  ((state.gymContext && state.gymContext.athletes) || []).forEach((u) => { if (u.id === serverId) u.distance_unit = next; });
+  ATHLETES.forEach((a) => { if (a.serverId === serverId) a.distance_unit = next; });
+  state.athletes.forEach((a) => { if (a.serverId === serverId) a.distance_unit = next; });
+  if (state.auth && state.auth.user && state.auth.user.id === serverId) state.auth.user.distance_unit = next;
 }
 async function setAthleteUnit(personId, unit) {
   const person = buildAthletes().find((a) => a.id === personId);
@@ -1533,6 +1639,18 @@ async function setAthleteUnit(personId, unit) {
     await api("PUT", "/api/users/" + person.serverId, { load_unit: normalizeUnit(unit) });
   } catch (err) {
     toast("Could not save load unit");
+    console.error(err);
+  }
+}
+async function setAthleteDistanceUnit(personId, unit) {
+  const person = buildAthletes().find((a) => a.id === personId);
+  if (!person || person.isGroup || !person.serverId) return;
+  applyAthleteDistance(person.serverId, unit);
+  render();
+  try {
+    await api("PUT", "/api/users/" + person.serverId, { distance_unit: normalizeDistanceUnit(unit) });
+  } catch (err) {
+    toast("Could not save distance unit");
     console.error(err);
   }
 }
@@ -1634,10 +1752,7 @@ function catalogType(entry) {
   if (entry.type === "break" || entry.type === "rest" || entry.type === "video") return entry.type;
   const record = exerciseRecord(entry.name);
   if (!record) return entry.type || "lift";
-  const bucket = exBucket(record.category);
-  if (bucket === "Circuits") return "circuit";
-  if (bucket === "Questionnaires") return "questionnaire";
-  return "lift";
+  return dayTypeForCategory(record.category);
 }
 function addFromCatalog(date, index) {
   const entry = Object.assign({}, CATALOG[index] || { name: "Exercise", type: "lift" });
@@ -1647,9 +1762,8 @@ function addFromCatalog(date, index) {
 function createExercise(date) {
   openNewLibraryExercise(date, (state.searchQ || "").trim());
 }
-function openNewLibraryExercise(date, name) {
-  state.searchDay = null;
-  const row = {
+function blankLibraryRow(name) {
+  return {
     name: name || "",
     category: "Strength",
     video_url: "",
@@ -1657,62 +1771,69 @@ function openNewLibraryExercise(date, name) {
     default_reps: "10",
     default_load: "",
     default_rest: "",
+    default_rest_rep: "",
+    default_distance: "",
     default_tempo: "",
     default_velocity: "",
     default_power: "",
     default_pct: "",
+    intensity_kind: "",
+    intensity_value: "",
     default_stations: "",
     default_notes: ""
   };
+}
+function openNewLibraryExercise(date, name, opts) {
+  state.searchDay = null;
+  const libraryOnly = !!(opts && opts.libraryOnly);
+  const row = blankLibraryRow(name);
   openEdit({
-    title: "Create exercise",
-    hint: "Saved to the exercise library.",
+    title: libraryOnly ? "Add exercise" : "Create exercise",
+    hint: "Saved to the exercise library when you save. Cancel writes nothing.",
     date,
     liveCategory: true,
     fields: exerciseFields(row),
-    onSave: (values) => saveNewLibraryExercise(date, values)
+    onSave: (values) => libraryOnly ? saveLibraryExercise(values) : saveNewLibraryExercise(date, values)
   });
 }
-async function saveNewLibraryExercise(date, values) {
-  const name = (values.name || "").trim();
-  if (!name) { toast("Name the exercise"); return; }
-  const category = values.category || "Strength";
-  const circuit = exBucket(category) === "Circuits";
-  const payload = {
-    name,
-    category,
-    video_url: values.video_url || "",
-    default_notes: String(values.default_notes || "").slice(0, 255),
-    default_sets: Math.max(1, Math.min(10, parseInt(values.default_sets, 10) || (circuit ? 1 : 3))),
-    default_reps: values.default_reps != null && String(values.default_reps) !== "" ? String(values.default_reps) : (circuit ? "1" : "10"),
-    default_load: values.default_load || "",
-    default_rest: values.default_rest || "",
-    default_tempo: values.default_tempo || "",
-    default_velocity: values.default_velocity || "",
-    default_power: values.default_power || "",
-    default_pct: values.default_pct || "",
-    default_stations: values.default_stations || ""
-  };
-  let created;
+async function postLibraryExercise(values) {
+  const payload = libraryExercisePayload(values);
+  if (payload.error) { toast(payload.error); return null; }
+  if (!payload.name) { toast("Name the exercise"); return null; }
   try {
-    created = await api("POST", "/api/exercises", payload);
+    return await api("POST", "/api/exercises", payload);
   } catch (err) {
     const message = err.message || "";
     if (message.toLowerCase().indexOf("already exists") >= 0) toast("That exercise is already in the library");
     else toast(message || "Could not save that exercise");
-    return;
+    return null;
   }
+}
+function rememberCreatedExercise(created) {
   const index = state.serverExercises.findIndex((row) => row.id === created.id);
   if (index >= 0) state.serverExercises[index] = created;
   else state.serverExercises.push(created);
   syncCatalogExercise(created);
   if (!state.lifts.some((row) => String(row.name || "").toLowerCase() === created.name.toLowerCase())) {
-    state.lifts.push({ id: "srv" + created.id, name: created.name, type: exBucket(created.category), tags: "N/A" });
+    state.lifts.push({ id: "srv" + created.id, name: created.name, type: dayTypeForCategory(created.category), tags: "N/A" });
   }
-  const bucket = exBucket(created.category);
-  const type = bucket === "Circuits" ? "circuit" : bucket === "Questionnaires" ? "questionnaire" : "lift";
-  addItem(date, fromCatalog({ name: created.name, type }));
+}
+async function saveNewLibraryExercise(date, values) {
+  const created = await postLibraryExercise(values);
+  if (!created) return;
+  rememberCreatedExercise(created);
+  addItem(date, fromCatalog({ name: created.name, type: dayTypeForCategory(created.category) }));
   toast("Saved to the exercise library");
+}
+async function saveLibraryExercise(values) {
+  const created = await postLibraryExercise(values);
+  if (!created) return;
+  rememberCreatedExercise(created);
+  state.toolForm.exName = "";
+  state.modal = null;
+  if (!categoryVisible(created.category)) state.managing = canonicalCategory(created.category);
+  toast("Exercise added");
+  render();
 }
 function addItem(date, it) {
   state.modal = null;
@@ -1820,7 +1941,7 @@ function setVolume(it) {
   return total;
 }
 function editorFrameWidth(it) {
-  if (!it || it.type === "questionnaire" || it.type === "break" || it.type === "video" || it.type === "rest") return 680;
+  if (!it || it.type === "questionnaire" || it.type === "note" || it.type === "break" || it.type === "video" || it.type === "rest") return 680;
   const sets = Math.max(1, it.sets || 1);
   return Math.min(980, Math.max(680, 188 + sets * 84));
 }
@@ -1830,6 +1951,12 @@ function editorPop(date) {
   const day = ensureDay(date);
   const head = editorHead(date, it, day);
   const frame = `style="width:min(${editorFrameWidth(it)}px, calc(100vw - 32px))"`;
+  if (it.type === "note") {
+    return `<div class="editor build-editor" ${frame} onclick="event.stopPropagation()">${head}
+      <div class="hint">The athlete reads this. It has no sets.</div>
+      <textarea data-focus="note-${it.id}" oninput="setField('${date}','${it.id}','note', this.value)" onchange="renderSoon()">${esc(it.note || "")}</textarea>
+    </div>`;
+  }
   if (it.type === "questionnaire") {
     return `<div class="editor build-editor" ${frame} onclick="event.stopPropagation()">${head}
       ${it.questions.map((q, i) => `<div class="q">${i + 1}. ${esc(q)}</div>`).join("")}
@@ -1877,7 +2004,12 @@ function setRow(date, it, label) {
 function propMenu(date, id) {
   const it = findItem(date, id);
   const loadLabel = displayUnit() ? "Load (" + unitWord(displayUnit()) + ")" : "Load";
-  const opts = [["load", loadLabel], ["rest", "Rest"], ["tempo", "Tempo"], ["velocity", "Velocity"], ["power", "Peak Power"], ["pct", "%PR"]];
+  const opts = [
+    ["load", loadLabel], ["rest", "Rest"], ["restRep", "Rest/Rep"],
+    ["distance", "Distance (" + distanceWord(displayDistanceUnit()) + ")"],
+    ["tempo", "Tempo"], ["velocity", "Velocity"], ["power", "Peak Power"], ["pct", "%PR"],
+    ["intensity", "Intensity"]
+  ];
   return `<div class="pop prop-menu" onclick="event.stopPropagation()">
     <div class="prop-menu-h"><b>Add Property</b><span>Ctrl+P</span></div>
     ${opts.map(([k, l]) => `<button type="button" class="opt ${(it.props || []).includes(k) ? "active" : ""}" onclick="addProp('${date}','${id}','${k}')">${(it.props || []).includes(k) ? "✓ " : ""}${l}</button>`).join("")}
@@ -1887,7 +2019,7 @@ function propMenu(date, id) {
 function aboutProperties(ev) {
   if (ev) ev.stopPropagation();
   state.propMenu = false;
-  toast("Load, Rest, Tempo, Velocity, Peak Power, and %PR are entered on each set. Seconds is the Reps / Seconds switch, and each set keeps its own time.");
+  toast("Load, Rest, Rest/Rep, Distance, Tempo, Velocity, Peak Power, %PR, and Intensity are entered on each set. Seconds is the Reps / Seconds switch, and each set keeps its own time. Intensity is one of RPE, percent of a 1-rep max, or RIR.");
   render();
 }
 function doseValue(it, value) {
@@ -1895,7 +2027,7 @@ function doseValue(it, value) {
   return it && it.trackTime ? raw.replace(/s$/i, "") : raw;
 }
 function propArray(it, key) {
-  const map = { reps: "reps", load: "loads", rest: "rests", tempo: "tempos", velocity: "velocities", power: "powers", pct: "pcts" };
+  const map = { reps: "reps", load: "loads", rest: "rests", restRep: "restReps", distance: "distances", intensity: "intensities", tempo: "tempos", velocity: "velocities", power: "powers", pct: "pcts" };
   const sets = it.sets || 1;
   const arr = (it[map[key]] || []).slice(0, sets);
   while (arr.length < sets) arr.push("");
@@ -1904,6 +2036,9 @@ function propArray(it, key) {
 function fieldLabel(it, key) {
   if (key === "reps") return it && it.trackTime ? "Time" : "Reps";
   if (key === "load") return displayUnit() ? "Load (" + unitWord(displayUnit()) + ")" : "Load";
+  if (key === "restRep") return "Rest/Rep (s)";
+  if (key === "distance") return "Distance (" + distanceWord(displayDistanceUnit()) + ")";
+  if (key === "intensity") return intensityLabel(it && it.intensityKind);
   return PROP_LABEL[key];
 }
 function propRow(date, it, key) {
@@ -1916,7 +2051,21 @@ function propRow(date, it, key) {
     const suffix = time ? `<span class="sec-suffix">s</span>` : "";
     return `<td><span class="set-val${time ? " is-time" : ""}"><input aria-label="${label} set ${i + 1}" data-focus="${key}-${it.id}-${i}" data-set-field="${key}" autocomplete="off" value="${esc(shown)}" oninput="setCell('${date}','${it.id}','${key}',${i}, this.value)" onchange="commitSetCell('${date}','${it.id}','${key}',${i});renderSoon()" onkeydown="tabSetField(event,'${date}','${it.id}','${key}',${i})" onfocus="this.select()">${suffix}</span></td>`;
   }).join("");
-  return `<tr><th>${label}${info}</th>${cells}</tr>`;
+  const kindPick = key === "intensity"
+    ? `<select aria-label="Intensity kind" onchange="setIntensityKind('${date}','${it.id}', this.value)">${["RPE", "% of 1-rep max", "RIR"].map((opt) => `<option ${intensityChoice(it.intensityKind) === opt ? "selected" : ""}>${esc(opt)}</option>`).join("")}</select>`
+    : "";
+  return `<tr><th>${kindPick || label}${info}</th>${cells}</tr>`;
+}
+function setIntensityKind(date, id, kind) {
+  const it = findItem(date, id);
+  if (!it) return;
+  snapshot();
+  it.intensityKind = intensityKindCode(kind) || "rpe";
+  if (!it.props) it.props = [];
+  if (it.props.indexOf("intensity") < 0) it.props.push("intensity");
+  refreshFutureCopies(date);
+  noteDayEdit(date);
+  render();
 }
 function optionsPop(date, it) {
   if (!state.optionsMenu) return "";
@@ -1969,7 +2118,7 @@ function fillSetsFromFirst(date, id) {
     return Array.from({ length: n }, () => (first == null ? "" : first));
   };
   it.reps = fill(it.reps || []);
-  ["loads", "rests", "tempos", "velocities", "powers", "pcts"].forEach((key) => {
+  ["loads", "rests", "restReps", "distances", "intensities", "tempos", "velocities", "powers", "pcts"].forEach((key) => {
     it[key] = fill(it[key] || []);
   });
   it.touchedCells = {};
@@ -1977,7 +2126,10 @@ function fillSetsFromFirst(date, id) {
   noteDayEdit(date);
   render();
 }
-const SET_ARRAY = { reps: "reps", load: "loads", rest: "rests", tempo: "tempos", velocity: "velocities", power: "powers", pct: "pcts" };
+const SET_ARRAY = {
+  reps: "reps", load: "loads", rest: "rests", restRep: "restReps", distance: "distances",
+  intensity: "intensities", tempo: "tempos", velocity: "velocities", power: "powers", pct: "pcts"
+};
 function setArray(it, key) {
   const name = SET_ARRAY[key];
   if (!name) return [];
@@ -2076,11 +2228,13 @@ function addProp(date, id, key) {
   const it = findItem(date, id);
   if (!it) return;
   if (!it.props) it.props = [];
-  const map = { load: "loads", rest: "rests", tempo: "tempos", velocity: "velocities", power: "powers", pct: "pcts" };
+  const map = { load: "loads", rest: "rests", restRep: "restReps", distance: "distances", intensity: "intensities", tempo: "tempos", velocity: "velocities", power: "powers", pct: "pcts" };
   if (it.props.includes(key)) {
     it.props = it.props.filter((k) => k !== key);
+    if (key === "intensity") it.intensityKind = "";
   } else {
     it.props.push(key);
+    if (key === "intensity" && !it.intensityKind) it.intensityKind = "rpe";
     const arrKey = map[key];
     const sets = it.sets || 1;
     const fill = (it.libraryDefaults && it.libraryDefaults[key]) || "";
@@ -2530,9 +2684,9 @@ async function publishDay(date, opts = {}) {
     const exercises = [];
     for (const it of snapItems) {
       if (!it.name || it.type === "break") continue;
-      const category = it.type === "circuit" ? "Circuit" : it.type === "questionnaire" ? "Questionnaire" : "Strength";
+      const category = it.type === "circuit" ? "Circuit" : it.type === "questionnaire" ? "Questionnaire" : it.type === "note" ? "Notes" : "Strength";
       const ex = await ensureExercise(it.name, category);
-      const sets = it.sets || 1;
+      const sets = it.type === "note" ? 0 : (it.sets || 1);
       const reps = (it.reps || []).slice(0, sets);
       const loads = (it.loads || []).slice(0, sets);
       const rests = (it.rests || []).slice(0, sets);
@@ -2683,6 +2837,22 @@ async function openAthleteWorkout(workoutId) {
   state.openSession = session;
   render();
 }
+function intensityKindFor(weId) {
+  const we = ((state.openWorkout && state.openWorkout.exercises) || []).find((row) => row.id === weId);
+  if (we) {
+    const kind = noteValues(we, "IntensityKind")[0];
+    if (kind) return kind;
+  }
+  let found = "";
+  Object.values(state.calendars || {}).forEach((days) => {
+    Object.values(days || {}).forEach((day) => {
+      (day.items || []).forEach((it) => {
+        if (it.weId === weId && it.intensityKind) found = it.intensityKind;
+      });
+    });
+  });
+  return found;
+}
 async function logAthleteSet(weId, setNumber, field, value) {
   if (!state.openSession) return;
   const logs = state.openSession.set_logs || [];
@@ -2702,6 +2872,10 @@ async function logAthleteSet(weId, setNumber, field, value) {
   else if (field === "completed") current.completed = !!value;
   else {
     details[field] = value;
+    if (field === "intensity") {
+      const kind = intensityKindFor(weId);
+      if (kind) details.intensityKind = kind;
+    }
     current.details = JSON.stringify(details);
   }
   const params = new URLSearchParams();
@@ -2847,6 +3021,10 @@ function hydrateEntryLogs(date, aid, day) {
     const key = who + ":" + date + ":" + id;
     if (state.logs[key] && state.logs[key].hydrated) return;
     const cells = {};
+    if (it.type === "note") {
+      state.logs[key] = { cells: {}, hydrated: true };
+      return;
+    }
     const sets = it.sets || 1;
     for (let i = 0; i < sets; i++) {
       const log = (state.openSession.set_logs || []).find((row) => row.workout_exercise_id === it.weId && row.set_number === i + 1) || {};
@@ -2860,6 +3038,9 @@ function hydrateEntryLogs(date, aid, day) {
         velocity: details.velocity || ((it.velocities && (it.velocities[i] || it.velocities[0])) || ""),
         power: details.power || ((it.powers && (it.powers[i] || it.powers[0])) || ""),
         pct: details.pct || ((it.pcts && (it.pcts[i] || it.pcts[0])) || ""),
+        restRep: details.restRep != null && details.restRep !== "" ? details.restRep : ((it.restReps && (it.restReps[i] || it.restReps[0])) || ""),
+        distance: details.distance != null && details.distance !== "" ? details.distance : ((it.distances && (it.distances[i] || it.distances[0])) || ""),
+        intensity: details.intensity != null && details.intensity !== "" ? details.intensity : ((it.intensities && (it.intensities[i] || it.intensities[0])) || ""),
         done: !!log.completed
       };
     }
@@ -2905,11 +3086,21 @@ function logDetails(log) {
   try { return JSON.parse(log.details) || {}; } catch (e) { return {}; }
 }
 function athleteExercise(we) {
+  const parsed = parseNotes(we.notes, we.rest_seconds);
+  const cat = String((we.exercise && we.exercise.category) || "");
+  if (dayItemType(cat, parsed) === "note") {
+    const text = parsed.plainLines.join("\n") || ((we.exercise && we.exercise.default_notes) || "");
+    return `<div style="margin:12px 0"><strong>${esc((we.exercise && we.exercise.name) || "Note")}</strong><div class="preview-copy">${esc(text)}</div></div>`;
+  }
   const sets = we.prescribed_sets || 1;
   const reps = String(we.target_reps || "").split(",");
   const loads = String(we.target_weight || "").split(",");
   const rests = noteValues(we, "Rests");
+  const kind = noteValues(we, "IntensityKind")[0] || "";
   const extras = [
+    ["restRep", "Rest/Rep (s)", "RestReps"],
+    ["distance", "Distance (" + distanceWord(entryDistanceUnit()) + ")", "Distances"],
+    ["intensity", intensityLabel(kind), "Intensities"],
     ["tempo", "Tempo", "Tempos"],
     ["velocity", "Velocity", "Velocities"],
     ["power", "Power", "Powers"],
@@ -2938,7 +3129,10 @@ function athleteExercise(we) {
       ${extraCells}
       <td><input aria-label="Done set ${n}" type="checkbox" ${log.completed ? "checked" : ""} onchange="logAthleteSet(${we.id}, ${n}, 'completed', this.checked)"></td></tr>`;
   }).join("");
-  const skip = { Rests: 1, Tempos: 1, Velocities: 1, Powers: 1, Pcts: 1 };
+  const skip = {
+    Rests: 1, RestReps: 1, Distances: 1, Intensities: 1, IntensityKind: 1,
+    Tempos: 1, Velocities: 1, Powers: 1, Pcts: 1, Props: 1, Flags: 1, Seeded: 1, Additional: 1
+  };
   const note = String(we.notes || "").split("\n").filter((line) => !skip[line.split(":")[0]]).join(" · ");
   const heads = extras.map((field) => `<th>${esc(field.label)}</th>`).join("");
   return `<div style="margin:12px 0">
@@ -3307,6 +3501,9 @@ function previewMediaBlock(it) {
 function previewSheet(it, log) {
   const done = log.done ? " done" : "";
   const button = `<button type="button" class="complete${done}" onclick="completePreview()">${log.done ? "✓ Completed" : "✓ Complete"}</button>`;
+  if (it.type === "note") {
+    return `<div class="preview-copy">${esc(it.note || "")}</div>`;
+  }
   if (it.type === "questionnaire") {
     const qs = (it.questions || []).map((q, i) => `<div class="q">${i + 1}. ${esc(q)}</div>`).join("") || '<div class="hint">No questions</div>';
     return qs + button;
@@ -3319,20 +3516,21 @@ function previewSheet(it, log) {
   const detail = it.detail ? `<div class="preview-copy">${esc(it.detail)}</div>` : "";
   const n = Math.max(1, it.sets || (it.reps || []).length || 1);
   const loaded = previewHasLoad(it);
-  const rows = Array.from({ length: n }, (_, i) => {
-    const rawRep = doseValue(it, (it.reps || [])[i] ?? "");
-    const rep = esc(it.trackTime && rawRep !== "" ? rawRep + "s" : rawRep);
-    const load = esc((it.loads || [])[i] ?? "");
-    if (loaded) {
-      return `<tr><td>${i + 1}</td><td><span class="preview-box">${load}</span></td><td><span class="preview-box">${rep}</span></td></tr>`;
-    }
-    return `<tr><td>${i + 1}</td><td>${rep}</td></tr>`;
-  }).join("");
+  const has = (arr) => (arr || []).some((v) => String(v || "").trim() !== "");
   const doseHead = it.trackTime ? "TIME" : "REPS";
   const weightHead = displayUnit() === "lbs" ? "LBS" : (displayUnit() === "kg" ? "KG" : "WEIGHT");
-  const head = loaded
-    ? `<tr><th>SET</th><th>${weightHead}</th><th>${doseHead}</th></tr>`
-    : `<tr><th>SET</th><th>${doseHead}</th></tr>`;
+  const cols = [];
+  if (loaded) cols.push(["WEIGHT", (i) => `<span class="preview-box">${esc((it.loads || [])[i] ?? "")}</span>`]);
+  cols.push([doseHead, (i) => {
+    const rawRep = doseValue(it, (it.reps || [])[i] ?? "");
+    const rep = it.trackTime && rawRep !== "" ? rawRep + "s" : rawRep;
+    return loaded ? `<span class="preview-box">${esc(rep)}</span>` : esc(rep);
+  }]);
+  if (has(it.restReps)) cols.push(["REST/REP", (i) => esc((it.restReps[i] ?? "") === "" ? "" : it.restReps[i] + "s")]);
+  if (has(it.distances)) cols.push(["DISTANCE (" + distanceWord(displayDistanceUnit()).toUpperCase() + ")", (i) => esc(it.distances[i] ?? "")]);
+  if (it.intensityKind || has(it.intensities)) cols.push([intensityLabel(it.intensityKind).toUpperCase(), (i) => esc(it.intensities[i] ?? "")]);
+  const rows = Array.from({ length: n }, (_, i) => `<tr><td>${i + 1}</td>${cols.map((col) => `<td>${col[1](i)}</td>`).join("")}</tr>`).join("");
+  const head = `<tr><th>SET</th>${cols.map((col) => `<th>${esc(col[0])}</th>`).join("")}</tr>`;
   return `${note}${detail}<table class="preview-sets">${head}${rows}</table>${button}`;
 }
 function completePreview() {
@@ -3559,14 +3757,27 @@ function pickAthlete(id) {
 function entryItem(aid, date, it) {
   const key = aid + ":" + date + ":" + it.id;
   const open = state.entryItem === it.id;
+  if (it.type === "note") {
+    return `<div>
+      <button class="entry-item" onclick="state.entryItem=state.entryItem==='${it.id}'?null:'${it.id}';render()">
+        <span class="letter" style="background:${LETTER_COLOR[it.letter] || "#999"}">${esc(it.letter || "•")}</span>
+        <span><strong>${esc(it.name)}</strong><div class="hint">${esc(scriptLine(it))}</div></span>
+      </button>
+      ${open ? `<div class="preview-copy">${esc(it.note || "")}</div>` : ""}
+    </div>`;
+  }
+  const has = (arr) => (arr || []).some((v) => String(v || "").trim() !== "");
   const fields = [["w", unitTitle(entryUnit())], ["r", it.trackTime ? "Time (s)" : "Reps"]];
   if (state.role === "athlete") {
     fields.push(["rest", "Rest (s)"]);
-    if ((it.tempos || []).some((v) => String(v || "").trim())) fields.push(["tempo", "Tempo"]);
-    if ((it.velocities || []).some((v) => String(v || "").trim())) fields.push(["velocity", "Velocity"]);
-    if ((it.powers || []).some((v) => String(v || "").trim())) fields.push(["power", "Power"]);
-    if ((it.pcts || []).some((v) => String(v || "").trim())) fields.push(["pct", "%1RM"]);
+    if (has(it.tempos)) fields.push(["tempo", "Tempo"]);
+    if (has(it.velocities)) fields.push(["velocity", "Velocity"]);
+    if (has(it.powers)) fields.push(["power", "Power"]);
+    if (has(it.pcts)) fields.push(["pct", "%1RM"]);
   }
+  if (has(it.restReps)) fields.push(["restRep", "Rest/Rep (s)"]);
+  if (has(it.distances)) fields.push(["distance", "Distance (" + distanceWord(displayDistanceUnit()) + ")"]);
+  if (it.intensityKind || has(it.intensities)) fields.push(["intensity", intensityLabel(it.intensityKind)]);
   const rows = Array.from({ length: it.sets || 1 }, (_, i) => {
     const log = (state.logs[key] && state.logs[key].cells && state.logs[key].cells[i]) || {
       w: (it.loads && it.loads[i]) || "",
@@ -3576,6 +3787,9 @@ function entryItem(aid, date, it) {
       velocity: (it.velocities && (it.velocities[i] || it.velocities[0])) || "",
       power: (it.powers && (it.powers[i] || it.powers[0])) || "",
       pct: (it.pcts && (it.pcts[i] || it.pcts[0])) || "",
+      restRep: (it.restReps && (it.restReps[i] || it.restReps[0])) || "",
+      distance: (it.distances && (it.distances[i] || it.distances[0])) || "",
+      intensity: (it.intensities && (it.intensities[i] || it.intensities[0])) || "",
       done: false
     };
     const cells = fields.map(([field, label]) => `<td><input aria-label="${esc(label)} set ${i + 1}" value="${esc(log[field] ?? "")}" onchange="logCell('${key}',${i},'${field}',this.value,'${date}','${it.id}',${it.weId || 0})"></td>`).join("");
@@ -3598,7 +3812,10 @@ function logCell(key, i, field, value, date, itemId, weId) {
   log.hydrated = true;
   log.cells[i] = log.cells[i] || { w: "", r: "", rest: "", done: false };
   log.cells[i][field] = field === "done" ? !!value : value;
-  const map = { w: "weight", r: "reps", rest: "rest", done: "completed", tempo: "tempo", velocity: "velocity", power: "power", pct: "pct" };
+  const map = {
+    w: "weight", r: "reps", rest: "rest", done: "completed", tempo: "tempo", velocity: "velocity",
+    power: "power", pct: "pct", restRep: "restRep", distance: "distance", intensity: "intensity"
+  };
   if (weId && state.openSession && map[field] && (state.role === "athlete" || state.coachSessionFor)) {
     logAthleteSet(weId, i + 1, map[field], log.cells[i][field]);
     return;
@@ -3976,7 +4193,8 @@ function editUser(id) {
       { key: "first", label: "First name", value: row.first || "" },
       { key: "last", label: "Last name", value: row.last || "" },
       { key: "email", label: "Email", value: row.email || "", type: "email" },
-      { key: "load_unit", label: "Load unit", value: normalizeUnit(row.load_unit), options: ["kg", "lbs"] }
+      { key: "load_unit", label: "Load unit", value: normalizeUnit(row.load_unit), options: ["kg", "lbs"] },
+      { key: "distance_unit", label: "Distance unit", value: distanceChoice(row.distance_unit), options: ["metres", "km", "yards", "miles"] }
     ],
     onSave: (values) => saveUserEdit(row, values)
   });
@@ -4215,12 +4433,17 @@ async function saveUserEdit(row, values) {
   if (!first || !email) { toast("First name and email are required"); return; }
   const name = (first + " " + last).trim();
   const loadUnit = normalizeUnit(values.load_unit);
+  const distanceUnit = normalizeDistanceUnit(values.distance_unit);
   if (row.serverId) {
-    try { await api("PUT", "/api/users/" + row.serverId, { name, email, load_unit: loadUnit }); }
+    try { await api("PUT", "/api/users/" + row.serverId, { name, email, load_unit: loadUnit, distance_unit: distanceUnit }); }
     catch (err) { toast("Could not save user"); console.error(err); return; }
   }
   row.load_unit = loadUnit;
-  if (row.serverId) applyAthleteUnit(row.serverId, loadUnit);
+  row.distance_unit = distanceUnit;
+  if (row.serverId) {
+    applyAthleteUnit(row.serverId, loadUnit);
+    applyAthleteDistance(row.serverId, distanceUnit);
+  }
   const previousEmail = row.email;
   row.first = first;
   row.last = last;
@@ -4234,66 +4457,206 @@ async function saveUserEdit(row, values) {
   toast("User saved");
 }
 
-function exBucket(category) {
-  const c = String(category || "").toLowerCase();
-  if (c.indexOf("circuit") >= 0) return "Circuits";
-  if (c.indexOf("question") >= 0) return "Questionnaires";
-  return "Lifts";
+function canonicalCategory(category) {
+  const raw = String(category || "").trim();
+  const lower = raw.toLowerCase();
+  const aliases = {
+    strength: "Strength",
+    lift: "Strength",
+    lifts: "Strength",
+    "warm up": "Warm up",
+    warmup: "Warm up",
+    "warm-up": "Warm up",
+    "warm ups": "Warm up",
+    warmups: "Warm up",
+    "speed/agility/cardio": "Speed/agility/cardio",
+    speed: "Speed/agility/cardio",
+    agility: "Speed/agility/cardio",
+    cardio: "Speed/agility/cardio",
+    cooldown: "Cooldown",
+    cooldowns: "Cooldown",
+    "cool down": "Cooldown",
+    "cool-down": "Cooldown",
+    circuit: "Circuit",
+    circuits: "Circuit",
+    questionnaire: "Questionnaire",
+    questionnaires: "Questionnaire",
+    note: "Notes",
+    notes: "Notes"
+  };
+  if (!lower) return "Strength";
+  return aliases[lower] || raw;
 }
-function categoryChoice(category) {
-  const bucket = exBucket(category);
-  if (bucket === "Circuits") return "Circuit";
-  if (bucket === "Questionnaires") return "Questionnaire";
-  return "Strength";
+function intensityKindCode(value) {
+  const v = String(value || "").trim().toLowerCase();
+  if (!v || v === "none" || v === "unset") return "";
+  if (v === "rpe") return "rpe";
+  if (v === "rir") return "rir";
+  if (v === "pct1rm" || v === "% of 1-rep max" || v.indexOf("1-rep") >= 0 || v.indexOf("1 rep") >= 0 || v === "percent") return "pct1rm";
+  return "";
+}
+function intensityChoice(kind) {
+  const code = intensityKindCode(kind);
+  if (code === "rir") return "RIR";
+  if (code === "pct1rm") return "% of 1-rep max";
+  if (code === "rpe") return "RPE";
+  return "";
+}
+function intensityLabel(kind) {
+  return intensityChoice(kind) || "Intensity";
+}
+function dayItemType(category, parsed) {
+  const raw = String(category || "").trim();
+  const lower = raw.toLowerCase();
+  if (!raw) return parsed && parsed.plainLines && parsed.plainLines.length > 1 ? "circuit" : "lift";
+  if (lower === "note" || lower === "notes") return "note";
+  if (lower.indexOf("question") >= 0) return "questionnaire";
+  if (lower.indexOf("circuit") >= 0) return "circuit";
+  const known = canonicalCategory(raw);
+  if (known === "Strength" || known === "Warm up" || known === "Speed/agility/cardio" || known === "Cooldown") return "lift";
+  if (parsed && parsed.plainLines && parsed.plainLines.length > 1) return "circuit";
+  return "lift";
+}
+function dayTypeForCategory(category) {
+  return dayItemType(category, { plainLines: [] });
+}
+function categoryVisible(category) {
+  if (!state.managing || state.managing === "All") return true;
+  const raw = String(category || "").trim();
+  return (raw ? canonicalCategory(raw) : "Strength") === state.managing;
+}
+function categoryLabel(category) {
+  const raw = String(category || "").trim();
+  return raw ? canonicalCategory(raw) : "Strength";
+}
+function readIntensity(values) {
+  const kind = intensityKindCode(values && values.intensity_kind);
+  const raw = values ? values.intensity_value : "";
+  if (!kind) {
+    if (String(raw || "").trim()) return { error: "Intensity needs one kind and one number" };
+    return { intensity_kind: "", intensity_value: "" };
+  }
+  const num = Number(raw);
+  if (!Number.isFinite(num) || String(raw || "").trim() === "") return { error: "Enter an intensity number" };
+  if ((kind === "rpe" || kind === "rir") && (num < 1 || num > 10 || num !== Math.floor(num))) {
+    return { error: "RPE and RIR stay between 1 and 10" };
+  }
+  if (kind === "pct1rm" && num <= 0) return { error: "Enter an intensity number" };
+  const stored = num === Math.floor(num) ? String(Math.floor(num)) : String(num);
+  return { intensity_kind: kind, intensity_value: stored };
+}
+function libraryExercisePayload(values) {
+  const name = (values.name || "").trim();
+  const category = canonicalCategory(values.category || "Strength");
+  const note = category === "Notes";
+  const circuit = category === "Circuit";
+  const intensity = note ? { intensity_kind: "", intensity_value: "" } : readIntensity(values);
+  if (intensity.error) return { error: intensity.error };
+  const sets = note ? 0 : Math.max(1, Math.min(10, parseInt(values.default_sets, 10) || (circuit ? 1 : 3)));
+  return {
+    name,
+    category,
+    video_url: values.video_url || "",
+    default_notes: String(values.default_notes || "").slice(0, note ? 4000 : 255),
+    default_sets: sets,
+    default_reps: note ? "" : (values.default_reps != null && String(values.default_reps) !== "" ? String(values.default_reps) : (circuit ? "1" : "10")),
+    default_load: note ? "" : (values.default_load || ""),
+    default_rest: note ? "" : (values.default_rest || ""),
+    default_rest_rep: note ? "" : (values.default_rest_rep || ""),
+    default_distance: note ? "" : (values.default_distance || ""),
+    default_tempo: note ? "" : (values.default_tempo || ""),
+    default_velocity: note ? "" : (values.default_velocity || ""),
+    default_power: note ? "" : (values.default_power || ""),
+    default_pct: note ? "" : (values.default_pct || ""),
+    default_stations: circuit ? (values.default_stations || "") : (values.default_stations || ""),
+    intensity_kind: intensity.intensity_kind,
+    intensity_value: intensity.intensity_value
+  };
+}
+function trackingFields(row, opts) {
+  const setsDefault = opts && opts.setsDefault != null ? opts.setsDefault : 3;
+  const repsDefault = opts && opts.repsDefault != null ? opts.repsDefault : "10";
+  const fields = [];
+  if (!opts || opts.sets !== false) {
+    fields.push({
+      key: "default_sets",
+      label: (opts && opts.setsLabel) || "Default sets",
+      value: String(row.default_sets != null && row.default_sets !== "" ? row.default_sets : setsDefault),
+      type: "number"
+    });
+  }
+  fields.push(
+    { key: "default_reps", label: "Default reps", value: row.default_reps != null && String(row.default_reps) !== "" ? String(row.default_reps) : repsDefault },
+    { key: "default_rest", label: "Default rest", value: row.default_rest || "" },
+    { key: "default_rest_rep", label: "Rest/Rep (s)", value: row.default_rest_rep || "" },
+    { key: "default_distance", label: "Distance", value: row.default_distance || "" }
+  );
+  return fields;
+}
+function intensityEditorFields(row) {
+  const kind = intensityKindCode(row.intensity_kind);
+  if (!kind) return [{ key: "add_intensity", label: "Intensity", button: "Add intensity" }];
+  const bounds = kind === "pct1rm" ? { min: "1" } : { min: "1", max: "10" };
+  return [
+    { key: "intensity_kind", label: "Intensity", value: intensityChoice(kind), options: ["RPE", "% of 1-rep max", "RIR"] },
+    Object.assign({ key: "intensity_value", label: intensityLabel(kind), value: row.intensity_value || "", type: "number" }, bounds),
+    { key: "remove_intensity", label: "Intensity", button: "Remove intensity" }
+  ];
 }
 function exerciseFields(row) {
-  const bucket = exBucket(row.category);
+  const category = canonicalCategory(row.category || "Strength");
   const fields = [
     { key: "name", label: "Name", value: row.name || "" },
-    { key: "category", label: "Category", value: row.category || "Strength", options: ["Strength", "Circuit", "Questionnaire"] },
+    { key: "category", label: "Category", value: category, options: EXERCISE_CATEGORIES.slice() },
     { key: "video_url", label: "YouTube link", value: row.video_url || "" }
   ];
-  if (bucket === "Circuits") {
+  if (category === "Notes") {
+    fields.push({ key: "default_notes", label: "Note", value: row.default_notes || "", multiline: true });
+    return fields;
+  }
+  if (category === "Circuit") {
     fields.push(
       { key: "default_stations", label: "Stations", value: row.default_stations || "", multiline: true },
       { key: "default_sets", label: "Rounds", value: String(row.default_sets || 1), type: "number" },
       { key: "default_notes", label: "Additional info", value: row.default_notes || "", multiline: true, maxlength: 255 }
     );
+    fields.push.apply(fields, trackingFields(row, { sets: false, repsDefault: "1" }));
+    fields.push.apply(fields, intensityEditorFields(row));
     return fields;
   }
-  if (bucket === "Questionnaires") return fields;
+  if (category === "Questionnaire") {
+    fields.push.apply(fields, trackingFields(row, { setsDefault: 1, repsDefault: "1" }));
+    fields.push.apply(fields, intensityEditorFields(row));
+    return fields;
+  }
+  const tracking = trackingFields(row);
+  const restAt = tracking.findIndex((field) => field.key === "default_rest");
+  tracking.splice(restAt, 0, { key: "default_load", label: "Default load", value: row.default_load || "" });
+  fields.push.apply(fields, tracking);
   fields.push(
-    { key: "default_sets", label: "Default sets", value: String(row.default_sets || 3), type: "number" },
-    { key: "default_reps", label: "Default reps", value: row.default_reps != null ? String(row.default_reps) : "10" },
-    { key: "default_load", label: "Default load", value: row.default_load || "" },
-    { key: "default_rest", label: "Default rest", value: row.default_rest || "" },
     { key: "default_tempo", label: "Default tempo", value: row.default_tempo || "" },
     { key: "default_velocity", label: "Default velocity", value: row.default_velocity || "" },
     { key: "default_power", label: "Default peak power", value: row.default_power || "" },
     { key: "default_pct", label: "Default %PR", value: row.default_pct || "" }
   );
+  fields.push.apply(fields, intensityEditorFields(row));
   return fields;
 }
 function editExercise(id) {
   const row = state.serverExercises.find((e) => e.id === id);
   if (!row) return;
-  const circuit = exBucket(row.category) === "Circuits";
+  const category = canonicalCategory(row.category || "Strength");
+  const title = category === "Circuit" ? "Edit circuit" : category === "Notes" ? "Edit note" : "Edit exercise";
   openEdit({
-    title: circuit ? "Edit circuit" : "Edit exercise",
+    title,
+    liveCategory: true,
     fields: exerciseFields(row),
     onSave: async (values) => {
-      const name = (values.name || "").trim();
-      if (!name) { toast("Name the exercise"); return; }
+      const payload = libraryExercisePayload(values);
+      if (payload.error) { toast(payload.error); return; }
+      if (!payload.name) { toast("Name the exercise"); return; }
       const previous = row.name;
-      row.name = name;
-      row.category = values.category || "Strength";
-      row.video_url = values.video_url || "";
-      if (values.default_sets != null && values.default_sets !== "") {
-        row.default_sets = Math.max(1, Math.min(10, parseInt(values.default_sets, 10) || 1));
-      }
-      ["default_reps", "default_load", "default_rest", "default_tempo", "default_velocity", "default_power", "default_pct", "default_stations", "default_notes"].forEach((key) => {
-        if (values[key] != null) row[key] = key === "default_notes" ? String(values[key]).slice(0, 255) : values[key];
-      });
+      Object.assign(row, payload);
       const ok = await saveExerciseName(id, previous);
       if (!ok) return;
       state.modal = null;
@@ -4304,34 +4667,36 @@ function editExercise(id) {
 function exerciseRows() {
   const q = state.liftQ.toLowerCase();
   if (state.serverExercises.length) {
-    return state.serverExercises.filter((e) => !e.hidden && exBucket(e.category) === state.managing && e.name.toLowerCase().includes(q));
+    return state.serverExercises.filter((e) => !e.hidden && categoryVisible(e.category) && e.name.toLowerCase().includes(q));
   }
-  return state.lifts.filter((l) => l.type === state.managing && l.name.toLowerCase().includes(q));
+  return state.lifts.filter((l) => {
+    const mapped = l.type === "Circuits" || l.type === "circuit" ? "Circuit" : (l.type === "Questionnaires" || l.type === "questionnaire" ? "Questionnaire" : "Strength");
+    return categoryVisible(mapped) && l.name.toLowerCase().includes(q);
+  });
 }
 function liftsView() {
   const rows = exerciseRows();
   const server = state.serverExercises.length > 0;
+  const filters = ["All"].concat(EXERCISE_CATEGORIES);
+  const empty = state.managing === "All" ? "No exercises yet." : ("No " + state.managing + " exercises yet.");
   return `<section class="stage" style="background:#eee">
     <div class="light-page">
       <div class="feed-top"><h1 style="display:flex;gap:8px;align-items:center">Master Database
-        <select class="plain" aria-label="Exercise list" onchange="state.managing=this.value;state.toolForm.exCat='';render()">${["Lifts", "Circuits", "Questionnaires"].map((t) => `<option ${state.managing === t ? "selected" : ""}>${t}</option>`).join("")}</select>
+        <select class="plain" aria-label="Exercise category" onchange="state.managing=this.value;render()">${filters.map((t) => `<option ${state.managing === t ? "selected" : ""}>${t}</option>`).join("")}</select>
       </h1></div>
       <form class="toolbar" onsubmit="addExerciseRecord(); return false;">
         <input class="plain" placeholder="Exercise name" data-focus="ex-name" value="${esc(state.toolForm.exName || "")}" oninput="state.toolForm.exName=this.value">
-        <select class="plain" aria-label="Category" onchange="state.toolForm.exCat=this.value">
-          ${["Strength", "Circuit", "Questionnaire"].map((c) => `<option ${managingCategory() === c ? "selected" : ""}>${c}</option>`).join("")}
-        </select>
         <button class="req" type="submit">Add exercise</button>
       </form>
       <input class="plain" style="width:100%;margin:8px 0" placeholder="Search" data-focus="lift-q" value="${esc(state.liftQ)}" oninput="state.liftQ=this.value;render()">
       <table class="data"><tr><th>Name</th><th>Category</th><th></th></tr>
         ${rows.map((l) => server ? `<tr>
           <td>${esc(l.name)}</td>
-          <td>${esc(categoryChoice(l.category))}</td>
+          <td>${esc(categoryLabel(l.category))}</td>
           <td><button class="icon-a" onclick="editExercise(${l.id})">Edit</button> <button class="icon-a" onclick="hideExercise(${l.id})">Hide</button></td>
         </tr>` : `<tr><td>${esc(l.name)}</td><td>${esc(l.type)}</td><td></td></tr>`).join("")}
       </table>
-      ${rows.length ? "" : `<p class="hint">No ${esc(state.managing.toLowerCase())} yet.</p>`}
+      ${rows.length ? "" : `<p class="hint">${esc(empty)}</p>`}
     </div>
   </section>`;
 }
@@ -4339,20 +4704,13 @@ function rememberExercise(id, key, value) {
   const row = state.serverExercises.find((e) => e.id === id);
   if (row) row[key] = value;
 }
-function managingCategory() {
-  if (state.toolForm.exCat) return state.toolForm.exCat;
-  if (state.managing === "Circuits") return "Circuit";
-  if (state.managing === "Questionnaires") return "Questionnaire";
-  return "Strength";
-}
 function syncCatalogExercise(e, previousName) {
-  const bucket = exBucket(e.category);
-  const type = bucket === "Circuits" ? "circuit" : bucket === "Questionnaires" ? "questionnaire" : "lift";
+  const type = dayTypeForCategory(e.category);
   const previous = String(previousName || e.name || "").toLowerCase();
   const found = CATALOG.find((c) => c.name.toLowerCase() === previous)
     || CATALOG.find((c) => c.name.toLowerCase() === String(e.name || "").toLowerCase());
   if (found) {
-    if (found.type === "lift" || found.type === "circuit" || found.type === "questionnaire") found.type = type;
+    if (found.type === "lift" || found.type === "circuit" || found.type === "questionnaire" || found.type === "note") found.type = type;
     found.name = e.name;
   } else {
     CATALOG.push({ name: e.name, type });
@@ -4367,29 +4725,8 @@ async function loadExercises() {
     render();
   } catch (err) { console.error(err); }
 }
-async function addExerciseRecord() {
-  const name = (state.toolForm.exName || "").trim();
-  const category = managingCategory();
-  if (!name) { toast("Name the exercise"); return; }
-  const circuit = exBucket(category) === "Circuits";
-  try {
-    const created = await api("POST", "/api/exercises", {
-      name,
-      category,
-      default_sets: circuit ? 1 : 3,
-      default_reps: circuit ? "1" : "10"
-    });
-    state.serverExercises.push(created);
-    syncCatalogExercise(created);
-    state.managing = exBucket(category);
-    state.toolForm.exName = "";
-    state.toolForm.exCat = "";
-    toast("Exercise added");
-    render();
-  } catch (err) {
-    toast("Could not add that exercise");
-    console.error(err);
-  }
+function addExerciseRecord() {
+  openNewLibraryExercise(null, (state.toolForm.exName || "").trim(), { libraryOnly: true });
 }
 async function saveExerciseName(id, previousName) {
   const row = state.serverExercises.find((e) => e.id === id);
@@ -4399,14 +4736,18 @@ async function saveExerciseName(id, previousName) {
     category: row.category || "Strength",
     video_url: row.video_url || "",
     default_notes: row.default_notes || "",
-    default_sets: Math.max(1, Math.min(10, parseInt(row.default_sets, 10) || 1)),
+    default_sets: row.category === "Notes" ? 0 : Math.max(1, Math.min(10, parseInt(row.default_sets, 10) || 1)),
     default_reps: row.default_reps != null ? String(row.default_reps) : "10",
     default_load: row.default_load || "",
     default_rest: row.default_rest || "",
+    default_rest_rep: row.default_rest_rep || "",
+    default_distance: row.default_distance || "",
     default_tempo: row.default_tempo || "",
     default_velocity: row.default_velocity || "",
     default_power: row.default_power || "",
     default_pct: row.default_pct || "",
+    intensity_kind: row.intensity_kind || "",
+    intensity_value: row.intensity_value || "",
     default_stations: row.default_stations || ""
   };
   try {
@@ -5074,6 +5415,20 @@ async function addInvoice() {
   render();
 }
 
+function mapEditFields(rows) {
+  return (rows || []).map((f) => ({
+    key: f.key,
+    label: f.label,
+    value: f.value == null ? "" : String(f.value),
+    multiline: !!f.multiline,
+    maxlength: f.maxlength || 0,
+    type: f.type || "text",
+    options: f.options || null,
+    button: f.button || "",
+    min: f.min,
+    max: f.max
+  }));
+}
 function openEdit(opts) {
   state.modal = {
     type: "edit",
@@ -5081,15 +5436,7 @@ function openEdit(opts) {
     hint: opts.hint || "",
     date: opts.date,
     id: opts.id,
-    fields: (opts.fields || []).map((f) => ({
-      key: f.key,
-      label: f.label,
-      value: f.value == null ? "" : String(f.value),
-      multiline: !!f.multiline,
-      maxlength: f.maxlength || 0,
-      type: f.type || "text",
-      options: f.options || null
-    })),
+    fields: mapEditFields(opts.fields),
     onSave: opts.onSave,
     liveCategory: !!opts.liveCategory
   };
@@ -5099,19 +5446,22 @@ function setEditField(key, value) {
   const m = state.modal;
   if (!m || m.type !== "edit" || !m.fields) return;
   const field = m.fields.find((f) => f.key === key);
-  if (field) field.value = value;
-  if (key !== "category" || !m.liveCategory) return;
+  if (field && !field.button) field.value = value;
+  const rebuild = m.liveCategory && (key === "category" || key === "add_intensity" || key === "remove_intensity" || key === "intensity_kind");
+  if (!rebuild) return;
   m.draft = Object.assign({}, m.draft || {});
-  m.fields.forEach((row) => { m.draft[row.key] = row.value; });
-  m.fields = exerciseFields(m.draft).map((row) => ({
-    key: row.key,
-    label: row.label,
-    value: row.value == null ? "" : String(row.value),
-    multiline: !!row.multiline,
-    maxlength: row.maxlength || 0,
-    type: row.type || "text",
-    options: row.options || null
-  }));
+  m.fields.forEach((row) => { if (!row.button) m.draft[row.key] = row.value; });
+  if (key === "add_intensity") {
+    m.draft.intensity_kind = intensityKindCode(m.draft.intensity_kind) || "rpe";
+    if (m.draft.intensity_value == null) m.draft.intensity_value = "";
+  }
+  if (key === "remove_intensity") {
+    m.draft.intensity_kind = "";
+    m.draft.intensity_value = "";
+  }
+  if (key === "intensity_kind") m.draft.intensity_kind = value;
+  if (key === "category") m.draft.category = value;
+  m.fields = mapEditFields(exerciseFields(m.draft));
   render();
 }
 function closeEdit() {
@@ -5135,14 +5485,18 @@ function editModalHtml(m) {
     const max = f.maxlength ? ` maxlength="${f.maxlength}"` : "";
     const key = esc(f.key);
     let control;
-    if (f.options) {
+    if (f.button) {
+      control = `<button type="button" class="pill" onclick="setEditField('${key}', '1')">${esc(f.button)}</button>`;
+    } else if (f.options) {
       const options = f.options.slice();
       if (f.value && options.indexOf(f.value) < 0) options.unshift(f.value);
       control = `<select class="field" data-edit-key="${key}" data-focus="edit-${key}" onchange="setEditField('${key}', this.value)">${options.map((opt) => `<option value="${esc(opt)}" ${opt === f.value ? "selected" : ""}>${esc(opt)}</option>`).join("")}</select>`;
     } else if (f.multiline) {
       control = `<textarea data-edit-key="${key}" data-focus="edit-${key}"${max} oninput="setEditField('${key}', this.value)">${esc(f.value)}</textarea>`;
     } else {
-      control = `<input class="field" type="${esc(f.type || "text")}" data-edit-key="${key}" data-focus="edit-${key}" value="${esc(f.value)}"${max} oninput="setEditField('${key}', this.value)">`;
+      const bounds = f.min != null ? ` min="${esc(f.min)}"` : "";
+      const maxBound = f.max != null ? ` max="${esc(f.max)}"` : "";
+      control = `<input class="field" type="${esc(f.type || "text")}" data-edit-key="${key}" data-focus="edit-${key}" value="${esc(f.value)}"${max}${bounds}${maxBound} oninput="setEditField('${key}', this.value)">`;
     }
     return `<label class="edit-field"><span>${esc(f.label)}</span>${control}</label>`;
   }).join("");
@@ -5332,6 +5686,8 @@ window.backToCoach = backToCoach;
 window.openAthleteWorkout = openAthleteWorkout;
 window.openAthleteDay = openAthleteDay;
 window.logAthleteSet = logAthleteSet;
+window.setIntensityKind = setIntensityKind;
+window.setAthleteDistanceUnit = setAthleteDistanceUnit;
 window.shareDay = shareDay;
 window.clearTitle = clearTitle;
 window.resetOrder = resetOrder;
