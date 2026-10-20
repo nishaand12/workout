@@ -55,7 +55,7 @@ sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
 
-const source = fs.readFileSync("app/static/js/wourkout.js", "utf8") + `
+const source = fs.readFileSync("app/static/js/build-order.js", "utf8") + "\n" + fs.readFileSync("app/static/js/wourkout.js", "utf8") + `
 globalThis.__lib = {
   state, exerciseFields, exerciseRows, fromCatalog, libraryDefaultsFrom,
   workoutToDayItems, previewSheet, entryItem, itemNotes, parseNotes,
@@ -276,9 +276,9 @@ const first = lib.item({ name: "Alpha", letter: "A" });
 const second = lib.item({ name: "Beta", letter: "B" });
 day.items = [first, second];
 lib.setLetter("2026-10-22", first.id, "B");
-assert.equal(day.items[0].id, first.id);
-assert.equal(day.items[0].letter, "B");
-assert.equal(day.items[1].id, second.id);
+assert.equal(day.items[0].id, second.id);
+assert.equal(day.items[1].id, first.id);
+assert.equal(day.items[1].letter, "B");
 
 const roundTrip = lib.parseNotes(lib.itemNotes(fly), 0);
 assert.equal(roundTrip.restReps[0], "5");

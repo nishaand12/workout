@@ -1750,21 +1750,23 @@ function dayExerciseHtml(date, day) {
 function chainBlockHtml(date, day, group) {
   const head = group[0];
   const instance = head.chainInstance;
-  return `<div class="chain-block" data-chain-instance="${esc(instance)}">
+  return `<div class="chain-block" draggable="true" data-chain-instance="${esc(instance)}" ondragstart="dragStart(event,'${date}','${head.id}')">
     <div class="chain-head">
       <span class="chain-mark">Chain</span>
       <span class="chain-title">${esc(head.chainName || "Chain")}</span>
       <span class="tag">${esc(head.chainKind || "")}</span>
-      <button type="button" onclick="openChainFromDay('${date}','${instance}');event.stopPropagation()">Edit chain</button>
-      <button type="button" onclick="breakChain('${date}','${instance}');event.stopPropagation()">Break apart</button>
+      <button type="button" draggable="false" onclick="openChainFromDay('${date}','${instance}');event.stopPropagation()">Edit chain</button>
+      <button type="button" draggable="false" onclick="breakChain('${date}','${instance}');event.stopPropagation()">Break apart</button>
     </div>
-    ${group.map((it) => exRow(date, day, it)).join("")}
+    ${group.map((it) => exRow(date, day, it, { inChain: true })).join("")}
   </div>`;
 }
-function exRow(date, day, it) {
+function exRow(date, day, it, opts) {
   const color = LETTER_COLOR[it.letter] || "#888";
   const letter = it.letter ? `<span class="letter" style="background:${color}">${esc(it.letter)}</span>` : `<span class="letter" style="background:#444;color:#fff">–</span>`;
-  return `<div class="ex ${it.selected ? "selected" : ""}" data-id="${esc(it.id)}" draggable="true" ondragstart="dragStart(event,'${date}','${it.id}')">
+  const inChain = opts && opts.inChain;
+  const dragAttr = inChain ? "" : ` draggable="true" ondragstart="dragStart(event,'${date}','${it.id}')"`;
+  return `<div class="ex ${it.selected ? "selected" : ""}" data-id="${esc(it.id)}"${dragAttr}>
     <input class="check" type="checkbox" ${it.selected ? "checked" : ""} onclick="toggleItem('${date}','${it.id}', this.checked);event.stopPropagation()">
     ${letter}
     <button class="ex-main" style="background:transparent;border:0;color:inherit;text-align:left;padding:0" onclick="openEditor('${date}','${it.id}', event)">
@@ -3407,14 +3409,34 @@ function pasteOn(date) {
 }
 
 let drag = null;
+function dragIdsForChain(items, ids) {
+  const wanted = {};
+  (ids || []).forEach((id) => { wanted[id] = true; });
+  const instances = {};
+  (items || []).forEach((it) => {
+    if (wanted[it.id] && it.chainInstance) instances[it.chainInstance] = true;
+  });
+  return (items || []).filter((it) => wanted[it.id] || instances[it.chainInstance]).map((it) => it.id);
+}
+function renumberChainOrder(items) {
+  const seen = {};
+  (items || []).forEach((it) => {
+    if (!it.chainInstance) return;
+    const next = seen[it.chainInstance] || 0;
+    it.chainOrder = next;
+    seen[it.chainInstance] = next + 1;
+  });
+}
 function dragStart(ev, date, id) {
   const day = ensureDay(date);
   const it = findItem(date, id);
   if (!it) return;
-  const ids = it.selected ? day.items.filter((x) => x.selected).map((x) => x.id) : [id];
+  const selected = it.selected ? day.items.filter((x) => x.selected).map((x) => x.id) : [id];
+  const ids = dragIdsForChain(day.items, selected);
   drag = { date, ids, landing: null, marked: false, gapHeight: 32 };
   ev.dataTransfer.effectAllowed = "move";
   ev.dataTransfer.setData("text/plain", ids.join(","));
+  ev.stopPropagation();
 }
 function placeDragGap(list, beforeId, height) {
   let gap = list.querySelector(".drag-gap");
@@ -3431,10 +3453,34 @@ function placeDragGap(list, beforeId, height) {
       if (!beforeEl && el.dataset.id === beforeId) beforeEl = el;
     });
   }
-  if (beforeEl) list.insertBefore(gap, beforeEl);
-  else list.appendChild(gap);
+  if (beforeEl) {
+    const block = beforeEl.closest(".chain-block");
+    if (block && block.parentElement === list) beforeEl = block;
+    list.insertBefore(gap, beforeEl);
+  } else list.appendChild(gap);
   document.querySelectorAll(".drag-gap").forEach((el) => { if (el !== gap) el.remove(); });
   return gap;
+}
+function dragLandingRects(list, skipIds) {
+  const rects = [];
+  const seen = {};
+  list.querySelectorAll(".ex").forEach((el) => {
+    if (skipIds.indexOf(el.dataset.id) >= 0) return;
+    const block = el.closest(".chain-block");
+    if (block && block.parentElement === list) {
+      const instance = block.dataset.chainInstance || "";
+      if (seen[instance]) return;
+      seen[instance] = true;
+      const rect = block.getBoundingClientRect();
+      if (rect.height <= 0) return;
+      rects.push({ id: el.dataset.id, top: rect.top, height: rect.height });
+      return;
+    }
+    const rect = el.getBoundingClientRect();
+    if (rect.height <= 0) return;
+    rects.push({ id: el.dataset.id, top: rect.top, height: rect.height });
+  });
+  return rects;
 }
 function dragOver(ev) {
   ev.preventDefault();
@@ -3452,22 +3498,32 @@ function dragOver(ev) {
     const box = existing.getBoundingClientRect();
     if (ev.clientY >= box.top && ev.clientY <= box.bottom) return;
   }
-  const rects = [];
-  list.querySelectorAll(".ex").forEach((el) => {
-    if (drag.ids.indexOf(el.dataset.id) >= 0) return;
-    const rect = el.getBoundingClientRect();
-    if (rect.height <= 0) return;
-    rects.push({ id: el.dataset.id, top: rect.top, height: rect.height });
-  });
+  const rects = dragLandingRects(list, drag.ids);
   if (!drag.marked) {
     let gapHeight = 0;
+    const counted = {};
     document.querySelectorAll(".ex").forEach((el) => {
       if (drag.ids.indexOf(el.dataset.id) < 0) return;
+      const block = el.closest(".chain-block");
+      if (block) {
+        const instance = block.dataset.chainInstance || "";
+        if (counted[instance]) return;
+        counted[instance] = true;
+        gapHeight += block.getBoundingClientRect().height;
+        return;
+      }
       gapHeight += el.getBoundingClientRect().height;
     });
     drag.gapHeight = gapHeight || 32;
     document.querySelectorAll(".ex").forEach((el) => {
       if (drag.ids.indexOf(el.dataset.id) >= 0) el.classList.add("is-dragging");
+    });
+    document.querySelectorAll(".chain-block").forEach((block) => {
+      const members = block.querySelectorAll(".ex");
+      if (!members.length) return;
+      let all = true;
+      members.forEach((el) => { if (drag.ids.indexOf(el.dataset.id) < 0) all = false; });
+      if (all) block.classList.add("is-dragging");
     });
     drag.marked = true;
   }
@@ -3477,7 +3533,7 @@ function dragOver(ev) {
 }
 function clearDragChrome() {
   document.querySelectorAll(".drag-gap").forEach((el) => el.remove());
-  document.querySelectorAll(".ex.is-dragging").forEach((el) => el.classList.remove("is-dragging"));
+  document.querySelectorAll(".ex.is-dragging, .chain-block.is-dragging").forEach((el) => el.classList.remove("is-dragging"));
   document.querySelectorAll(".day.drop").forEach((el) => el.classList.remove("drop"));
 }
 function dropOn(ev, date, beforeId) {
@@ -3491,12 +3547,15 @@ function dropOn(ev, date, beforeId) {
   const src = ensureDay(active.date);
   if (active.date === date) {
     src.items = placeDroppedItems(src.items, active.ids, landingBefore);
+    renumberChainOrder(src.items);
   } else {
     const moving = src.items.filter((it) => active.ids.indexOf(it.id) >= 0);
     src.items = src.items.filter((it) => active.ids.indexOf(it.id) < 0);
+    renumberChainOrder(src.items);
     const dest = ensureDay(date);
-    const clones = moving.map((it) => Object.assign(JSON.parse(JSON.stringify(it)), { id: uid(), selected: false }));
+    const clones = freshenChainInstances(moving.map((it) => Object.assign(JSON.parse(JSON.stringify(it)), { id: uid(), selected: false })));
     dest.items = insertAtLanding(dest.items, clones, landingBefore);
+    renumberChainOrder(dest.items);
     noteDayEdit(active.date);
   }
   refreshFutureCopies(date);
