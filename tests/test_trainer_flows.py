@@ -1175,6 +1175,56 @@ class TrainerFlowTests(unittest.TestCase):
         self.assertIn("intensity", details)
         self.assertIn("rpe", details)
 
+    def test_workout_order_and_letters_reload(self):
+        first = self._exercise()
+        second = self._exercise()
+        third = self._exercise()
+        created = self.client.post("/api/workouts", json={
+            "title": f"Order {self.stamp}",
+            "program_name": "wourkout",
+            "calendar_date": "2026-10-20",
+            "scheduled_date": "2026-10-20",
+            "day_of_week": "Tuesday",
+            "exercises": [
+                {"exercise_id": second["id"], "superset_group": "A", "order_index": 0, "prescribed_sets": 3, "target_reps": "5"},
+                {"exercise_id": third["id"], "superset_group": "A", "order_index": 1, "prescribed_sets": 3, "target_reps": "5"},
+                {"exercise_id": first["id"], "superset_group": "B", "order_index": 2, "prescribed_sets": 3, "target_reps": "5"},
+            ],
+        })
+        self.assertEqual(created.status_code, 201, created.text)
+        workout_id = created.json()["id"]
+
+        def letters(body):
+            rows = sorted(body["exercises"], key=lambda row: row["order_index"])
+            return [(row["exercise_id"], row["superset_group"], row["order_index"]) for row in rows]
+
+        saved = [
+            (second["id"], "A", 0),
+            (third["id"], "A", 1),
+            (first["id"], "B", 2),
+        ]
+        self.assertEqual(letters(created.json()), saved)
+        reloaded = self.client.get(f"/api/workouts/{workout_id}")
+        self.assertEqual(reloaded.status_code, 200, reloaded.text)
+        self.assertEqual(letters(reloaded.json()), saved)
+
+        # A boundary drop that joined the letter above is stored in that order.
+        updated = self.client.put(f"/api/workouts/{workout_id}", json={
+            "exercises": [
+                {"exercise_id": second["id"], "superset_group": "A", "order_index": 0, "prescribed_sets": 3, "target_reps": "5"},
+                {"exercise_id": first["id"], "superset_group": "A", "order_index": 1, "prescribed_sets": 3, "target_reps": "5"},
+                {"exercise_id": third["id"], "superset_group": "A", "order_index": 2, "prescribed_sets": 3, "target_reps": "5"},
+            ],
+        })
+        self.assertEqual(updated.status_code, 200, updated.text)
+        again = self.client.get(f"/api/workouts/{workout_id}")
+        self.assertEqual(again.status_code, 200, again.text)
+        self.assertEqual(letters(again.json()), [
+            (second["id"], "A", 0),
+            (first["id"], "A", 1),
+            (third["id"], "A", 2),
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()
