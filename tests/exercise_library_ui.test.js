@@ -277,6 +277,7 @@ const second = lib.item({ name: "Beta", letter: "B" });
 day.items = [first, second];
 lib.setLetter("2026-10-22", first.id, "B");
 assert.equal(day.items[0].id, second.id);
+assert.equal(day.items[0].letter, "B");
 assert.equal(day.items[1].id, first.id);
 assert.equal(day.items[1].letter, "B");
 
