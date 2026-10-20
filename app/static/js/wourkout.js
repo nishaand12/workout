@@ -310,6 +310,7 @@ const state = {
   invoices: [],
   reports: [],
   serverExercises: [],
+  chains: [],
   serverRecords: [],
   toolForm: {},
   recurPick: 4,
@@ -789,7 +790,14 @@ function workoutToDayItems(workout) {
         : ((type === "circuit" || type === "questionnaire") ? flags.indexOf("trackReps") >= 0 : flags.indexOf("noTrackReps") < 0),
       trackVolume: flags.indexOf("trackVolume") >= 0,
       completionOnly: type === "circuit" ? flags.indexOf("noCompletionOnly") < 0 : flags.indexOf("completionOnly") >= 0,
-      fieldSeed: Object.fromEntries((parsed.seeded || []).map((key) => [key, true]))
+      fieldSeed: Object.fromEntries((parsed.seeded || []).map((key) => [key, true])),
+      exerciseId: we.exercise_id,
+      videoUrl: (we.exercise && we.exercise.video_url) || "",
+      chainId: we.chain_id || null,
+      chainInstance: we.chain_instance || "",
+      chainName: we.chain_name || "",
+      chainKind: we.chain_kind || "",
+      chainOrder: we.chain_order || 0
     });
   });
 }
@@ -1001,7 +1009,13 @@ function daySignature(day) {
     completionOnly: !!it.completionOnly,
     requireResponse: !!it.requireResponse,
     videoUrl: it.videoUrl || "",
-    fieldSeed: it.fieldSeed || {}
+    fieldSeed: it.fieldSeed || {},
+    exerciseId: it.exerciseId || null,
+    chainId: it.chainId || null,
+    chainInstance: it.chainInstance || "",
+    chainName: it.chainName || "",
+    chainKind: it.chainKind || "",
+    chainOrder: it.chainOrder || 0
   }));
   return JSON.stringify({
     title: day.title || "",
@@ -1678,7 +1692,7 @@ function dayCol(date) {
   const st = stats(day);
   const sel = day.items.filter((it) => it.selected);
   const focused = state.focusDay === date ? "focus" : "";
-  const items = gatedItems(date, day.items).map((it) => exRow(date, day, it)).join("");
+  const items = dayExerciseHtml(date, day);
   const search = state.searchDay === date ? searchPop(date) : "";
   const menu = state.dayMenu === date ? dayMenu(date) : "";
   const recur = state.recurMenu === date ? recurMenu(date) : "";
@@ -1712,6 +1726,41 @@ function dayCol(date) {
     <div class="stats"><span>S <b>${st.s}</b></span><span>R <b>${st.r}</b></span><span>V <b>${st.v}</b></span></div>
   </div>`;
 }
+function dayExerciseHtml(date, day) {
+  const visible = gatedItems(date, day.items);
+  let html = "";
+  let index = 0;
+  while (index < visible.length) {
+    const it = visible[index];
+    if (it.chainInstance) {
+      const instance = it.chainInstance;
+      const group = [];
+      while (index < visible.length && visible[index].chainInstance === instance) {
+        group.push(visible[index]);
+        index += 1;
+      }
+      html += chainBlockHtml(date, day, group);
+    } else {
+      html += exRow(date, day, it);
+      index += 1;
+    }
+  }
+  return html;
+}
+function chainBlockHtml(date, day, group) {
+  const head = group[0];
+  const instance = head.chainInstance;
+  return `<div class="chain-block" data-chain-instance="${esc(instance)}">
+    <div class="chain-head">
+      <span class="chain-mark">Chain</span>
+      <span class="chain-title">${esc(head.chainName || "Chain")}</span>
+      <span class="tag">${esc(head.chainKind || "")}</span>
+      <button type="button" onclick="openChainFromDay('${date}','${instance}');event.stopPropagation()">Edit chain</button>
+      <button type="button" onclick="breakChain('${date}','${instance}');event.stopPropagation()">Break apart</button>
+    </div>
+    ${group.map((it) => exRow(date, day, it)).join("")}
+  </div>`;
+}
 function exRow(date, day, it) {
   const color = LETTER_COLOR[it.letter] || "#888";
   const letter = it.letter ? `<span class="letter" style="background:${color}">${esc(it.letter)}</span>` : `<span class="letter" style="background:#444;color:#fff">–</span>`;
@@ -1739,9 +1788,15 @@ function openSearch(date, ev) {
 function searchPop(date) {
   const q = state.searchQ.toLowerCase();
   const list = CATALOG.filter((c) => !q || c.name.toLowerCase().includes(q)).slice(0, 8);
+  const chains = (state.chains || []).filter((chain) => {
+    if (!q) return true;
+    return chain.name.toLowerCase().includes(q) || String(chain.kind || "").toLowerCase().includes(q);
+  }).slice(0, 8);
+  const chainRows = chains.map((chain) => `<button class="opt chain-opt" onclick="addChainToDay('${date}', ${chain.id})"><span class="chain-mark">Chain</span><span>${esc(chain.name)}</span><span class="tag">${esc(chain.kind || "")}</span></button>`).join("");
   return `<div class="pop search-pop" onclick="event.stopPropagation()">
     <input data-focus="ex-search" type="text" autocomplete="off" placeholder="Search Exercises" value="${esc(state.searchQ)}" oninput="state.searchQ=this.value;render()">
     <div class="search-results">
+      ${chainRows}
       ${list.map((c) => `<button class="opt" onclick="addFromCatalog('${date}', ${CATALOG.indexOf(c)})">${esc(c.name)}</button>`).join("")}
       <button class="opt create-row" onclick="createExercise('${date}')">+ Create New Exercise <span class="tag">Shift+Enter</span></button>
     </div>
@@ -1758,6 +1813,75 @@ function addFromCatalog(date, index) {
   const entry = Object.assign({}, CATALOG[index] || { name: "Exercise", type: "lift" });
   entry.type = catalogType(entry);
   addItem(date, fromCatalog(entry));
+}
+function nextDayLetter(day) {
+  const used = day.items.map((row) => row.letter).filter(Boolean);
+  return LETTERS.find((letter) => used.indexOf(letter) < 0) || "A";
+}
+function chainMemberItem(chain, member, index, instance, day) {
+  const record = (state.serverExercises || []).find((row) => row.id === member.exercise_id) || null;
+  const name = (record && record.name) || (member.exercise && member.exercise.name) || member.name || "Exercise";
+  const category = (record && record.category) || (member.exercise && member.exercise.category) || "";
+  const type = category ? dayTypeForCategory(category) : "lift";
+  const it = fromCatalog({ name, type });
+  if (it.type === "break" || it.type === "rest" || it.type === "video") it.letter = "";
+  else it.letter = nextDayLetter(day);
+  it.chainId = chain.id;
+  it.chainInstance = instance;
+  it.chainName = chain.name;
+  it.chainKind = chain.kind;
+  it.chainOrder = index;
+  it.exerciseId = member.exercise_id;
+  it.videoUrl = (record && record.video_url) || (member.exercise && member.exercise.video_url) || "";
+  return it;
+}
+function addChainToDay(date, chainId) {
+  const chain = (state.chains || []).find((row) => row.id === chainId);
+  if (!chain || !(chain.members || []).length) {
+    toast("That chain has no exercises");
+    return;
+  }
+  snapshot();
+  const day = ensureDay(date);
+  const instance = "c" + chain.id + "x" + uid();
+  chain.members.forEach((member, index) => {
+    day.items.push(chainMemberItem(chain, member, index, instance, day));
+  });
+  state.searchDay = null;
+  state.editor = null;
+  state.focusDay = date;
+  refreshFutureCopies(date);
+  noteDayEdit(date);
+  noteHist("Added " + chain.name);
+  toast("Added " + chain.name);
+  render();
+}
+function breakChain(date, instance) {
+  const day = ensureDay(date);
+  const members = day.items.filter((it) => it.chainInstance === instance);
+  if (!members.length) return;
+  snapshot();
+  members.forEach((it) => {
+    it.chainId = null;
+    it.chainInstance = "";
+    it.chainName = "";
+    it.chainKind = "";
+    it.chainOrder = 0;
+  });
+  refreshFutureCopies(date);
+  noteDayEdit(date);
+  noteHist("Broke chain apart");
+  toast("Chain broken into exercises");
+  render();
+}
+function freshenChainInstances(items) {
+  const map = {};
+  items.forEach((it) => {
+    if (!it.chainInstance) return;
+    if (!map[it.chainInstance]) map[it.chainInstance] = "c" + (it.chainId || 0) + "x" + uid();
+    it.chainInstance = map[it.chainInstance];
+  });
+  return items;
 }
 function createExercise(date) {
   openNewLibraryExercise(date, (state.searchQ || "").trim());
@@ -2654,6 +2778,19 @@ function taggedList(label, arr) {
   if (!values.some((x) => x !== "" && x != null)) return "";
   return label + ":" + values.join(",");
 }
+function stampWorkoutExerciseIds(day, sentItems, workout) {
+  const saved = (workout.exercises || []).slice().sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
+  const published = (sentItems || []).filter((it) => it.name && it.type !== "break");
+  published.forEach((sent, index) => {
+    const we = saved[index];
+    if (!we) return;
+    const live = (day.items || []).find((it) => it.id === sent.id);
+    if (!live) return;
+    live.weId = we.id;
+    live.exerciseId = we.exercise_id;
+    if (we.exercise && we.exercise.video_url) live.videoUrl = we.exercise.video_url;
+  });
+}
 async function publishDay(date, opts = {}) {
   const athleteId = opts.athleteId || state.athleteId;
   const day = (state.calendars[athleteId] || {})[date];
@@ -2691,6 +2828,7 @@ async function publishDay(date, opts = {}) {
       const loads = (it.loads || []).slice(0, sets);
       const rests = (it.rests || []).slice(0, sets);
       exercises.push({
+        id: it.weId || null,
         exercise_id: ex.id,
         superset_group: it.letter || "A",
         order_index: exercises.length,
@@ -2699,7 +2837,12 @@ async function publishDay(date, opts = {}) {
         target_reps: reps.join(",").slice(0, 50) || "1",
         target_weight: loads.join(",").slice(0, 50),
         rest_seconds: parseInt(rests.find((r) => r !== "" && r != null) || "0", 10) || 0,
-        notes: itemNotes(it)
+        notes: itemNotes(it),
+        chain_id: it.chainId || null,
+        chain_instance: it.chainInstance || "",
+        chain_name: it.chainName || "",
+        chain_kind: it.chainKind || "",
+        chain_order: it.chainOrder || 0
       });
     }
     const payload = {
@@ -2736,6 +2879,7 @@ async function publishDay(date, opts = {}) {
     day.savedWorkoutId = workout.id;
     day.savedFor = person.id;
     day.savedAt = Date.now();
+    stampWorkoutExerciseIds(day, snapItems, workout);
     state.athleteWorkouts[date] = workout;
     if (day.recurWeeks && !opts.skipCopies) {
       const copies = refreshFutureCopies(date, athleteId);
@@ -3228,7 +3372,7 @@ function applyCopy() {
   dates.forEach((d) => {
     const day = ensureDay(d, athleteId);
     items.forEach((it) => { it.selected = false; });
-    const clones = items.map((it) => Object.assign(JSON.parse(JSON.stringify(it)), { id: uid(), selected: false }));
+    const clones = freshenChainInstances(items.map((it) => Object.assign(JSON.parse(JSON.stringify(it)), { id: uid(), selected: false })));
     if (m.placement === "clear") day.items = clones;
     else day.items = day.items.concat(clones);
     if (m.includeTitles && m.mode === "workout") {
@@ -3252,7 +3396,7 @@ function pasteOn(date) {
   if (!state.clipboard || !(state.clipboard.items || []).length) return;
   snapshot();
   const day = ensureDay(date);
-  const clones = state.clipboard.items.map((it) => Object.assign(JSON.parse(JSON.stringify(it)), { id: uid(), selected: false }));
+  const clones = freshenChainInstances(state.clipboard.items.map((it) => Object.assign(JSON.parse(JSON.stringify(it)), { id: uid(), selected: false })));
   day.items = day.items.concat(clones);
   if (state.clipboard.mode === "move") {
     const src = ensureDay(state.clipboard.from);
@@ -4697,8 +4841,245 @@ function liftsView() {
         </tr>` : `<tr><td>${esc(l.name)}</td><td>${esc(l.type)}</td><td></td></tr>`).join("")}
       </table>
       ${rows.length ? "" : `<p class="hint">${esc(empty)}</p>`}
+      ${chainLibraryHtml()}
     </div>
   </section>`;
+}
+function chainLibraryHtml() {
+  const q = state.liftQ.toLowerCase();
+  const chains = (state.chains || []).filter((chain) => !q || chain.name.toLowerCase().includes(q) || String(chain.kind || "").toLowerCase().includes(q));
+  const body = chains.map((chain) => `<tr>
+    <td><span class="chain-mark">Chain</span> ${esc(chain.name)}</td>
+    <td>${esc(chain.kind || "")}</td>
+    <td>${(chain.members || []).length}</td>
+    <td><button class="icon-a" onclick="openChainEditor(${chain.id})">Edit</button></td>
+  </tr>`).join("");
+  return `<div class="chain-library">
+    <div class="feed-top"><h2>Chains</h2><button class="req" type="button" onclick="openChainEditor()">New chain</button></div>
+    <p class="hint">A chain is a saved group. It is not an A/B/C superset and not a stations circuit. It has no video of its own.</p>
+    <table class="data"><tr><th>Name</th><th>Kind</th><th>Exercises</th><th></th></tr>
+      ${body || `<tr><td colspan="4">No chains yet.</td></tr>`}
+    </table>
+  </div>`;
+}
+function rememberChain(chain) {
+  if (!chain) return;
+  const index = state.chains.findIndex((row) => row.id === chain.id);
+  if (index >= 0) state.chains[index] = chain;
+  else state.chains.push(chain);
+}
+async function loadChains() {
+  try {
+    state.chains = await api("GET", "/api/chains");
+  } catch (err) {
+    console.error(err);
+  }
+}
+function openChainEditor(chainId) {
+  const chain = chainId ? (state.chains || []).find((row) => row.id === chainId) : null;
+  state.modal = {
+    type: "chain",
+    source: "library",
+    chainId: chain ? chain.id : null,
+    date: null,
+    workoutId: null,
+    instance: "",
+    name: chain ? chain.name : "",
+    kind: chain ? chain.kind : "Warm up",
+    pick: "",
+    members: chain ? (chain.members || []).map((member) => ({
+      exercise_id: member.exercise_id,
+      name: (member.exercise && member.exercise.name) || "Exercise"
+    })) : []
+  };
+  render();
+}
+function openChainFromDay(date, instance) {
+  const day = ensureDay(date);
+  const members = day.items.filter((it) => it.chainInstance === instance);
+  if (!members.length || !members[0].chainId) return;
+  state.focusDay = date;
+  state.modal = {
+    type: "chain",
+    source: "day",
+    chainId: members[0].chainId,
+    date,
+    workoutId: day.savedWorkoutId || null,
+    instance,
+    name: members[0].chainName || "",
+    kind: members[0].chainKind || "Warm up",
+    pick: "",
+    members: members.map((it) => {
+      const record = it.exerciseId ? null : exerciseRecord(it.name);
+      return {
+        exercise_id: it.exerciseId || (record && record.id) || null,
+        name: it.name
+      };
+    })
+  };
+  render();
+}
+function addChainMember() {
+  const m = state.modal;
+  if (!m || m.type !== "chain") return;
+  const exerciseId = parseInt(m.pick, 10);
+  const record = (state.serverExercises || []).find((row) => row.id === exerciseId);
+  if (!record) { toast("Choose an exercise"); return; }
+  m.members.push({ exercise_id: record.id, name: record.name });
+  render();
+}
+function moveChainMember(index, dir) {
+  const m = state.modal;
+  if (!m || m.type !== "chain") return;
+  const next = index + dir;
+  if (next < 0 || next >= m.members.length) return;
+  const row = m.members[index];
+  m.members.splice(index, 1);
+  m.members.splice(next, 0, row);
+  render();
+}
+function removeChainMember(index) {
+  const m = state.modal;
+  if (!m || m.type !== "chain") return;
+  m.members.splice(index, 1);
+  render();
+}
+function chainEditorCommit() {
+  const m = state.modal;
+  if (!m || m.type !== "chain") return;
+  const name = (m.name || "").trim();
+  if (!name) { toast("Name the chain"); return; }
+  if (!m.members.length) { toast("Add an exercise to the chain"); return; }
+  if (m.members.some((mem) => !mem.exercise_id)) { toast("Each chain member needs a library exercise"); return; }
+  if (["Warm up", "Circuit", "Cooldown"].indexOf(m.kind) < 0) { toast("Choose a warm-up, circuit, or cooldown"); return; }
+  const draft = {
+    chainId: m.chainId,
+    name,
+    kind: m.kind,
+    members: m.members.map((mem) => ({ exercise_id: mem.exercise_id, name: mem.name }))
+  };
+  if (!m.chainId) {
+    createChain(draft);
+    return;
+  }
+  state.modal = {
+    type: "chain-scope",
+    source: m.source,
+    date: m.date,
+    workoutId: m.workoutId,
+    instance: m.instance,
+    draft
+  };
+  render();
+}
+async function createChain(draft) {
+  try {
+    const created = await api("POST", "/api/chains", {
+      name: draft.name,
+      kind: draft.kind,
+      members: draft.members.map((mem) => ({ exercise_id: mem.exercise_id }))
+    });
+    rememberChain(created);
+    state.modal = null;
+    toast("Chain saved");
+    render();
+  } catch (err) {
+    toast(err.message || "Could not save that chain");
+  }
+}
+function rewriteLocalChain(day, instance, draft) {
+  const pool = day.items.filter((it) => it.chainInstance === instance);
+  if (!pool.length) return;
+  const used = {};
+  const chain = { id: draft.chainId, name: draft.name, kind: draft.kind };
+  const rebuilt = draft.members.map((mem, index) => {
+    const existing = pool.find((it) => !used[it.id] && it.exerciseId === mem.exercise_id);
+    if (existing) {
+      used[existing.id] = true;
+      existing.chainId = draft.chainId;
+      existing.chainInstance = instance;
+      existing.chainName = draft.name;
+      existing.chainKind = draft.kind;
+      existing.chainOrder = index;
+      return existing;
+    }
+    return chainMemberItem(chain, mem, index, instance, day);
+  });
+  pool.forEach((it) => {
+    if (used[it.id]) return;
+    it.chainId = null;
+    it.chainInstance = "";
+    it.chainName = "";
+    it.chainKind = "";
+    it.chainOrder = 0;
+    rebuilt.push(it);
+  });
+  const first = day.items.findIndex((it) => it.chainInstance === instance);
+  let insertAt = 0;
+  for (let i = 0; i < first; i += 1) {
+    if (day.items[i].chainInstance !== instance) insertAt += 1;
+  }
+  const rest = day.items.filter((it) => it.chainInstance !== instance);
+  rest.splice(insertAt, 0, ...rebuilt);
+  day.items = rest;
+}
+async function reloadChainWorkouts(ids) {
+  const want = {};
+  (ids || []).forEach((id) => { want[id] = true; });
+  const jobs = [];
+  Object.keys(state.calendars || {}).forEach((athleteId) => {
+    Object.keys(state.calendars[athleteId] || {}).forEach((date) => {
+      const day = state.calendars[athleteId][date];
+      if (!day || !day.savedWorkoutId || !want[day.savedWorkoutId]) return;
+      jobs.push(api("GET", "/api/workouts/" + day.savedWorkoutId).then((workout) => {
+        day.items = workoutToDayItems(workout);
+        day.edited = false;
+        day.hydrated = true;
+        clearDraft(athleteId, date);
+      }));
+    });
+  });
+  await Promise.all(jobs);
+}
+async function applyChainScope(scope) {
+  const m = state.modal;
+  if (!m || m.type !== "chain-scope") return;
+  const draft = m.draft;
+  let workoutId = m.workoutId || null;
+  if (m.source === "day" && m.date) {
+    await publishDay(m.date, { quiet: true });
+    const day = ensureDay(m.date);
+    workoutId = day.savedWorkoutId || workoutId;
+    if (!workoutId && scope === "one") {
+      rewriteLocalChain(day, m.instance, draft);
+      noteDayEdit(m.date);
+      state.modal = null;
+      toast("Updated this day");
+      render();
+      return;
+    }
+    if (!workoutId) {
+      toast("Save the day before updating other workouts");
+      return;
+    }
+  }
+  try {
+    const result = await api("POST", "/api/chains/" + draft.chainId + "/edit", {
+      scope,
+      source: m.source,
+      workout_id: workoutId,
+      name: draft.name,
+      kind: draft.kind,
+      members: draft.members.map((mem) => ({ exercise_id: mem.exercise_id }))
+    });
+    if (result && result.chain) rememberChain(result.chain);
+    await reloadChainWorkouts((result && result.updated_workout_ids) || []);
+    state.modal = null;
+    toast("Chain updated");
+    render();
+  } catch (err) {
+    toast(err.message || "Could not update that chain");
+  }
 }
 function rememberExercise(id, key, value) {
   const row = state.serverExercises.find((e) => e.id === id);
@@ -4722,6 +5103,7 @@ async function loadExercises() {
     state.serverExercises = list;
     markHiddenExercises();
     list.forEach((e) => syncCatalogExercise(e));
+    await loadChains();
     render();
   } catch (err) { console.error(err); }
 }
@@ -5502,10 +5884,51 @@ function editModalHtml(m) {
   }).join("");
   return `<div class="modal-back" onclick="if(event.target===this) closeEdit()"><div class="modal edit-modal" onclick="event.stopPropagation()"><h3>${esc(m.title)}</h3>${hint}<div class="edit-fields">${fields}</div><button class="full save" type="button" onclick="saveEdit()">SAVE</button><button class="full" type="button" onclick="closeEdit()">CANCEL</button></div></div>`;
 }
+function chainEditorHtml(m) {
+  const kinds = ["Warm up", "Circuit", "Cooldown"];
+  const options = (state.serverExercises || []).filter((row) => !row.hidden);
+  const members = (m.members || []).map((mem, index) => `<div class="chain-member">
+      <span>${index + 1}. ${esc(mem.name)}</span>
+      <button type="button" onclick="moveChainMember(${index}, -1)">Up</button>
+      <button type="button" onclick="moveChainMember(${index}, 1)">Down</button>
+      <button type="button" onclick="removeChainMember(${index})">Remove</button>
+    </div>`).join("");
+  return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render()}"><div class="modal edit-modal" onclick="event.stopPropagation()">
+    <h3>${m.chainId ? "Edit chain" : "New chain"}</h3>
+    <div class="sub">A chain groups existing exercises. It has its own name and no video. Saving an existing chain asks which days change.</div>
+    <label class="edit-field"><span>Name</span><input class="field" data-focus="chain-name" value="${esc(m.name || "")}" oninput="state.modal.name=this.value"></label>
+    <label class="edit-field"><span>Kind</span><select class="field" onchange="state.modal.kind=this.value">${kinds.map((kind) => `<option ${m.kind === kind ? "selected" : ""}>${esc(kind)}</option>`).join("")}</select></label>
+    <div class="chain-members">${members || `<p class="hint">No exercises in this chain yet. The same exercise can be added twice.</p>`}</div>
+    <div class="row">
+      <select class="field" onchange="state.modal.pick=this.value"><option value="">Add exercise</option>${options.map((row) => `<option value="${row.id}">${esc(row.name)}</option>`).join("")}</select>
+      <button type="button" class="pill" onclick="addChainMember()">Add</button>
+    </div>
+    <button class="full save" type="button" onclick="chainEditorCommit()">${m.chainId ? "Continue" : "Save chain"}</button>
+    <button class="full" type="button" onclick="state.modal=null;render()">Cancel</button>
+  </div></div>`;
+}
+function chainScopeHtml(m) {
+  const library = m.source === "library";
+  const choices = [
+    ["one", "Only this one", library ? "Changes the chain template only." : "Changes this day only."],
+    ["future", "Future workouts", library
+      ? "Changes the template, and days dated today or later in Eastern Time. Past days stay as they are."
+      : "Changes days dated today or later in Eastern Time. Past days stay as they are. The template stays as it is."],
+    ["everywhere", "Change everywhere", "Changes the chain template and every day that uses it, including past days."]
+  ];
+  return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render()}"><div class="modal" onclick="event.stopPropagation()">
+    <h3>Update this chain</h3>
+    <div class="sub">${esc(m.draft.name)} · ${esc(m.draft.kind)}</div>
+    ${choices.map((choice) => `<button class="full scope-choice" type="button" onclick="applyChainScope('${choice[0]}')"><strong>${esc(choice[1])}</strong><span class="sub">${esc(choice[2])}</span></button>`).join("")}
+    <button class="full" type="button" onclick="state.modal=null;render()">Cancel</button>
+  </div></div>`;
+}
 function modalHtml() {
   const m = state.modal;
   if (!m) return "";
   if (m.type === "edit") return editModalHtml(m);
+  if (m.type === "chain") return chainEditorHtml(m);
+  if (m.type === "chain-scope") return chainScopeHtml(m);
   if (m.type === "delete") {
     return `<div class="modal-back" onclick="state.modal=null;render()"><div class="modal" onclick="event.stopPropagation()"><h3>You are about to delete (${m.ids.length}) workout item${m.ids.length > 1 ? "s" : ""}</h3><button class="full red" onclick="confirmDelete()">DELETE</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
   }
