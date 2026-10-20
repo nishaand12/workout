@@ -16,10 +16,17 @@ class ExerciseBase(BaseModel):
     default_velocity: Optional[str] = ""
     default_power: Optional[str] = ""
     default_pct: Optional[str] = ""
+    default_rest_rep: Optional[str] = ""
+    default_distance: Optional[str] = ""
+    intensity_kind: Optional[str] = ""
+    intensity_value: Optional[str] = ""
     default_stations: Optional[str] = ""
 
 class ExerciseCreate(ExerciseBase):
-    pass
+    # Alternate intensity keys. An exercise still stores only one kind.
+    rpe: Optional[str] = None
+    rir: Optional[str] = None
+    pct_1rm: Optional[str] = None
 
 class ExerciseUpdate(BaseModel):
     name: Optional[str] = None
@@ -34,7 +41,14 @@ class ExerciseUpdate(BaseModel):
     default_velocity: Optional[str] = None
     default_power: Optional[str] = None
     default_pct: Optional[str] = None
+    default_rest_rep: Optional[str] = None
+    default_distance: Optional[str] = None
+    intensity_kind: Optional[str] = None
+    intensity_value: Optional[str] = None
     default_stations: Optional[str] = None
+    rpe: Optional[str] = None
+    rir: Optional[str] = None
+    pct_1rm: Optional[str] = None
 
 class ExerciseResponse(ExerciseBase):
     id: int
@@ -194,6 +208,7 @@ class UserBase(BaseModel):
     status_badge: Optional[str] = "Active"
     position_tag: Optional[str] = "Athlete"
     load_unit: str = "kg"  # 'lbs' or 'kg'. Lives on the athlete, not on a workout.
+    distance_unit: str = "m"  # metres, km, yards, or miles. Lives on the athlete, not on an exercise.
 
 class UserCreate(UserBase):
     password: Optional[str] = None
@@ -209,6 +224,7 @@ class UserUpdate(BaseModel):
     status_badge: Optional[str] = None
     position_tag: Optional[str] = None
     load_unit: Optional[str] = None
+    distance_unit: Optional[str] = None
     is_active: Optional[bool] = None
 
 class UserBrief(BaseModel):
@@ -425,6 +441,7 @@ class GymPerson(BaseModel):
     led_teams: List[str] = []
     latest_note: str = ""
     load_unit: str = "kg"
+    distance_unit: str = "m"
 
 class GymTeam(BaseModel):
     id: int

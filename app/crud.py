@@ -354,6 +354,148 @@ def seed_database_if_empty(db: Session):
         db.commit()
         print("Initialized Day 1 active session and PR records!")
 
+EXERCISE_CATEGORIES = (
+    "Strength",
+    "Warm up",
+    "Speed/agility/cardio",
+    "Cooldown",
+    "Circuit",
+    "Questionnaire",
+    "Notes",
+)
+_CATEGORY_ALIASES = {
+    "strength": "Strength",
+    "lift": "Strength",
+    "lifts": "Strength",
+    "warm up": "Warm up",
+    "warmup": "Warm up",
+    "warm-up": "Warm up",
+    "warm ups": "Warm up",
+    "warmups": "Warm up",
+    "speed/agility/cardio": "Speed/agility/cardio",
+    "speed": "Speed/agility/cardio",
+    "agility": "Speed/agility/cardio",
+    "cardio": "Speed/agility/cardio",
+    "cooldown": "Cooldown",
+    "cooldowns": "Cooldown",
+    "cool down": "Cooldown",
+    "cool-down": "Cooldown",
+    "circuit": "Circuit",
+    "circuits": "Circuit",
+    "questionnaire": "Questionnaire",
+    "questionnaires": "Questionnaire",
+    "note": "Notes",
+    "notes": "Notes",
+}
+_INTENSITY_ALIASES = {
+    "rpe": "rpe",
+    "rir": "rir",
+    "pct1rm": "pct1rm",
+    "%of1-repmax": "pct1rm",
+    "%of1repmax": "pct1rm",
+    "percentof1-repmax": "pct1rm",
+    "percentof1repmax": "pct1rm",
+    "percent": "pct1rm",
+}
+_EXERCISE_WRITE_EXTRAS = ("rpe", "rir", "pct_1rm")
+
+
+def canonical_category(value: Optional[str]) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "Strength"
+    return _CATEGORY_ALIASES.get(raw.lower(), raw)
+
+
+def normalize_distance_unit(value: Optional[str]) -> str:
+    v = str(value or "").strip().lower()
+    if v in ("km", "kilometre", "kilometres", "kilometer", "kilometers"):
+        return "km"
+    if v in ("yd", "yard", "yards"):
+        return "yd"
+    if v in ("mi", "mile", "miles"):
+        return "mi"
+    return "m"
+
+
+def _intensity_number(kind: str, raw: str) -> str:
+    text = str(raw or "").strip().rstrip("%").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Enter an intensity number")
+    try:
+        number = float(text)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Enter an intensity number")
+    if kind in ("rpe", "rir"):
+        if number < 1 or number > 10 or number != int(number):
+            raise HTTPException(status_code=400, detail="RPE and RIR stay between 1 and 10")
+        return str(int(number))
+    if number <= 0:
+        raise HTTPException(status_code=400, detail="Enter an intensity number")
+    if number == int(number):
+        return str(int(number))
+    return str(number)
+
+
+def _one_intensity(data: dict, existing_kind: str = "", existing_value: str = "") -> Tuple[str, str]:
+    filled = []
+    for key, kind in (("rpe", "rpe"), ("rir", "rir"), ("pct_1rm", "pct1rm")):
+        if str(data.get(key) or "").strip():
+            filled.append((kind, str(data.get(key)).strip()))
+    kind_set = "intensity_kind" in data
+    value_set = "intensity_value" in data
+    kind_raw = str(data.get("intensity_kind") if kind_set else existing_kind or "").strip()
+    value_raw = str(data.get("intensity_value") if value_set else existing_value or "").strip()
+    if len(filled) > 1 or (kind_raw and len({kind for kind, _ in filled}) > 1):
+        raise HTTPException(status_code=400, detail="An exercise stores only one intensity")
+    if filled and kind_raw:
+        extra_kind = filled[0][0]
+        normalized = _INTENSITY_ALIASES.get(re.sub(r"[\s_]+", "", kind_raw.lower()), "")
+        if extra_kind != normalized:
+            raise HTTPException(status_code=400, detail="An exercise stores only one intensity")
+    if not kind_raw and len(filled) == 1:
+        kind_raw = filled[0][0]
+        if not value_raw:
+            value_raw = filled[0][1]
+    if any(sep in kind_raw for sep in (",", "+", "/", "|", "&")):
+        raise HTTPException(status_code=400, detail="An exercise stores only one intensity")
+    if not kind_raw or kind_raw.lower() in ("none", "unset"):
+        explicit_clear = kind_set and not str(data.get("intensity_kind") or "").strip()
+        if explicit_clear:
+            if (value_set and str(data.get("intensity_value") or "").strip()) or filled:
+                raise HTTPException(status_code=400, detail="Intensity needs one kind and one number")
+            return "", ""
+        if value_raw:
+            raise HTTPException(status_code=400, detail="Intensity needs one kind and one number")
+        return "", ""
+    kind = _INTENSITY_ALIASES.get(re.sub(r"[\s_]+", "", kind_raw.lower()), "")
+    if not kind:
+        raise HTTPException(status_code=400, detail="Intensity is RPE, percent of a 1-rep max, or RIR")
+    return kind, _intensity_number(kind, value_raw)
+
+
+def prepare_exercise_write(data: dict, existing: Optional[Exercise] = None) -> dict:
+    clean = {key: value for key, value in data.items() if key not in _EXERCISE_WRITE_EXTRAS}
+    if "category" in data or existing is None:
+        clean["category"] = canonical_category(data.get("category") if "category" in data else (existing.category if existing else ""))
+    category = clean.get("category", existing.category if existing else "Strength")
+    if canonical_category(category) == "Notes":
+        clean["category"] = "Notes"
+        clean["default_sets"] = 0
+        clean["intensity_kind"] = ""
+        clean["intensity_value"] = ""
+        return clean
+    if existing is None or "intensity_kind" in data or "intensity_value" in data or any(data.get(key) for key in _EXERCISE_WRITE_EXTRAS):
+        kind, value = _one_intensity(
+            data,
+            existing_kind=(existing.intensity_kind if existing else "") or "",
+            existing_value=(existing.intensity_value if existing else "") or "",
+        )
+        clean["intensity_kind"] = kind
+        clean["intensity_value"] = value
+    return clean
+
+
 # Exercise Queries
 def get_exercises(db: Session, skip: int = 0, limit: int = 1000, category: Optional[str] = None, search: Optional[str] = None):
     query = db.query(Exercise)
@@ -367,7 +509,8 @@ def get_exercise(db: Session, exercise_id: int):
     return db.query(Exercise).filter(Exercise.id == exercise_id).first()
 
 def create_exercise(db: Session, exercise_in: ExerciseCreate):
-    exercise = Exercise(**exercise_in.model_dump())
+    payload = prepare_exercise_write(exercise_in.model_dump())
+    exercise = Exercise(**payload)
     db.add(exercise)
     db.commit()
     db.refresh(exercise)
@@ -377,8 +520,10 @@ def update_exercise(db: Session, exercise_id: int, exercise_in: ExerciseUpdate):
     ex = db.query(Exercise).filter(Exercise.id == exercise_id).first()
     if not ex:
         return None
-    for field, val in exercise_in.model_dump(exclude_unset=True).items():
-        setattr(ex, field, val)
+    raw = exercise_in.model_dump(exclude_unset=True)
+    for field, val in prepare_exercise_write(raw, existing=ex).items():
+        if field in raw or field in ("intensity_kind", "intensity_value", "category", "default_sets"):
+            setattr(ex, field, val)
     db.commit()
     db.refresh(ex)
     return ex
@@ -431,7 +576,7 @@ def create_workout(db: Session, workout_in: WorkoutCreate):
             superset_group=item.superset_group or "A",
             order_index=item.order_index if item.order_index is not None else idx,
             prescription_text=item.prescription_text or f"{item.prescribed_sets} X {item.target_reps}",
-            prescribed_sets=item.prescribed_sets or 3,
+            prescribed_sets=3 if item.prescribed_sets is None else item.prescribed_sets,
             target_reps=item.target_reps or "10",
             target_weight=item.target_weight or "0",
             rest_seconds=item.rest_seconds or 0,
@@ -631,12 +776,23 @@ def _set_rest_seconds(we, index: int) -> int:
 
 def _set_details(we, index: int) -> str:
     extra = {}
-    for key, label in (("tempo", "Tempos"), ("velocity", "Velocities"), ("power", "Powers"), ("pct", "Pcts")):
+    for key, label in (
+        ("tempo", "Tempos"),
+        ("velocity", "Velocities"),
+        ("power", "Powers"),
+        ("pct", "Pcts"),
+        ("restRep", "RestReps"),
+        ("distance", "Distances"),
+        ("intensity", "Intensities"),
+    ):
         values = _note_values(we.notes or "", label)
         if not any(str(value).strip() for value in values):
             continue
         chosen = values[index] if index < len(values) else values[0]
         extra[key] = str(chosen).strip()
+    kind = _note_values(we.notes or "", "IntensityKind")
+    if kind and str(kind[0]).strip():
+        extra["intensityKind"] = str(kind[0]).strip()
     return json.dumps(extra) if extra else ""
 
 
@@ -668,7 +824,10 @@ def get_or_create_active_session(db: Session, workout_id: int, user_id: Optional
         # Prescription stays on the workout exercise. Seeded rows stay at 0 so
         # opening a session does not count as lifted weight on the leaderboard.
         for we in workout.exercises:
-            for s_num in range(1, (we.prescribed_sets or 1) + 1):
+            count = we.prescribed_sets if we.prescribed_sets is not None else 1
+            if count <= 0:
+                continue
+            for s_num in range(1, count + 1):
                 index = s_num - 1
                 set_log = SetLog(
                     session_id=session.id,
@@ -1050,6 +1209,7 @@ def create_user(db: Session, user_in: UserCreate):
         status_badge=user_in.status_badge or "Active",
         position_tag=user_in.position_tag or "Athlete",
         load_unit="lbs" if str(getattr(user_in, "load_unit", "") or "").lower() == "lbs" else "kg",
+        distance_unit=normalize_distance_unit(getattr(user_in, "distance_unit", None)),
     )
     access.apply_role_flags(user, role)
     db.add(user)
@@ -1064,6 +1224,8 @@ def update_user(db: Session, user_id: int, user_in: UserUpdate):
     for field, val in user_in.model_dump(exclude_unset=True).items():
         if field == "load_unit":
             val = "lbs" if str(val or "").lower() == "lbs" else "kg"
+        if field == "distance_unit":
+            val = normalize_distance_unit(val)
         setattr(user, field, val)
     db.commit()
     db.refresh(user)
@@ -1862,7 +2024,7 @@ def clone_workout_for_gym(db: Session, workout: Workout, coach: User) -> Workout
             superset_group=we.superset_group or "A",
             order_index=we.order_index or 0,
             prescription_text=we.prescription_text or "",
-            prescribed_sets=we.prescribed_sets or 3,
+            prescribed_sets=3 if we.prescribed_sets is None else we.prescribed_sets,
             target_reps=we.target_reps or "5",
             target_weight=we.target_weight or "0",
             rest_seconds=we.rest_seconds or 90,
@@ -2512,6 +2674,7 @@ def person_payload(db: Session, user: User) -> dict:
         "team_id": user.team_id,
         "team_name": user.team_name,
         "load_unit": "lbs" if str(getattr(user, "load_unit", "") or "").lower() == "lbs" else "kg",
+        "distance_unit": normalize_distance_unit(getattr(user, "distance_unit", None)),
         "led_teams": led,
         "latest_note": latest_athlete_note(db, user.id),
     }
