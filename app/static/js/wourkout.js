@@ -671,12 +671,16 @@ function workoutToDayItems(workout) {
   if (!workout || !Array.isArray(workout.exercises)) return [];
   return workout.exercises.slice().sort((a, b) => (a.order_index || 0) - (b.order_index || 0)).map((we) => {
     const parsed = parseNotes(we.notes, we.rest_seconds);
+    const flags = parsed.flags;
     const sets = we.prescribed_sets || 1;
-    const reps = String(we.target_reps || "1").split(",");
+    const trackTime = flags.indexOf("trackTime") >= 0;
+    const reps = String(we.target_reps || "1").split(",").map((part) => {
+      const value = part.trim();
+      return trackTime ? value.replace(/s$/i, "") : value;
+    });
     const loads = String(we.target_weight || "").split(",");
     const cat = String((we.exercise && we.exercise.category) || "").toLowerCase();
     const type = cat.includes("question") ? "questionnaire" : (cat.includes("circuit") || parsed.plainLines.length > 1 ? "circuit" : "lift");
-    const flags = parsed.flags;
     return item({
       id: "wx" + we.id,
       weId: we.id,
@@ -695,8 +699,8 @@ function workoutToDayItems(workout) {
       detail: type === "circuit" ? parsed.plainLines.join("\n") : "",
       note: type === "circuit" ? parsed.additional : parsed.plainLines.join("\n"),
       questions: type === "questionnaire" ? (parsed.plainLines.length ? parsed.plainLines : QUESTIONS.slice()) : [],
-      trackTime: flags.indexOf("trackTime") >= 0,
-      trackReps: flags.indexOf("trackTime") >= 0
+      trackTime,
+      trackReps: trackTime
         ? false
         : ((type === "circuit" || type === "questionnaire") ? flags.indexOf("trackReps") >= 0 : flags.indexOf("noTrackReps") < 0),
       trackVolume: flags.indexOf("trackVolume") >= 0,
@@ -1854,13 +1858,9 @@ function editorPop(date) {
   </div>`;
 }
 function trackControl(date, it) {
-  const label = it.trackTime ? "Track Time" : "Track Reps";
-  return `<div class="menu-anchor">
-    <button type="button" class="pill ${it.trackTime || it.trackReps ? "on" : ""}" onclick="toggleEditorMenu('trackMenu', event)">${label} ▾</button>
-    ${state.trackMenu ? `<div class="pop track-pop" onclick="event.stopPropagation()">
-      <button type="button" class="opt ${it.trackTime ? "" : "active"}" onclick="setTrack('${date}','${it.id}','reps')">${it.trackTime ? "" : "✓ "}Reps</button>
-      <button type="button" class="opt ${it.trackTime ? "active" : ""}" onclick="setTrack('${date}','${it.id}','time')">${it.trackTime ? "✓ " : ""}Seconds</button>
-    </div>` : ""}
+  return `<div class="dose-switch" role="group" aria-label="Reps or seconds">
+    <button type="button" class="pill ${it.trackTime ? "" : "on"}" aria-pressed="${it.trackTime ? "false" : "true"}" onclick="setTrack('${date}','${it.id}','reps')">${it.trackTime ? "" : "✓ "}Reps</button>
+    <button type="button" class="pill ${it.trackTime ? "on" : ""}" aria-pressed="${it.trackTime ? "true" : "false"}" onclick="setTrack('${date}','${it.id}','time')">${it.trackTime ? "✓ " : ""}Seconds</button>
   </div>`;
 }
 function setRow(date, it, label) {
@@ -1887,8 +1887,12 @@ function propMenu(date, id) {
 function aboutProperties(ev) {
   if (ev) ev.stopPropagation();
   state.propMenu = false;
-  toast("Load, Rest, Tempo, Velocity, Peak Power, and %PR are entered on each set.");
+  toast("Load, Rest, Tempo, Velocity, Peak Power, and %PR are entered on each set. Seconds is the Reps / Seconds switch, and each set keeps its own time.");
   render();
+}
+function doseValue(it, value) {
+  const raw = value == null ? "" : String(value);
+  return it && it.trackTime ? raw.replace(/s$/i, "") : raw;
 }
 function propArray(it, key) {
   const map = { reps: "reps", load: "loads", rest: "rests", tempo: "tempos", velocity: "velocities", power: "powers", pct: "pcts" };
@@ -1905,8 +1909,13 @@ function fieldLabel(it, key) {
 function propRow(date, it, key) {
   if (key === "reps" && it.trackReps === false && !it.trackTime && it.type !== "circuit") return "";
   const label = fieldLabel(it, key);
-  const info = key === "reps" ? `<button type="button" class="iconbtn reps-info" title="${it.trackTime ? "Seconds for each set" : "Reps for each set"}" onclick="event.stopPropagation();toast('${it.trackTime ? "Seconds prescribed for each set" : "Reps prescribed for each set"}')">ⓘ</button>` : "";
-  const cells = propArray(it, key).map((v, i) => `<td><input aria-label="${label} set ${i + 1}" data-focus="${key}-${it.id}-${i}" data-set-field="${key}" autocomplete="off" value="${esc(v)}" oninput="setCell('${date}','${it.id}','${key}',${i}, this.value)" onchange="commitSetCell('${date}','${it.id}','${key}',${i});renderSoon()" onkeydown="tabSetField(event,'${date}','${it.id}','${key}',${i})" onfocus="this.select()"></td>`).join("");
+  const time = key === "reps" && it.trackTime;
+  const info = key === "reps" ? `<button type="button" class="iconbtn reps-info" title="${time ? "Seconds for each set" : "Reps for each set. Seconds is beside Options."}" onclick="event.stopPropagation();toast('${time ? "Each set has its own seconds" : "Each set has its own reps. Seconds, beside Options, switches this row to time."}')">ⓘ</button>` : "";
+  const cells = propArray(it, key).map((v, i) => {
+    const shown = doseValue(it, v);
+    const suffix = time ? `<span class="sec-suffix">s</span>` : "";
+    return `<td><span class="set-val${time ? " is-time" : ""}"><input aria-label="${label} set ${i + 1}" data-focus="${key}-${it.id}-${i}" data-set-field="${key}" autocomplete="off" value="${esc(shown)}" oninput="setCell('${date}','${it.id}','${key}',${i}, this.value)" onchange="commitSetCell('${date}','${it.id}','${key}',${i});renderSoon()" onkeydown="tabSetField(event,'${date}','${it.id}','${key}',${i})" onfocus="this.select()">${suffix}</span></td>`;
+  }).join("");
   return `<tr><th>${label}${info}</th>${cells}</tr>`;
 }
 function optionsPop(date, it) {
@@ -2057,6 +2066,8 @@ function setTrack(date, id, mode) {
   it.trackTime = mode === "time";
   it.trackReps = mode !== "time";
   state.trackMenu = false;
+  state.propMenu = false;
+  state.optionsMenu = false;
   refreshFutureCopies(date);
   noteDayEdit(date);
   render();
@@ -2086,6 +2097,7 @@ function addProp(date, id, key) {
 function setCell(date, id, key, i, value) {
   const it = findItem(date, id);
   if (!it || !SET_ARRAY[key]) return;
+  if (key === "reps" && it.trackTime) value = String(value == null ? "" : value).replace(/s$/i, "");
   const arr = setArray(it, key);
   while (arr.length <= i) arr.push("");
   const seeded = !!(it.fieldSeed && it.fieldSeed[key]);
@@ -3308,7 +3320,8 @@ function previewSheet(it, log) {
   const n = Math.max(1, it.sets || (it.reps || []).length || 1);
   const loaded = previewHasLoad(it);
   const rows = Array.from({ length: n }, (_, i) => {
-    const rep = esc((it.reps || [])[i] ?? "");
+    const rawRep = doseValue(it, (it.reps || [])[i] ?? "");
+    const rep = esc(it.trackTime && rawRep !== "" ? rawRep + "s" : rawRep);
     const load = esc((it.loads || [])[i] ?? "");
     if (loaded) {
       return `<tr><td>${i + 1}</td><td><span class="preview-box">${load}</span></td><td><span class="preview-box">${rep}</span></td></tr>`;

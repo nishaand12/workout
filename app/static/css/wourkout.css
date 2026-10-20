@@ -162,6 +162,9 @@ button { cursor: pointer; }
 }
 .search-pop input:focus { outline: 2px solid #7eb6ff; border-color: #7eb6ff; }
 .track-pop { left: 0; top: 28px; width: 140px; }
+.dose-switch { display: inline-flex; align-items: center; gap: 4px; }
+.set-val { display: flex; align-items: center; gap: 3px; min-width: 0; max-width: 100%; }
+.set-val .sec-suffix { color: #9a9a9a; font-size: 12px; flex: 0 0 auto; }
 .unit-set { display: inline-flex; align-items: center; gap: 6px; color: #ddd; font-size: 12px; }
 .unit-set select { background: #1c1c1c; color: #ddd; border: 1px solid #3a3a3a; border-radius: 6px; padding: 5px 8px; }
 #app.light .unit-set { color: #333; }
@@ -222,6 +225,7 @@ button { cursor: pointer; }
 .editor.build-editor .prop-table input {
   width: 100%; min-width: 0; font-size: 15px; padding: 7px 8px;
 }
+.editor.build-editor .prop-table .set-val input { flex: 1 1 auto; width: 0; min-width: 0; }
 .editor.build-editor .prop-table input:focus {
   outline: 2px solid #7eb6ff; border-color: #7eb6ff;
 }
