@@ -277,6 +277,15 @@ const state = {
   previewTab: "exercise",
   modal: null,
   clipboard: null,
+  clipHot: null,
+  pick: null,
+  buildOrigin: null,
+  buildWeekCount: 0,
+  buildScrollTop: 0,
+  buildPrepend: null,
+  buildJumpWeek: "",
+  playingVideo: "",
+  chainLetterFor: "",
   undo: [],
   history: [],
   toast: "",
@@ -582,6 +591,7 @@ function render() {
       }
     }
   }
+  restoreBuildScroll();
 }
 
 function placeSearchPop() {
@@ -764,7 +774,7 @@ function workoutToDayItems(workout) {
       id: "wx" + we.id,
       weId: we.id,
       name: (we.exercise && we.exercise.name) || "Exercise",
-      letter: we.superset_group || "A",
+      letter: we.chain_instance ? (we.superset_group || "") : (we.superset_group || "A"),
       type,
       sets,
       reps: type === "note" ? [] : reps,
@@ -797,7 +807,9 @@ function workoutToDayItems(workout) {
       chainInstance: we.chain_instance || "",
       chainName: we.chain_name || "",
       chainKind: we.chain_kind || "",
-      chainOrder: we.chain_order || 0
+      chainOrder: we.chain_order || 0,
+      chainCoachOpen: !!we.chain_coach_open,
+      chainAthleteOpen: !!we.chain_athlete_open
     });
   });
 }
@@ -1015,7 +1027,9 @@ function daySignature(day) {
     chainInstance: it.chainInstance || "",
     chainName: it.chainName || "",
     chainKind: it.chainKind || "",
-    chainOrder: it.chainOrder || 0
+    chainOrder: it.chainOrder || 0,
+    chainCoachOpen: !!it.chainCoachOpen,
+    chainAthleteOpen: !!it.chainAthleteOpen
   }));
   return JSON.stringify({
     title: day.title || "",
@@ -1395,6 +1409,10 @@ function closeNav() {
 }
 function go(view, ev) {
   if (ev) ev.stopPropagation();
+  if (state.editor && state.view === "build" && view !== state.view) {
+    askCloseEditor();
+    return;
+  }
   state.navOpen = false;
   if (view === "workout" || view === "coach") {
     if (state.role === "athlete") {
@@ -1426,6 +1444,10 @@ function go(view, ev) {
   if (view === "maxes") loadGoals();
 }
 function goTool(view) {
+  if (state.editor && state.view === "build" && view !== "build") {
+    askCloseEditor();
+    return;
+  }
   state.navMenu = null;
   state.navOpen = false;
   if (state.role === "athlete") {
@@ -1514,15 +1536,153 @@ function body() {
   }
 }
 
+function ensureBuildWindow() {
+  const first = !state.buildOrigin;
+  if (first) {
+    state.buildOrigin = addDays(state.weekStart, -28);
+    state.buildWeekCount = 12;
+    state.buildJumpWeek = state.weekStart;
+  }
+  const fitted = extendBuildWindow(state.buildOrigin, state.buildWeekCount, state.weekStart);
+  state.buildOrigin = fitted.origin;
+  state.buildWeekCount = fitted.count;
+}
+function extendBuildWindow(origin, count, weekStart) {
+  let start = origin;
+  let total = count || 1;
+  if (weekStart < start) {
+    const extra = Math.max(1, Math.round((new Date(start + "T12:00:00") - new Date(weekStart + "T12:00:00")) / (7 * 86400000)));
+    start = addDays(start, -extra * 7);
+    total += extra;
+  }
+  const end = addDays(start, (total - 1) * 7);
+  if (weekStart > end) {
+    const extra = Math.max(1, Math.round((new Date(weekStart + "T12:00:00") - new Date(end + "T12:00:00")) / (7 * 86400000)));
+    total += extra;
+  }
+  return { origin: start, count: total };
+}
+function buildWeekStarts(origin, count) {
+  const out = [];
+  for (let i = 0; i < count; i++) out.push(addDays(origin, i * 7));
+  return out;
+}
+function visibleBuildWeek(el) {
+  if (!el) return "";
+  const edge = el.getBoundingClientRect().top + 24;
+  let best = "";
+  el.querySelectorAll(".week[data-week]").forEach((node) => {
+    const rect = node.getBoundingClientRect();
+    if (rect.bottom > edge && !best) best = node.dataset.week;
+  });
+  return best;
+}
+function onBuildScroll(el) {
+  if (!el || onBuildScroll.locking) return;
+  state.buildScrollTop = el.scrollTop;
+  const week = visibleBuildWeek(el);
+  if (week && week !== state.weekStart) {
+    state.weekStart = week;
+    writeBuildQuery();
+  }
+  if (state.buildWeekCount > 80) return;
+  const nearTop = el.scrollTop < 180;
+  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 280;
+  if (!nearTop && !nearBottom) return;
+  onBuildScroll.locking = true;
+  if (nearTop) {
+    state.buildPrepend = { prevHeight: el.scrollHeight, prevTop: el.scrollTop };
+    state.buildOrigin = addDays(state.buildOrigin, -28);
+    state.buildWeekCount += 4;
+  } else {
+    state.buildWeekCount += 4;
+  }
+  render();
+  setTimeout(() => { onBuildScroll.locking = false; }, 80);
+}
+function restoreBuildScroll() {
+  const el = document.querySelector(".build-cal");
+  if (!el) return;
+  if (state.buildJumpWeek) {
+    const node = el.querySelector('.week[data-week="' + state.buildJumpWeek + '"]');
+    state.buildJumpWeek = "";
+    if (node) {
+      const elRect = el.getBoundingClientRect();
+      const nodeRect = node.getBoundingClientRect();
+      el.scrollTop += nodeRect.top - elRect.top;
+    }
+    state.buildScrollTop = el.scrollTop;
+    return;
+  }
+  if (state.buildPrepend) {
+    const grew = el.scrollHeight - state.buildPrepend.prevHeight;
+    el.scrollTop = state.buildPrepend.prevTop + Math.max(0, grew);
+    state.buildScrollTop = el.scrollTop;
+    state.buildPrepend = null;
+    return;
+  }
+  if (state.buildScrollTop) el.scrollTop = state.buildScrollTop;
+}
+function readBuildParams(search) {
+  const params = new URLSearchParams(search || "");
+  return {
+    week: params.get("week") || "",
+    athlete: params.get("athlete") || "",
+    cal: params.get("cal") || ""
+  };
+}
+function applyBuildParams(search, role) {
+  if (role === "athlete") return { applied: false };
+  const query = readBuildParams(search);
+  const next = {};
+  if (/^\d{4}-\d{2}-\d{2}$/.test(query.week)) next.weekStart = sundayOf(query.week);
+  if (query.cal === "week" || query.cal === "month") next.viewMode = query.cal;
+  if (query.athlete && buildAthletes().some((a) => a.id === query.athlete)) next.athleteId = query.athlete;
+  return { applied: !!(next.weekStart || next.viewMode || next.athleteId), next };
+}
+function applyBuildQuery() {
+  if (typeof location === "undefined") return false;
+  const result = applyBuildParams(location.search, state.role);
+  if (!result.applied) return false;
+  if (result.next.weekStart) {
+    state.weekStart = result.next.weekStart;
+    state.buildOrigin = null;
+    state.buildWeekCount = 0;
+  }
+  if (result.next.viewMode) state.viewMode = result.next.viewMode;
+  if (result.next.athleteId) state.athleteId = result.next.athleteId;
+  return true;
+}
+function writeBuildQuery() {
+  if (state.role === "athlete" || state.view !== "build") return;
+  if (typeof history === "undefined" || !history.replaceState || typeof location === "undefined") return;
+  const params = new URLSearchParams(location.search || "");
+  params.set("week", state.weekStart);
+  params.set("athlete", state.athleteId || "");
+  params.set("cal", state.viewMode === "week" ? "week" : "month");
+  const search = "?" + params.toString();
+  const next = location.pathname + search + (location.hash || "");
+  const current = location.pathname + (location.search || "") + (location.hash || "");
+  if (next !== current) history.replaceState(null, "", next);
+}
+function setBuildViewMode(value) {
+  state.viewMode = value === "week" ? "week" : "month";
+  writeBuildQuery();
+  render();
+}
 function buildView() {
-  const weeks = state.viewMode === "week" ? 1 : 4;
+  ensureBuildWindow();
+  const todayWeek = sundayOf(APP_TODAY);
   let weeksHtml = "";
-  for (let w = 0; w < weeks; w++) {
-    const start = addDays(state.weekStart, w * 7);
+  for (let w = 0; w < state.buildWeekCount; w++) {
+    const start = addDays(state.buildOrigin, w * 7);
+    const current = start === todayWeek ? " week-current" : "";
     let cols = "";
     for (let i = 0; i < 7; i++) cols += dayCol(addDays(start, i));
-    weeksHtml += `<div class="week">${cols}</div>`;
+    const banner = start === todayWeek ? "This week" : weekName(start);
+    weeksHtml += `<div class="week${current}" data-week="${start}"><div class="week-banner">${esc(banner)}</div>${cols}</div>`;
   }
+  writeBuildQuery();
   const currentTarget = athlete();
   const saveLabel = currentTarget.isGroup ? "Save for group" : "Save for athlete";
   const floatingEditor = state.editor ? editorPop(state.editor.day) : "";
@@ -1546,13 +1706,13 @@ function buildView() {
             <button class="today-pill" onclick="jumpToday()">Today</button>
             <button onclick="shiftWeek(1)">›</button>
           </div>
-          <select class="ghost" onchange="state.viewMode=this.value;render()">
+          <select class="ghost" aria-label="Month or week" onchange="setBuildViewMode(this.value)">
             <option value="month" ${state.viewMode === "month" ? "selected" : ""}>Month</option>
             <option value="week" ${state.viewMode === "week" ? "selected" : ""}>Week</option>
           </select>
         </div>
       </div>
-      <div class="cal-scroll">${weeksHtml}</div>
+      <div class="cal-scroll build-cal ${state.viewMode === "week" ? "mode-week" : "mode-month"}" onscroll="onBuildScroll(this)">${weeksHtml}</div>
       ${floatingEditor}
     </section>`;
 }
@@ -1681,11 +1841,29 @@ function switchAthlete(id) {
   state.athleteId = id;
   state.athleteMenu = false;
   state.editor = null;
+  writeBuildQuery();
   render();
   loadCalendarSchedule(id);
 }
-function shiftWeek(n) { state.weekStart = addDays(state.weekStart, n * 7); render(); }
-function jumpToday() { state.weekStart = sundayOf(APP_TODAY); state.focusDay = APP_TODAY; render(); }
+function shiftWeek(n) {
+  state.weekStart = addDays(state.weekStart, n * 7);
+  if (state.view === "build" && state.role !== "athlete") {
+    ensureBuildWindow();
+    state.buildJumpWeek = state.weekStart;
+    writeBuildQuery();
+  }
+  render();
+}
+function jumpToday() {
+  state.weekStart = sundayOf(APP_TODAY);
+  state.focusDay = APP_TODAY;
+  if (state.view === "build" && state.role !== "athlete") {
+    ensureBuildWindow();
+    state.buildJumpWeek = state.weekStart;
+    writeBuildQuery();
+  }
+  render();
+}
 
 function dayCol(date) {
   const day = ensureDay(date);
@@ -1704,8 +1882,10 @@ function dayCol(date) {
        <button class="iconbtn" title="Move" onclick="openCopy('${date}','move')">→</button>
        <button class="iconbtn" title="Delete" onclick="askDelete('${date}')">🗑</button>`
     : `<button class="recur" onclick="openRecur('${date}', event)">${recurLabel}</button>`;
-  return `<div class="day ${focused}" data-day="${date}" style="border-left:3px solid ${day.color || "#3b82f6"}" onmouseenter="state.hoverDay='${date}'" onclick="state.focusDay='${date}';render()" ondragover="dragOver(event)" ondrop="dropOn(event,'${date}',null)">
-    <div class="day-top"><span>${fmtDay(date)}</span>
+  const daySelected = state.pick && state.pick.level === "day" && state.pick.date === date;
+  const dayHot = clipHotMatches(date, { level: "day" });
+  return `<div class="day ${focused}${daySelected ? " day-selected" : ""}${dayHot ? " clip-hot" : ""}" data-day="${date}" style="border-left:3px solid ${day.color || "#3b82f6"}" onmouseenter="state.hoverDay='${date}'" onclick="state.focusDay='${date}';render()" ondragover="dragOver(event)" ondrop="dropOn(event,'${date}',null)">
+    <div class="day-top"><button type="button" class="day-date" onclick="selectDay('${date}', event)">${fmtDay(date)}</button>
       <span class="tools">
         <button class="iconbtn" title="Copy Workout" onclick="openCopy('${date}','workout')">⧉</button>
         <button class="iconbtn" title="Workout menu" onclick="openDayMenu('${date}', event)">⋯</button>
@@ -1747,26 +1927,42 @@ function dayExerciseHtml(date, day) {
   }
   return html;
 }
+function chainIsOpen(head, audience) {
+  if (!head) return false;
+  return audience === "athlete" ? !!head.chainAthleteOpen : !!head.chainCoachOpen;
+}
 function chainBlockHtml(date, day, group) {
   const head = group[0];
   const instance = head.chainInstance;
-  return `<div class="chain-block" draggable="true" data-chain-instance="${esc(instance)}" ondragstart="dragStart(event,'${date}','${head.id}')">
+  const open = chainIsOpen(head, "coach");
+  const selected = state.pick && state.pick.level === "chain" && state.pick.date === date && state.pick.instance === instance;
+  const hot = clipHotMatches(date, { level: "chain", instance });
+  const color = LETTER_COLOR[head.letter] || "#444";
+  const letter = `<button type="button" class="letter chain-letter" draggable="false" style="background:${color};color:${head.letter ? "#111" : "#fff"}" onclick="toggleChainLetter('${date}','${esc(instance)}', event)">${esc(head.letter || "–")}</button>`;
+  const menu = state.chainLetterFor === instance
+    ? `<div class="pop letter-pop" onclick="event.stopPropagation()">${LETTERS.map((L) => `<button type="button" class="opt" onclick="setChainLetter('${date}','${esc(instance)}','${L}')">${L}</button>`).join("")}<button type="button" class="opt" onclick="setChainLetter('${date}','${esc(instance)}','')">–</button></div>`
+    : "";
+  return `<div class="chain-block${selected ? " chain-selected" : ""}${hot ? " clip-hot" : ""}${open ? "" : " is-collapsed"}" draggable="true" data-chain-instance="${esc(instance)}" ondragstart="dragStart(event,'${date}','${head.id}')">
     <div class="chain-head">
+      <button type="button" class="chain-fold" draggable="false" aria-label="${open ? "Collapse chain" : "Expand chain"}" onclick="toggleChainOpen('${date}','${esc(instance)}','coach', event)">${open ? "▾" : "▸"}</button>
+      ${letter}
       <span class="chain-mark">Chain</span>
-      <span class="chain-title">${esc(head.chainName || "Chain")}</span>
+      <button type="button" class="chain-title" draggable="false" onclick="selectChain('${date}','${esc(instance)}', event)">${esc(head.chainName || "Chain")}</button>
       <span class="tag">${esc(head.chainKind || "")}</span>
       <button type="button" draggable="false" onclick="openChainFromDay('${date}','${instance}');event.stopPropagation()">Edit chain</button>
       <button type="button" draggable="false" onclick="breakChain('${date}','${instance}');event.stopPropagation()">Break apart</button>
     </div>
-    ${group.map((it) => exRow(date, day, it, { inChain: true })).join("")}
+    ${menu}
+    ${open ? group.map((it) => exRow(date, day, it, { inChain: true })).join("") : ""}
   </div>`;
 }
 function exRow(date, day, it, opts) {
   const color = LETTER_COLOR[it.letter] || "#888";
-  const letter = it.letter ? `<span class="letter" style="background:${color}">${esc(it.letter)}</span>` : `<span class="letter" style="background:#444;color:#fff">–</span>`;
   const inChain = opts && opts.inChain;
+  const letter = inChain ? "" : (it.letter ? `<span class="letter" style="background:${color}">${esc(it.letter)}</span>` : `<span class="letter" style="background:#444;color:#fff">–</span>`);
   const dragAttr = inChain ? "" : ` draggable="true" ondragstart="dragStart(event,'${date}','${it.id}')"`;
-  return `<div class="ex ${it.selected ? "selected" : ""}" data-id="${esc(it.id)}"${dragAttr}>
+  const hot = clipHotMatches(date, { level: "exercise", id: it.id }) ? " clip-hot" : "";
+  return `<div class="ex ${it.selected ? "selected" : ""}${hot}" data-id="${esc(it.id)}"${dragAttr} onclick="selectExercise('${date}','${it.id}', event)">
     <input class="check" type="checkbox" ${it.selected ? "checked" : ""} onclick="toggleItem('${date}','${it.id}', this.checked);event.stopPropagation()">
     ${letter}
     <button class="ex-main" style="background:transparent;border:0;color:inherit;text-align:left;padding:0" onclick="openEditor('${date}','${it.id}', event)">
@@ -1820,14 +2016,54 @@ function nextDayLetter(day) {
   const used = day.items.map((row) => row.letter).filter(Boolean);
   return LETTERS.find((letter) => used.indexOf(letter) < 0) || "A";
 }
-function chainMemberItem(chain, member, index, instance, day) {
+function chainText(value) {
+  if (value == null) return "";
+  return String(value).trim();
+}
+function applyChainMemberFields(it, member, letter) {
+  const setsText = chainText(member && member.sets);
+  const repsText = chainText(member && member.reps);
+  const notesGiven = !!(member && member.notes != null && String(member.notes).trim() !== "");
+  it.letter = letter || "";
+  it.chainCoachOpen = false;
+  it.chainAthleteOpen = false;
+  if (it.type === "note") {
+    if (notesGiven) it.note = String(member.notes);
+    return it;
+  }
+  if (it.type === "break" || it.type === "rest" || it.type === "video") return it;
+  if (setsText !== "") {
+    const parsed = parseInt(setsText, 10);
+    if (!isNaN(parsed)) resizeSets(it, Math.max(1, Math.min(10, parsed)));
+  }
+  if (repsText !== "") it.reps = Array(it.sets || 1).fill(repsText);
+  if (notesGiven) it.note = String(member.notes);
+  else if (it.type !== "circuit") {
+    const defaults = libraryDefaultsFrom(exerciseRecord(it.name));
+    if (defaults) it.note = defaults.note || "";
+  }
+  return it;
+}
+function applyExplicitChainFields(it, member) {
+  if (!it || !member) return it;
+  const setsText = chainText(member.sets);
+  const repsText = chainText(member.reps);
+  const notesGiven = member.notes != null && String(member.notes).trim() !== "";
+  if (setsText !== "" && it.type !== "note") {
+    const parsed = parseInt(setsText, 10);
+    if (!isNaN(parsed)) resizeSets(it, Math.max(1, Math.min(10, parsed)));
+  }
+  if (repsText !== "" && it.type !== "note") it.reps = Array(it.sets || 1).fill(repsText);
+  if (notesGiven) it.note = String(member.notes);
+  return it;
+}
+function chainMemberItem(chain, member, index, instance, day, letter) {
   const record = (state.serverExercises || []).find((row) => row.id === member.exercise_id) || null;
   const name = (record && record.name) || (member.exercise && member.exercise.name) || member.name || "Exercise";
   const category = (record && record.category) || (member.exercise && member.exercise.category) || "";
   const type = category ? dayTypeForCategory(category) : "lift";
   const it = fromCatalog({ name, type });
-  if (it.type === "break" || it.type === "rest" || it.type === "video") it.letter = "";
-  else it.letter = nextDayLetter(day);
+  applyChainMemberFields(it, member, letter || "");
   it.chainId = chain.id;
   it.chainInstance = instance;
   it.chainName = chain.name;
@@ -1835,7 +2071,13 @@ function chainMemberItem(chain, member, index, instance, day) {
   it.chainOrder = index;
   it.exerciseId = member.exercise_id;
   it.videoUrl = (record && record.video_url) || (member.exercise && member.exercise.video_url) || "";
+  it.chainCoachOpen = false;
+  it.chainAthleteOpen = false;
   return it;
+}
+function chainBlockLetter(day, instance) {
+  const rows = (day.items || []).filter((it) => it.chainInstance === instance && it.letter);
+  return rows.length ? rows[0].letter : "";
 }
 function addChainToDay(date, chainId) {
   const chain = (state.chains || []).find((row) => row.id === chainId);
@@ -1863,12 +2105,16 @@ function breakChain(date, instance) {
   const members = day.items.filter((it) => it.chainInstance === instance);
   if (!members.length) return;
   snapshot();
+  const letter = members[0].letter || "";
   members.forEach((it) => {
     it.chainId = null;
     it.chainInstance = "";
     it.chainName = "";
     it.chainKind = "";
     it.chainOrder = 0;
+    it.chainCoachOpen = false;
+    it.chainAthleteOpen = false;
+    it.letter = letter;
   });
   refreshFutureCopies(date);
   noteDayEdit(date);
@@ -1988,7 +2234,60 @@ function openEditor(date, id, ev) {
   state.optionsMenu = false;
   state.supersetMenu = false;
   state.trackMenu = false;
-  state.editor = { day: date, id };
+  const same = state.editor && state.editor.day === date && state.editor.id === id && state.editor.baseline;
+  if (!same) state.editor = { day: date, id, baseline: JSON.parse(JSON.stringify(it)) };
+  selectExercise(date, id, null, { silent: true });
+  render();
+}
+function askCloseEditor() {
+  if (!state.editor) return;
+  if (state.modal && (state.modal.type === "editor-close" || state.modal.type === "editor-name")) return;
+  state.modal = { type: "editor-close" };
+  render();
+}
+function saveEditor() {
+  const ed = state.editor;
+  if (!ed) { state.modal = null; render(); return; }
+  const it = findItem(ed.day, ed.id);
+  if (it && !String(it.name || "").trim()) {
+    state.modal = { type: "editor-name", name: "" };
+    render();
+    return;
+  }
+  const date = ed.day;
+  state.editor = null;
+  state.modal = null;
+  noteDayEdit(date);
+  queueDaySave(state.athleteId, date, { explicit: true });
+  render();
+}
+function discardEditor() {
+  const ed = state.editor;
+  if (!ed) { state.modal = null; render(); return; }
+  const it = findItem(ed.day, ed.id);
+  if (it && ed.baseline) {
+    const keepId = it.id;
+    const restored = JSON.parse(JSON.stringify(ed.baseline));
+    Object.keys(it).forEach((key) => { delete it[key]; });
+    Object.assign(it, restored);
+    it.id = keepId;
+  }
+  const date = ed.day;
+  state.editor = null;
+  state.modal = null;
+  noteDayEdit(date);
+  render();
+}
+function acceptEditorName() {
+  const ed = state.editor;
+  const name = String((state.modal && state.modal.name) || "").trim();
+  if (!ed || !name) return;
+  const it = findItem(ed.day, ed.id);
+  if (it) it.name = name;
+  saveEditor();
+}
+function dismissEditorName() {
+  state.modal = null;
   render();
 }
 function toggleEditorMenu(which, ev) {
@@ -2003,14 +2302,20 @@ function toggleEditorMenu(which, ev) {
   render();
 }
 function editorHead(date, it, day) {
+  const letterBtn = it.chainInstance
+    ? ""
+    : `<button type="button" class="pill" onclick="toggleEditorMenu('letterMenu', event)">${esc(letterCode(day, it))} ▾</button>`;
+  const letterPop = !it.chainInstance && state.letterMenu
+    ? `<div class="pop letter-pop" onclick="event.stopPropagation()">${LETTERS.map((L) => `<button type="button" class="opt" onclick="setLetter('${date}','${it.id}','${L}')">${L}</button>`).join("")}<button type="button" class="opt" onclick="setLetter('${date}','${it.id}','')">–</button></div>`
+    : "";
   return `<div class="editor-h">
       <span class="letter" style="background:${LETTER_COLOR[it.letter] || "#666"}">${esc(it.letter || "•")}</span>
       <input class="name-input" aria-label="Exercise name" data-focus="exname-${it.id}" value="${esc(it.name)}" oninput="setField('${date}','${it.id}','name', this.value)" onchange="renderSoon()">
-      <button type="button" class="pill" onclick="toggleEditorMenu('letterMenu', event)">${esc(letterCode(day, it))} ▾</button>
+      ${letterBtn}
       <button type="button" class="iconbtn" title="Delete" onclick="askDelete('${date}','${it.id}')">🗑</button>
-      <button type="button" class="iconbtn" title="Close" onclick="state.editor=null;render()">✕</button>
+      <button type="button" class="iconbtn" title="Close" onclick="askCloseEditor();event.stopPropagation()">✕</button>
     </div>
-    ${state.letterMenu ? `<div class="pop letter-pop" onclick="event.stopPropagation()">${LETTERS.map((L) => `<button type="button" class="opt" onclick="setLetter('${date}','${it.id}','${L}')">${L}</button>`).join("")}<button type="button" class="opt" onclick="setLetter('${date}','${it.id}','')">–</button></div>` : ""}
+    ${letterPop}
     <button type="button" class="linkish" onclick="openInfo('${date}','${it.id}')">+ Add Additional Info (Shift + I)</button>
     ${it.note ? `<div class="note-line">${esc(it.note)}</div>` : ""}`;
 }
@@ -2828,7 +3133,7 @@ async function publishDay(date, opts = {}) {
       exercises.push({
         id: it.weId || null,
         exercise_id: ex.id,
-        superset_group: it.letter || "A",
+        superset_group: it.chainInstance ? (it.letter || "") : (it.letter || "A"),
         order_index: exercises.length,
         prescription_text: scriptLine(it, { plain: true }).slice(0, 100),
         prescribed_sets: sets,
@@ -2840,7 +3145,9 @@ async function publishDay(date, opts = {}) {
         chain_instance: it.chainInstance || "",
         chain_name: it.chainName || "",
         chain_kind: it.chainKind || "",
-        chain_order: it.chainOrder || 0
+        chain_order: it.chainOrder || 0,
+        chain_coach_open: !!it.chainCoachOpen,
+        chain_athlete_open: !!it.chainAthleteOpen
       });
     }
     const payload = {
@@ -2995,7 +3302,7 @@ function intensityKindFor(weId) {
   });
   return found;
 }
-async function logAthleteSet(weId, setNumber, field, value) {
+async function logAthleteSet(weId, setNumber, field, value, extra) {
   if (!state.openSession) return;
   const logs = state.openSession.set_logs || [];
   const found = logs.find((l) => l.workout_exercise_id === weId && l.set_number === setNumber) || {};
@@ -3008,18 +3315,25 @@ async function logAthleteSet(weId, setNumber, field, value) {
   };
   let details = {};
   try { details = current.details ? JSON.parse(current.details) : {}; } catch (e) { details = {}; }
+  let detailsChanged = false;
   if (field === "weight") current.weight = value;
   else if (field === "reps") current.reps = value;
   else if (field === "rest") current.rest_seconds = value;
   else if (field === "completed") current.completed = !!value;
-  else {
+  else if (field) {
     details[field] = value;
+    detailsChanged = true;
     if (field === "intensity") {
       const kind = intensityKindFor(weId);
       if (kind) details.intensityKind = kind;
     }
-    current.details = JSON.stringify(details);
   }
+  if (extra && extra.athlete) {
+    details.athlete = extra.athlete;
+    detailsChanged = true;
+  }
+  if (extra && extra.completed != null) current.completed = !!extra.completed;
+  if (detailsChanged) current.details = JSON.stringify(details);
   const params = new URLSearchParams();
   params.set("workout_exercise_id", String(weId));
   params.set("set_number", String(setNumber));
@@ -3062,11 +3376,7 @@ function savedDay(date) {
 function athleteDayCol(date) {
   const day = savedDay(date);
   const open = state.athleteOpenDate === date ? "focus" : "";
-  const items = day ? day.items.map((it) => {
-    const color = LETTER_COLOR[it.letter] || "#888";
-    const letter = it.letter ? `<span class="letter" style="background:${color}">${esc(it.letter)}</span>` : `<span class="letter" style="background:#444;color:#fff">–</span>`;
-    return `<div class="ex">${letter}<div class="ex-main"><div class="ex-name">${esc(it.name)}</div><div class="ex-sub">${esc(scriptLine(it))}</div></div></div>`;
-  }).join("") : "";
+  const items = day ? athleteScheduleHtml(date, day.items) : "";
   const isRest = !day || !(day.items || []).length;
   const openAttr = day ? ` onclick="openAthleteDay('${date}')"` : "";
   return `<div class="day ${isRest ? "rest-day" : "read"} ${open}" data-day="${date}"${openAttr}>
@@ -3171,31 +3481,30 @@ function hydrateEntryLogs(date, aid, day) {
     for (let i = 0; i < sets; i++) {
       const log = (state.openSession.set_logs || []).find((row) => row.workout_exercise_id === it.weId && row.set_number === i + 1) || {};
       const details = logDetails(log);
-      const touched = setLogTouched(log);
+      const athleteValues = details.athlete || {};
       cells[i] = {
-        w: touched && log.weight != null && log.weight !== "" ? log.weight : ((it.loads && it.loads[i]) || ""),
-        r: touched && log.reps != null && log.reps !== "" ? log.reps : ((it.reps && it.reps[i]) || ""),
-        rest: log.rest_seconds != null && log.rest_seconds !== "" ? log.rest_seconds : ((it.rests && (it.rests[i] || it.rests[0])) || ""),
-        tempo: details.tempo != null && details.tempo !== "" ? details.tempo : ((it.tempos && (it.tempos[i] || it.tempos[0])) || ""),
-        velocity: details.velocity || ((it.velocities && (it.velocities[i] || it.velocities[0])) || ""),
-        power: details.power || ((it.powers && (it.powers[i] || it.powers[0])) || ""),
-        pct: details.pct || ((it.pcts && (it.pcts[i] || it.pcts[0])) || ""),
-        restRep: details.restRep != null && details.restRep !== "" ? details.restRep : ((it.restReps && (it.restReps[i] || it.restReps[0])) || ""),
-        distance: details.distance != null && details.distance !== "" ? details.distance : ((it.distances && (it.distances[i] || it.distances[0])) || ""),
-        intensity: details.intensity != null && details.intensity !== "" ? details.intensity : ((it.intensities && (it.intensities[i] || it.intensities[0])) || ""),
-        done: !!log.completed
+        entered: athleteValues,
+        done: setIsComplete(it, athleteValues)
       };
     }
-    state.logs[key] = { cells, hydrated: true };
+    const circuitLog = (state.openSession.set_logs || []).find((row) => row.workout_exercise_id === it.weId && row.set_number === 1) || {};
+    const circuitEntered = (logDetails(circuitLog).athlete) || {};
+    state.logs[key] = {
+      cells,
+      hydrated: true,
+      entered: it.type === "circuit" ? circuitEntered : {},
+      done: it.type === "circuit" ? setIsComplete(it, circuitEntered) : false
+    };
   });
 }
 function athleteOpenPanel() {
   if (!state.athleteOpenDate) return "";
   const day = savedDay(state.athleteOpenDate);
   if (!day) return "";
-  const body = state.openWorkout && state.openWorkout.id === day.workoutId
-    ? state.openWorkout.exercises.map((we) => athleteExercise(we)).join("")
-    : day.items.map((it) => `<div class="ex-name" style="margin:8px 0">${esc(it.letter || "")} ${esc(it.name)}<div class="ex-sub">${esc(scriptLine(it))}</div></div>`).join("");
+  const loggedItems = (day.items || []).map((it, i) => Object.assign({}, it, { id: it.id || ("wx" + (it.weId || i)) }));
+  const body = loggedItems.length
+    ? entryListHtml(ownAthleteId(), state.athleteOpenDate, loggedItems, "athlete")
+    : "";
   return `<div class="editor log-editor" onclick="event.stopPropagation()">
     <div class="editor-h">
       <span class="name">${esc(day.title || "Workout")}</span>
@@ -3300,12 +3609,146 @@ function clearItems(date) {
   state.modal = { type: "clear", date };
   render();
 }
+function clearRowSelection(date) {
+  const days = date ? [date] : Object.keys(state.calendars[state.athleteId] || {});
+  days.forEach((day) => {
+    (ensureDay(day).items || []).forEach((it) => { it.selected = false; });
+  });
+}
+function clearOtherDaySelections(date) {
+  Object.keys(state.calendars[state.athleteId] || {}).forEach((day) => {
+    if (day === date) return;
+    (state.calendars[state.athleteId][day].items || []).forEach((it) => { it.selected = false; });
+  });
+}
+function selectExercise(date, id, ev, opts) {
+  if (ev) ev.stopPropagation();
+  clearOtherDaySelections(date);
+  state.pick = { level: "exercise", date };
+  state.focusDay = date;
+  ensureDay(date).items.forEach((it) => { if (it.id !== id) it.selected = false; });
+  const it = findItem(date, id);
+  if (it) it.selected = true;
+  if (!opts || !opts.silent) render();
+}
+function selectChain(date, instance, ev) {
+  if (ev) ev.stopPropagation();
+  clearRowSelection();
+  state.pick = { level: "chain", date, instance };
+  state.focusDay = date;
+  render();
+}
+function selectDay(date, ev) {
+  if (ev) ev.stopPropagation();
+  clearRowSelection();
+  state.pick = { level: "day", date };
+  state.focusDay = date;
+  render();
+}
+function toggleChainLetter(date, instance, ev) {
+  if (ev) ev.stopPropagation();
+  state.chainLetterFor = state.chainLetterFor === instance ? "" : instance;
+  render();
+}
+function setChainLetter(date, instance, letter) {
+  snapshot();
+  reorderChainForLetter(ensureDay(date).items, instance, letter);
+  state.chainLetterFor = "";
+  refreshFutureCopies(date);
+  noteDayEdit(date);
+  render();
+}
+function toggleChainOpen(date, instance, audience, ev) {
+  if (ev) ev.stopPropagation();
+  const day = ensureDay(date);
+  const members = day.items.filter((it) => it.chainInstance === instance);
+  if (!members.length) return;
+  const field = audience === "athlete" ? "chainAthleteOpen" : "chainCoachOpen";
+  const next = !members[0][field];
+  members.forEach((it) => { it[field] = next; });
+  if (audience !== "athlete") {
+    noteDayEdit(date);
+    render();
+    return;
+  }
+  render();
+  const workoutId = day.savedWorkoutId || (savedDay(date) && savedDay(date).workoutId);
+  if (!workoutId) return;
+  api("POST", "/api/workouts/" + workoutId + "/chain-fold", {
+    chain_instance: instance,
+    audience: "athlete",
+    expanded: next
+  }).then((workout) => {
+    state.athleteWorkouts[date] = workout;
+  }).catch((err) => { console.error(err); });
+}
+function pickedItems(date) {
+  const day = ensureDay(date);
+  const pick = state.pick && state.pick.date === date ? state.pick : null;
+  if (pick && pick.level === "day") return { level: "day", items: day.items.slice(), instance: "" };
+  if (pick && pick.level === "chain") {
+    return {
+      level: "chain",
+      instance: pick.instance,
+      items: day.items.filter((it) => it.chainInstance === pick.instance)
+    };
+  }
+  return { level: "exercise", instance: "", items: day.items.filter((it) => it.selected) };
+}
+function clipHotMatches(date, spec) {
+  const hot = state.clipHot;
+  if (!hot || hot.date !== date || !hot.until || Date.now() > hot.until) return false;
+  if (spec.level === "day") return hot.level === "day";
+  if (spec.level === "chain") return hot.level === "chain" && hot.instance === spec.instance;
+  if (hot.level !== "exercise") return false;
+  return (hot.ids || []).indexOf(spec.id) >= 0;
+}
+function clearClipHot() {
+  clearTimeout(state.clipTimer);
+  state.clipTimer = null;
+  state.clipHot = null;
+}
+function markClipboard(date, picked) {
+  clearTimeout(state.clipTimer);
+  state.clipHot = {
+    date,
+    level: picked.level,
+    instance: picked.instance || "",
+    ids: picked.items.map((it) => it.id),
+    until: Date.now() + 10000
+  };
+  state.clipTimer = setTimeout(() => {
+    state.clipHot = null;
+    state.clipTimer = null;
+    render();
+  }, 10000);
+}
+function copySelection(mode) {
+  const date = state.focusDay;
+  const picked = pickedItems(date);
+  if (!picked.items.length) return;
+  state.clipboard = {
+    from: date,
+    items: picked.items.map((it) => JSON.parse(JSON.stringify(it))),
+    mode: mode === "cut" ? "cut" : "copy",
+    level: picked.level
+  };
+  markClipboard(date, picked);
+  const label = picked.level === "day" ? "Day" : picked.level === "chain" ? "Chain" : (picked.items.length + " item(s)");
+  toast(label + (mode === "cut" ? " cut" : " copied"));
+  render();
+}
 function toggleAll(date, on) {
+  clearOtherDaySelections(date);
+  state.pick = { level: "exercise", date };
   ensureDay(date).items.forEach((it) => { it.selected = on; });
   render();
 }
 function toggleItem(date, id, on) {
-  findItem(date, id).selected = on;
+  clearOtherDaySelections(date);
+  state.pick = { level: "exercise", date };
+  const it = findItem(date, id);
+  if (it) it.selected = on;
   render();
 }
 function askDelete(date, id) {
@@ -3393,18 +3836,24 @@ function applyCopy() {
 function pasteOn(date) {
   if (!state.clipboard || !(state.clipboard.items || []).length) return;
   snapshot();
+  const clip = state.clipboard;
   const day = ensureDay(date);
-  const clones = freshenChainInstances(state.clipboard.items.map((it) => Object.assign(JSON.parse(JSON.stringify(it)), { id: uid(), selected: false })));
-  day.items = day.items.concat(clones);
-  if (state.clipboard.mode === "move") {
-    const src = ensureDay(state.clipboard.from);
-    const names = new Set(state.clipboard.items.map((it) => it.id));
-    src.items = src.items.filter((it) => !names.has(it.id));
-    noteDayEdit(state.clipboard.from);
+  const clones = freshenChainInstances(clip.items.map((it) => Object.assign(JSON.parse(JSON.stringify(it)), { id: uid(), selected: false })));
+  if (clip.level === "day") day.items = clones;
+  else day.items = day.items.concat(clones);
+  if (clip.mode === "cut" || clip.mode === "move") {
+    const sameDayCut = clip.level === "day" && clip.from === date;
+    if (!sameDayCut) {
+      const src = ensureDay(clip.from);
+      const names = new Set(clip.items.map((it) => it.id));
+      src.items = src.items.filter((it) => !names.has(it.id));
+      noteDayEdit(clip.from);
+    }
     state.clipboard = null;
   }
+  clearClipHot();
   noteDayEdit(date);
-  toast(clones.length + " item(s) pasted");
+  toast(clip.level === "day" ? "Day pasted" : (clones.length + " item(s) pasted"));
   render();
 }
 
@@ -3948,7 +4397,7 @@ function entryView() {
             <button class="iconbtn" style="color:#333" onclick="state.entryDate=addDays(state.entryDate,7);render()">›</button>
           </div>
           <h3>${esc(day.title || "Workout")}</h3>
-          ${day.items.map((it) => entryItem(activeWho, state.entryDate, it)).join("") || '<div class="empty">No exercises this day</div>'}` : `<div class="empty"><div><div class="book">◎</div><div>Please Select An Athlete</div></div></div>`}
+          ${entryListHtml(activeWho, state.entryDate, day.items) || '<div class="empty">No exercises this day</div>'}` : `<div class="empty"><div><div class="book">◎</div><div>Please Select An Athlete</div></div></div>`}
       </div>
       <div>
         <div class="panel"><strong>Session Summary</strong><div class="kpis" style="margin-top:8px">
@@ -3996,7 +4445,7 @@ function athleteEntryView() {
           <button class="iconbtn" style="color:#333" type="button" onclick="selectEntryDate(addDays(state.entryDate,7))">›</button>
         </div>
         <h3>${esc(day.items.length ? (day.title || "Workout") : "Rest")}</h3>
-        ${day.items.map((it) => entryItem(who.id, state.entryDate, it)).join("") || '<div class="empty">No exercises this day</div>'}
+        ${entryListHtml(who.id, state.entryDate, day.items, "athlete") || '<div class="empty">No exercises this day</div>'}
         ${ownAthleteSession() && day.workoutId ? noteForm(day.workoutId) : ""}
       </div>
       <div>
@@ -4025,6 +4474,184 @@ function pickAthlete(id) {
   render();
   loadCalendarSchedule(id);
 }
+const PROP_FIELD = {
+  load: "w", rest: "rest", restRep: "restRep", distance: "distance",
+  tempo: "tempo", velocity: "velocity", power: "power", pct: "pct", intensity: "intensity"
+};
+function entryColumns(it) {
+  if (!it || it.type === "circuit" || it.type === "note" || it.type === "questionnaire" || it.type === "break" || it.type === "rest" || it.type === "video") return [];
+  const cols = [["r", it.trackTime ? "Time (s)" : "Reps"]];
+  (it.props || []).forEach((key) => {
+    const field = PROP_FIELD[key];
+    if (!field || cols.some((col) => col[0] === field)) return;
+    let label = PROP_LABEL[key] || key;
+    if (key === "load") label = unitTitle(entryUnit());
+    else if (key === "rest") label = "Rest (s)";
+    else if (key === "restRep") label = "Rest/Rep (s)";
+    else if (key === "distance") label = "Distance (" + distanceWord(entryDistanceUnit()) + ")";
+    else if (key === "intensity") label = intensityLabel(it.intensityKind);
+    cols.push([field, label]);
+  });
+  return cols;
+}
+function countsAsEntered(value) {
+  if (value == null) return false;
+  const text = String(value).trim();
+  if (!text || text === "0") return false;
+  const num = Number(text);
+  if (!Number.isNaN(num) && num === 0) return false;
+  return true;
+}
+function requiredEntryFields(it) {
+  return ((it && it.props) || []).map((key) => PROP_FIELD[key]).filter(Boolean);
+}
+function setIsComplete(it, entered) {
+  const fields = requiredEntryFields(it);
+  if (!fields.length) return false;
+  return fields.every((field) => countsAsEntered(entered && entered[field]));
+}
+function prescribedEntry(it, field, index) {
+  const i = index || 0;
+  if (field === "r") return (it.reps && (it.reps[i] != null ? it.reps[i] : it.reps[0])) || "";
+  if (field === "w") return (it.loads && (it.loads[i] != null ? it.loads[i] : it.loads[0])) || "";
+  const map = {
+    rest: "rests", restRep: "restReps", distance: "distances", tempo: "tempos",
+    velocity: "velocities", power: "powers", pct: "pcts", intensity: "intensities"
+  };
+  const arr = it[map[field]] || [];
+  return arr[i] != null && arr[i] !== "" ? arr[i] : (arr[0] || "");
+}
+function shownEntry(entered, field, prescribed) {
+  if (entered && Object.prototype.hasOwnProperty.call(entered, field)) return entered[field];
+  return prescribed == null ? "" : prescribed;
+}
+function vimeoId(url) {
+  const m = String(url || "").match(/vimeo\.com\/(?:video\/)?(\d+)/);
+  return m ? m[1] : "";
+}
+function mediaKind(url) {
+  const youtube = youtubeId(url);
+  if (youtube) return { kind: "youtube", id: youtube };
+  const vimeo = vimeoId(url);
+  if (vimeo) return { kind: "vimeo", id: vimeo };
+  return null;
+}
+function playAthleteVideo(key) {
+  state.playingVideo = key;
+  render();
+}
+function athletePlayerHtml(it) {
+  if (!it || it.type === "circuit" || !it.videoUrl) return "";
+  const media = mediaKind(it.videoUrl);
+  if (!media) return "";
+  const key = "vid:" + (it.id || it.weId || media.id);
+  if (state.playingVideo !== key) {
+    return `<button type="button" class="athlete-player" onclick="playAthleteVideo('${esc(key)}');event.stopPropagation()">▶ Play</button>`;
+  }
+  const src = media.kind === "youtube"
+    ? `https://www.youtube-nocookie.com/embed/${media.id}?autoplay=1`
+    : `https://player.vimeo.com/video/${media.id}?autoplay=1`;
+  return `<div class="athlete-player playing"><iframe src="${esc(src)}" title="${esc(it.name || "Exercise")}" allow="autoplay; encrypted-media; fullscreen; picture-in-picture" allowfullscreen></iframe></div>`;
+}
+function entryItemById(date, itemId) {
+  const pools = [];
+  if (state.role === "athlete") {
+    const saved = savedDay(date);
+    if (saved) pools.push(saved.items || []);
+  }
+  const who = state.entryAthlete || state.athleteId;
+  if (who && state.calendars[who] && state.calendars[who][date]) pools.push(state.calendars[who][date].items || []);
+  for (let p = 0; p < pools.length; p++) {
+    const found = pools[p].find((it) => it.id === itemId || ("wx" + it.weId) === itemId);
+    if (found) return found;
+  }
+  return null;
+}
+function entryListHtml(aid, date, items, audience) {
+  const list = items || [];
+  let html = "";
+  let index = 0;
+  while (index < list.length) {
+    const it = list[index];
+    if (it.chainInstance) {
+      const instance = it.chainInstance;
+      const group = [];
+      while (index < list.length && list[index].chainInstance === instance) {
+        group.push(list[index]);
+        index += 1;
+      }
+      html += chainEntryHtml(aid, date, group, audience || (state.role === "athlete" ? "athlete" : "coach"));
+    } else {
+      html += entryItem(aid, date, it);
+      index += 1;
+    }
+  }
+  return html;
+}
+function chainEntryHtml(aid, date, group, audience) {
+  const head = group[0];
+  const open = chainIsOpen(head, audience);
+  const instance = esc(head.chainInstance);
+  const letter = head.letter ? `<span class="letter" style="background:${LETTER_COLOR[head.letter] || "#999"}">${esc(head.letter)}</span>` : "";
+  const body = open ? group.map((it) => entryItem(aid, date, it)).join("") : "";
+  return `<div class="chain-block${open ? "" : " is-collapsed"}">
+    <div class="chain-head">
+      <button type="button" class="chain-fold" aria-label="${open ? "Collapse chain" : "Expand chain"}" onclick="toggleChainOpen('${date}','${instance}','${audience}', event)">${open ? "▾" : "▸"}</button>
+      ${letter}
+      <button type="button" class="chain-title" onclick="toggleChainOpen('${date}','${instance}','${audience}', event)">${esc(head.chainName || "Chain")}</button>
+    </div>
+    ${body}
+  </div>`;
+}
+function athleteScheduleHtml(date, items) {
+  const list = items || [];
+  let html = "";
+  let index = 0;
+  while (index < list.length) {
+    const it = list[index];
+    if (it.chainInstance) {
+      const instance = it.chainInstance;
+      const group = [];
+      while (index < list.length && list[index].chainInstance === instance) {
+        group.push(list[index]);
+        index += 1;
+      }
+      const head = group[0];
+      const open = chainIsOpen(head, "athlete");
+      const letter = head.letter ? `<span class="letter" style="background:${LETTER_COLOR[head.letter] || "#999"}">${esc(head.letter)}</span>` : "";
+      const members = open ? group.map((row) => `<div class="ex"><div class="ex-main"><div class="ex-name">${esc(row.name)}</div><div class="ex-sub">${esc(scriptLine(row))}</div></div></div>`).join("") : "";
+      html += `<div class="chain-block${open ? "" : " is-collapsed"}" onclick="event.stopPropagation()">
+        <div class="chain-head">${letter}<button type="button" class="chain-fold" onclick="toggleChainOpen('${date}','${esc(instance)}','athlete', event)">${open ? "▾" : "▸"}</button><button type="button" class="chain-title" onclick="toggleChainOpen('${date}','${esc(instance)}','athlete', event)">${esc(head.chainName || "Chain")}</button></div>
+        ${members}
+      </div>`;
+    } else {
+      const color = LETTER_COLOR[it.letter] || "#888";
+      const letter = it.letter ? `<span class="letter" style="background:${color}">${esc(it.letter)}</span>` : `<span class="letter" style="background:#444;color:#fff">–</span>`;
+      html += `<div class="ex">${letter}<div class="ex-main"><div class="ex-name">${esc(it.name)}</div><div class="ex-sub">${esc(scriptLine(it))}</div></div></div>`;
+      index += 1;
+    }
+  }
+  return html;
+}
+function circuitEntryHtml(aid, date, it) {
+  const key = aid + ":" + date + ":" + it.id;
+  const log = state.logs[key] || {};
+  const entered = log.entered || {};
+  const done = setIsComplete(it, entered);
+  const fields = (it.props || []).map((prop) => {
+    const field = PROP_FIELD[prop];
+    if (!field) return "";
+    const label = prop === "load" ? unitTitle(entryUnit()) : (PROP_LABEL[prop] || prop);
+    const value = shownEntry(entered, field, prescribedEntry(it, field, 0));
+    return `<label class="circuit-field">${esc(label)} <input aria-label="${esc(label)}" value="${esc(value)}" onchange="logCircuitField('${key}','${field}',this.value,'${date}','${it.id}',${it.weId || 0})"></label>`;
+  }).join("");
+  return `<div class="circuit-entry">
+    <div class="preview-copy">${esc(it.detail || "")}</div>
+    <div class="hint">${esc(scriptLine(it))}</div>
+    ${fields}
+    <button type="button" class="complete${done ? " done" : ""}" aria-pressed="${done ? "true" : "false"}">${done ? "✓ Complete" : "Complete"}</button>
+  </div>`;
+}
 function entryItem(aid, date, it) {
   const key = aid + ":" + date + ":" + it.id;
   const open = state.entryItem === it.id;
@@ -4037,75 +4664,86 @@ function entryItem(aid, date, it) {
       ${open ? `<div class="preview-copy">${esc(it.note || "")}</div>` : ""}
     </div>`;
   }
-  const has = (arr) => (arr || []).some((v) => String(v || "").trim() !== "");
-  const fields = [["w", unitTitle(entryUnit())], ["r", it.trackTime ? "Time (s)" : "Reps"]];
-  if (state.role === "athlete") {
-    fields.push(["rest", "Rest (s)"]);
-    if (has(it.tempos)) fields.push(["tempo", "Tempo"]);
-    if (has(it.velocities)) fields.push(["velocity", "Velocity"]);
-    if (has(it.powers)) fields.push(["power", "Power"]);
-    if (has(it.pcts)) fields.push(["pct", "%1RM"]);
+  if (it.type === "circuit") {
+    return `<div>
+      <button class="entry-item" onclick="state.entryItem=state.entryItem==='${it.id}'?null:'${it.id}';render()">
+        <span class="letter" style="background:${LETTER_COLOR[it.letter] || "#999"}">${esc(it.letter || "•")}</span>
+        <span><strong>${esc(it.name)}</strong><div class="hint">${esc(scriptLine(it))}</div></span>
+      </button>
+      ${open ? circuitEntryHtml(aid, date, it) : ""}
+    </div>`;
   }
-  if (has(it.restReps)) fields.push(["restRep", "Rest/Rep (s)"]);
-  if (has(it.distances)) fields.push(["distance", "Distance (" + distanceWord(displayDistanceUnit()) + ")"]);
-  if (it.intensityKind || has(it.intensities)) fields.push(["intensity", intensityLabel(it.intensityKind)]);
+  const fields = entryColumns(it);
   const rows = Array.from({ length: it.sets || 1 }, (_, i) => {
-    const log = (state.logs[key] && state.logs[key].cells && state.logs[key].cells[i]) || {
-      w: (it.loads && it.loads[i]) || "",
-      r: (it.reps && it.reps[i]) || "",
-      rest: (it.rests && (it.rests[i] || it.rests[0])) || "",
-      tempo: (it.tempos && (it.tempos[i] || it.tempos[0])) || "",
-      velocity: (it.velocities && (it.velocities[i] || it.velocities[0])) || "",
-      power: (it.powers && (it.powers[i] || it.powers[0])) || "",
-      pct: (it.pcts && (it.pcts[i] || it.pcts[0])) || "",
-      restRep: (it.restReps && (it.restReps[i] || it.restReps[0])) || "",
-      distance: (it.distances && (it.distances[i] || it.distances[0])) || "",
-      intensity: (it.intensities && (it.intensities[i] || it.intensities[0])) || "",
-      done: false
-    };
-    const cells = fields.map(([field, label]) => `<td><input aria-label="${esc(label)} set ${i + 1}" value="${esc(log[field] ?? "")}" onchange="logCell('${key}',${i},'${field}',this.value,'${date}','${it.id}',${it.weId || 0})"></td>`).join("");
-    return `<tr><td>${i + 1}</td>${cells}<td><input aria-label="Done set ${i + 1}" type="checkbox" ${log.done ? "checked" : ""} onchange="logCell('${key}',${i},'done',this.checked,'${date}','${it.id}',${it.weId || 0})"></td></tr>`;
+    const cell = (state.logs[key] && state.logs[key].cells && state.logs[key].cells[i]) || {};
+    const entered = cell.entered || {};
+    const done = setIsComplete(it, entered);
+    const inputs = fields.map(([field, label]) => {
+      const value = shownEntry(entered, field, prescribedEntry(it, field, i));
+      return `<td><input aria-label="${esc(label)} set ${i + 1}" value="${esc(value)}" onchange="logCell('${key}',${i},'${field}',this.value,'${date}','${it.id}',${it.weId || 0})"></td>`;
+    }).join("");
+    return `<tr><td>${i + 1}</td>${inputs}<td><input aria-label="Done set ${i + 1}" type="checkbox" ${done ? "checked" : ""} onchange="logCell('${key}',${i},'done',this.checked,'${date}','${it.id}',${it.weId || 0})"></td></tr>`;
   }).join("");
   const table = it.type === "questionnaire"
     ? (it.questions || []).map((q) => `<label class="chk"><input type="checkbox" onchange="logCheck('${key}', this.checked)"> ${esc(q)}</label>`).join("")
-    : `<table class="sets"><tr><th>Set</th>${fields.map((field) => `<th>${field[1]}</th>`).join("")}<th></th></tr>${rows}</table>`;
+    : `<table class="sets"><tr><th>Set</th>${fields.map((field) => `<th>${field[1]}</th>`).join("")}<th>Done</th></tr>${rows}</table>`;
   const safeName = String(it.name || "Exercise").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  const player = open ? athletePlayerHtml(it) : "";
   return `<div>
     <button class="entry-item" onclick="state.entryItem=state.entryItem==='${it.id}'?null:'${it.id}';render()">
-      <span class="letter" style="background:${LETTER_COLOR[it.letter] || "#999"}">${esc(it.letter || "•")}</span>
+      <span class="letter" style="background:${LETTER_COLOR[it.letter] || "#999"}">${esc(it.chainInstance ? "" : (it.letter || "•"))}</span>
       <span><strong>${esc(it.name)}</strong><div class="hint">${esc(scriptLine(it))}</div></span>
     </button>
-    ${open ? `<div style="padding:6px 8px 10px">${table}<button class="complete" onclick="markDone('${key}','${safeName}',${it.weId || 0},${it.sets || 1})">Complete</button></div>` : ""}
+    ${open ? `<div style="padding:6px 8px 10px">${player}${table}<button class="complete" onclick="markDone('${key}','${safeName}',${it.weId || 0},${it.sets || 1})">Complete</button></div>` : ""}
   </div>`;
 }
 function logCell(key, i, field, value, date, itemId, weId) {
   const log = state.logs[key] || (state.logs[key] = { cells: {}, hydrated: true });
   log.hydrated = true;
-  log.cells[i] = log.cells[i] || { w: "", r: "", rest: "", done: false };
-  log.cells[i][field] = field === "done" ? !!value : value;
+  const it = entryItemById(date, itemId);
+  log.cells[i] = log.cells[i] || { entered: {}, done: false };
+  if (!log.cells[i].entered) log.cells[i].entered = {};
+  if (field !== "done") {
+    log.cells[i].entered[field] = value;
+    log.cells[i][field] = value;
+  }
+  log.cells[i].done = !!(it && setIsComplete(it, log.cells[i].entered));
   const map = {
-    w: "weight", r: "reps", rest: "rest", done: "completed", tempo: "tempo", velocity: "velocity",
+    w: "weight", r: "reps", rest: "rest", tempo: "tempo", velocity: "velocity",
     power: "power", pct: "pct", restRep: "restRep", distance: "distance", intensity: "intensity"
   };
-  if (weId && state.openSession && map[field] && (state.role === "athlete" || state.coachSessionFor)) {
-    logAthleteSet(weId, i + 1, map[field], log.cells[i][field]);
+  if (weId && state.openSession && (state.role === "athlete" || state.coachSessionFor)) {
+    const apiField = field === "done" ? "completed" : map[field];
+    logAthleteSet(weId, i + 1, apiField || "", field === "done" ? log.cells[i].done : log.cells[i][field], {
+      athlete: log.cells[i].entered,
+      completed: log.cells[i].done
+    });
+    return;
+  }
+  render();
+}
+function logCircuitField(key, field, value, date, itemId, weId) {
+  const log = state.logs[key] || (state.logs[key] = { hydrated: true, entered: {} });
+  log.hydrated = true;
+  log.entered = log.entered || {};
+  log.entered[field] = value;
+  const it = entryItemById(date, itemId);
+  log.done = !!(it && setIsComplete(it, log.entered));
+  const map = {
+    w: "weight", r: "reps", rest: "rest", tempo: "tempo", velocity: "velocity",
+    power: "power", pct: "pct", restRep: "restRep", distance: "distance", intensity: "intensity"
+  };
+  if (weId && state.openSession && (state.role === "athlete" || state.coachSessionFor)) {
+    logAthleteSet(weId, 1, map[field] || field, value, { athlete: log.entered, completed: log.done });
     return;
   }
   render();
 }
 function logCheck(key) { state.logs[key] = { done: true, hydrated: true }; }
-async function markDone(key, name, weId, sets) {
+async function markDone(key, name) {
   const log = state.logs[key] || (state.logs[key] = { cells: {}, hydrated: true });
-  log.done = true;
+  log.exerciseDone = true;
   log.hydrated = true;
-  const count = sets || 1;
-  for (let i = 0; i < count; i++) {
-    log.cells[i] = log.cells[i] || { w: "", r: "", done: false };
-    log.cells[i].done = true;
-    if (weId && state.openSession && (state.role === "athlete" || state.coachSessionFor)) {
-      await logAthleteSet(weId, i + 1, "completed", true);
-    }
-  }
   toast("Logged " + name);
   render();
 }
@@ -5014,10 +5652,7 @@ function openChainEditor(chainId) {
     name: chain ? chain.name : "",
     kind: chain ? chain.kind : "Warm up",
     pick: "",
-    members: chain ? (chain.members || []).map((member) => ({
-      exercise_id: member.exercise_id,
-      name: (member.exercise && member.exercise.name) || "Exercise"
-    })) : []
+    members: chain ? (chain.members || []).map((member) => chainMemberDraft(member)) : []
   };
   render();
 }
@@ -5036,12 +5671,21 @@ function openChainFromDay(date, instance) {
     name: members[0].chainName || "",
     kind: members[0].chainKind || "Warm up",
     pick: "",
-    members: members.map((it) => {
+    members: members.map((it, index) => {
       const record = it.exerciseId ? null : exerciseRecord(it.name);
-      return {
-        exercise_id: it.exerciseId || (record && record.id) || null,
-        name: it.name
-      };
+      const template = (state.chains || []).find((row) => row.id === members[0].chainId);
+      const templateMembers = (template && template.members) || [];
+      const exerciseId = it.exerciseId || (record && record.id) || null;
+      const fromTemplate = templateMembers[index] && templateMembers[index].exercise_id === exerciseId
+        ? templateMembers[index]
+        : (templateMembers.find((row) => row.exercise_id === exerciseId) || {});
+      return chainMemberDraft({
+        exercise_id: exerciseId,
+        name: it.name,
+        sets: fromTemplate.sets,
+        reps: fromTemplate.reps,
+        notes: fromTemplate.notes
+      });
     })
   };
   render();
@@ -5052,7 +5696,7 @@ function addChainMember() {
   const exerciseId = parseInt(m.pick, 10);
   const record = (state.serverExercises || []).find((row) => row.id === exerciseId);
   if (!record) { toast("Choose an exercise"); return; }
-  m.members.push({ exercise_id: record.id, name: record.name });
+  m.members.push(chainMemberDraft({ exercise_id: record.id, name: record.name, exercise: record }));
   render();
 }
 function moveChainMember(index, dir) {
@@ -5083,7 +5727,7 @@ function chainEditorCommit() {
     chainId: m.chainId,
     name,
     kind: m.kind,
-    members: m.members.map((mem) => ({ exercise_id: mem.exercise_id, name: mem.name }))
+    members: m.members.map((mem) => chainMemberPayload(mem))
   };
   if (!m.chainId) {
     createChain(draft);
@@ -5104,7 +5748,7 @@ async function createChain(draft) {
     const created = await api("POST", "/api/chains", {
       name: draft.name,
       kind: draft.kind,
-      members: draft.members.map((mem) => ({ exercise_id: mem.exercise_id }))
+      members: draft.members.map((mem) => chainMemberPayload(mem))
     });
     rememberChain(created);
     state.modal = null;
@@ -5119,6 +5763,7 @@ function rewriteLocalChain(day, instance, draft) {
   if (!pool.length) return;
   const used = {};
   const chain = { id: draft.chainId, name: draft.name, kind: draft.kind };
+  const letter = chainBlockLetter(day, instance);
   const rebuilt = draft.members.map((mem, index) => {
     const existing = pool.find((it) => !used[it.id] && it.exerciseId === mem.exercise_id);
     if (existing) {
@@ -5128,9 +5773,10 @@ function rewriteLocalChain(day, instance, draft) {
       existing.chainName = draft.name;
       existing.chainKind = draft.kind;
       existing.chainOrder = index;
+      applyExplicitChainFields(existing, mem);
       return existing;
     }
-    return chainMemberItem(chain, mem, index, instance, day);
+    return chainMemberItem(chain, mem, index, instance, day, letter);
   });
   pool.forEach((it) => {
     if (used[it.id]) return;
@@ -5197,7 +5843,7 @@ async function applyChainScope(scope) {
       workout_id: workoutId,
       name: draft.name,
       kind: draft.kind,
-      members: draft.members.map((mem) => ({ exercise_id: mem.exercise_id }))
+      members: draft.members.map((mem) => chainMemberPayload(mem))
     });
     if (result && result.chain) rememberChain(result.chain);
     await reloadChainWorkouts((result && result.updated_workout_ids) || []);
@@ -6011,6 +6657,32 @@ function editModalHtml(m) {
   }).join("");
   return `<div class="modal-back" onclick="if(event.target===this) closeEdit()"><div class="modal edit-modal" onclick="event.stopPropagation()"><h3>${esc(m.title)}</h3>${hint}<div class="edit-fields">${fields}</div><button class="full save" type="button" onclick="saveEdit()">SAVE</button><button class="full" type="button" onclick="closeEdit()">CANCEL</button></div></div>`;
 }
+function chainMemberDraft(member) {
+  const exercise = (member && member.exercise) || {};
+  return {
+    exercise_id: member.exercise_id,
+    name: member.name || exercise.name || "Exercise",
+    sets: member.sets == null || member.sets === "" ? "" : String(member.sets),
+    reps: member.reps || "",
+    notes: member.notes || ""
+  };
+}
+function chainMemberPayload(mem) {
+  const sets = chainText(mem && mem.sets);
+  const parsed = parseInt(sets, 10);
+  return {
+    exercise_id: mem.exercise_id,
+    name: mem.name,
+    sets: sets === "" || isNaN(parsed) ? null : parsed,
+    reps: chainText(mem && mem.reps),
+    notes: mem && mem.notes != null ? String(mem.notes) : ""
+  };
+}
+function setChainMemberField(index, key, value) {
+  const m = state.modal;
+  if (!m || !m.members || !m.members[index]) return;
+  m.members[index][key] = value;
+}
 function chainEditorHtml(m) {
   const kinds = ["Warm up", "Circuit", "Cooldown"];
   const options = (state.serverExercises || []).filter((row) => !row.hidden);
@@ -6019,6 +6691,9 @@ function chainEditorHtml(m) {
       <button type="button" onclick="moveChainMember(${index}, -1)">Up</button>
       <button type="button" onclick="moveChainMember(${index}, 1)">Down</button>
       <button type="button" onclick="removeChainMember(${index})">Remove</button>
+      <label class="chain-field">Sets <input aria-label="Sets for ${esc(mem.name)}" value="${esc(mem.sets || "")}" oninput="setChainMemberField(${index}, 'sets', this.value)"></label>
+      <label class="chain-field">Reps <input aria-label="Reps for ${esc(mem.name)}" value="${esc(mem.reps || "")}" oninput="setChainMemberField(${index}, 'reps', this.value)"></label>
+      <label class="chain-field chain-notes">Notes <input aria-label="Notes for ${esc(mem.name)}" value="${esc(mem.notes || "")}" oninput="setChainMemberField(${index}, 'notes', this.value)"></label>
     </div>`).join("");
   return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render()}"><div class="modal edit-modal" onclick="event.stopPropagation()">
     <h3>${m.chainId ? "Edit chain" : "New chain"}</h3>
@@ -6056,6 +6731,12 @@ function modalHtml() {
   if (m.type === "edit") return editModalHtml(m);
   if (m.type === "chain") return chainEditorHtml(m);
   if (m.type === "chain-scope") return chainScopeHtml(m);
+  if (m.type === "editor-close") {
+    return `<div class="modal-back"><div class="modal" onclick="event.stopPropagation()"><h3>Save this exercise?</h3><p class="sub">Save keeps the edits from this open. Discard puts the exercise back to where it was when the editor opened.</p><button class="full save" type="button" onclick="saveEditor()">Save</button><button class="full" type="button" onclick="discardEditor()">Discard</button></div></div>`;
+  }
+  if (m.type === "editor-name") {
+    return `<div class="modal-back"><div class="modal" onclick="event.stopPropagation()"><h3>Name this exercise</h3><input class="field" data-focus="editor-name" aria-label="Exercise name" value="${esc(m.name || "")}" oninput="state.modal.name=this.value"><button class="full save" type="button" onclick="acceptEditorName()">Save</button><button class="full" type="button" onclick="dismissEditorName()">Cancel</button></div></div>`;
+  }
   if (m.type === "delete") {
     return `<div class="modal-back" onclick="state.modal=null;render()"><div class="modal" onclick="event.stopPropagation()"><h3>You are about to delete (${m.ids.length}) workout item${m.ids.length > 1 ? "s" : ""}</h3><button class="full red" onclick="confirmDelete()">DELETE</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
   }
@@ -6156,7 +6837,11 @@ function onFab() {
 window.addEventListener("resize", () => { if (state.searchDay) placeSearchPop(); });
 document.addEventListener("scroll", () => { if (state.searchDay) placeSearchPop(); }, true);
 document.addEventListener("click", (ev) => {
-  if (ev.target.closest(".menu, .pop, .modal, .nav-anchor, .group-pop")) return;
+  if (state.editor && state.view === "build" && !ev.target.closest(".build-editor, .modal, .modal-back, .menu, .pop")) {
+    askCloseEditor();
+    return;
+  }
+  if (ev.target.closest(".menu, .pop, .modal, .modal-back, .nav-anchor, .group-pop")) return;
   let changed = false;
   if (state.navMenu) { state.navMenu = null; changed = true; }
   if (state.dayMenu || state.recurMenu || state.propMenu || state.letterMenu || state.optionsMenu || state.supersetMenu || state.trackMenu || state.colorMenu || state.searchDay) {
@@ -6170,8 +6855,13 @@ document.addEventListener("click", (ev) => {
 });
 document.addEventListener("keydown", (ev) => {
   const tag = (ev.target.tagName || "").toLowerCase();
-  const typing = tag === "input" || tag === "textarea" || tag === "select";
-  if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "z") { ev.preventDefault(); undo(); return; }
+  const typing = tag === "input" || tag === "textarea" || tag === "select" || (ev.target.isContentEditable);
+  if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "z") {
+    if (typing) return;
+    ev.preventDefault();
+    undo();
+    return;
+  }
   if (state.editor && ev.shiftKey && ev.key.toLowerCase() === "i") { ev.preventDefault(); openInfo(state.editor.day, state.editor.id); return; }
   if (state.editor && (ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "p") {
     ev.preventDefault();
@@ -6182,14 +6872,15 @@ document.addEventListener("keydown", (ev) => {
   if (state.searchDay && ev.shiftKey && ev.key === "Enter") { ev.preventDefault(); createExercise(state.searchDay); return; }
   if (typing) return;
   if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "c") {
-    const date = state.focusDay;
-    const ids = ensureDay(date).items.filter((it) => it.selected);
-    if (!ids.length) return;
-    state.clipboard = { from: date, items: ids.map((it) => JSON.parse(JSON.stringify(it))), mode: "copy" };
-    toast(ids.length + " items copied");
-    render();
+    ev.preventDefault();
+    copySelection("copy");
+  }
+  if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "x") {
+    ev.preventDefault();
+    copySelection("cut");
   }
   if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "v" && state.clipboard) {
+    ev.preventDefault();
     pasteOn(state.hoverDay || state.focusDay);
   }
 });
@@ -7073,11 +7764,11 @@ async function initAuth() {
     if (type === "recovery" && accessToken) {
       state.auth.mode = "reset";
       state.auth.resetToken = accessToken;
-      history.replaceState(null, null, window.location.pathname);
+      history.replaceState(null, "", window.location.pathname + window.location.search);
       render();
       return;
     } else if (accessToken) {
-      history.replaceState(null, null, window.location.pathname);
+      history.replaceState(null, "", window.location.pathname + window.location.search);
       await syncSupabaseSession(accessToken);
       return;
     }
@@ -7095,7 +7786,10 @@ async function initAuth() {
         if (state.role === "athlete") {
           await loadMySchedule();
           await loadOwnJournal();
-        } else await loadGymContext();
+        } else {
+          await loadGymContext();
+          applyBuildQuery();
+        }
       }
     } catch (err) {
       console.warn("Session expired or invalid:", err);

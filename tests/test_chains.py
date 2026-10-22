@@ -375,6 +375,179 @@ class ChainTests(unittest.TestCase):
         self.assertEqual(log_row["reps"], 3)
 
 
+    def test_chain_member_sets_reps_notes_win_over_library(self):
+        squat = self._exercise(
+            "Squat", default_sets=3, default_reps="10", default_notes="Library cue",
+            default_load="135", default_rest="90", default_tempo="20X1",
+        )
+        press = self._exercise("Press", default_sets=2, default_reps="6", default_notes="Press cue", default_load="45", default_rest="60")
+        row = self._exercise(
+            "Row", default_sets=2, default_reps="12", default_notes="Row cue",
+            default_load="40", default_rest="45", default_tempo="30X0",
+        )
+        curl = self._exercise("Curl", default_sets=1, default_reps="15", default_notes="Curl cue", default_load="25", default_rest="30")
+        created = self.client.post("/api/chains", json={
+            "name": f"Primer {self.stamp}",
+            "kind": "Warm up",
+            "members": [
+                {"exercise_id": squat["id"], "sets": 4, "reps": "8", "notes": "Brace"},
+                {"exercise_id": press["id"], "sets": None, "reps": "", "notes": ""},
+            ],
+        })
+        self.assertEqual(created.status_code, 201, created.text)
+        chain = created.json()
+        self.assertEqual(chain["members"][0]["sets"], 4)
+        self.assertEqual(chain["members"][0]["reps"], "8")
+        self.assertEqual(chain["members"][0]["notes"], "Brace")
+        self.assertIsNone(chain["members"][1]["sets"])
+        self.assertIsNone(chain["members"][1]["reps"])
+        self.assertIsNone(chain["members"][1]["notes"])
+
+        changed = self.client.put(f"/api/exercises/{squat['id']}", json={
+            "default_sets": 9, "default_reps": "1", "default_notes": "Changed", "default_load": "200",
+        })
+        self.assertEqual(changed.status_code, 200, changed.text)
+        saved = next(item for item in self.client.get("/api/chains").json() if item["id"] == chain["id"])
+        self.assertEqual(saved["members"][0]["sets"], 4)
+        self.assertEqual(saved["members"][0]["reps"], "8")
+        self.assertEqual(saved["members"][0]["notes"], "Brace")
+        self.assertIsNone(saved["members"][1]["sets"])
+
+        day = self._place(chain, eastern_day(1), f"Sets {self.stamp}", ["A", "B"])
+        squat_we = next(item for item in day["exercises"] if item["exercise_id"] == squat["id"])
+        edited_day = []
+        for item in day["exercises"]:
+            row_body = dict(item)
+            row_body.pop("exercise", None)
+            row_body.pop("workout_id", None)
+            if item["id"] == squat_we["id"]:
+                row_body["prescribed_sets"] = 7
+                row_body["notes"] = "Day edit"
+            if item["exercise_id"] == press["id"]:
+                row_body["notes"] = "Press cue"
+            edited_day.append(row_body)
+        updated_day = self.client.put(f"/api/workouts/{day['id']}", json={"exercises": edited_day})
+        self.assertEqual(updated_day.status_code, 200, updated_day.text)
+        template = next(item for item in self.client.get("/api/chains").json() if item["id"] == chain["id"])
+        self.assertEqual(template["members"][0]["sets"], 4)
+        self.assertEqual(template["members"][0]["notes"], "Brace")
+
+        scoped = self._edit(
+            chain["id"], scope="one", source="day", workout_id=day["id"],
+            name=chain["name"], kind="Warm up",
+            members=[
+                {"exercise_id": squat["id"], "sets": 5, "reps": "3", "notes": "Hold"},
+                {"exercise_id": press["id"], "sets": None, "reps": "", "notes": ""},
+                {"exercise_id": row["id"], "sets": None, "reps": "", "notes": ""},
+                {"exercise_id": curl["id"], "sets": 4, "reps": "8", "notes": "Brace"},
+            ],
+        )
+        self.assertEqual(scoped["updated_workout_ids"], [day["id"]])
+        self.assertEqual([member["exercise_id"] for member in scoped["chain"]["members"]], [squat["id"], press["id"]])
+        self.assertEqual(scoped["chain"]["members"][0]["sets"], 4)
+        body = self.client.get(f"/api/workouts/{day['id']}").json()
+        placed = [item for item in body["exercises"] if item["chain_id"] == chain["id"]]
+        by_id = {}
+        for item in placed:
+            by_id.setdefault(item["exercise_id"], []).append(item)
+        squat_row = by_id[squat["id"]][0]
+        press_row = by_id[press["id"]][0]
+        row_row = by_id[row["id"]][0]
+        curl_row = by_id[curl["id"]][0]
+        self.assertEqual(squat_row["id"], squat_we["id"])
+        self.assertEqual(squat_row["prescribed_sets"], 5)
+        self.assertEqual(squat_row["target_reps"], "3,3,3,3,3")
+        self.assertIn("Hold", squat_row["notes"])
+        self.assertEqual(squat_row["target_weight"], "0")
+        self.assertEqual(press_row["prescribed_sets"], 3)
+        self.assertEqual(press_row["target_reps"], "8")
+        self.assertEqual(press_row["notes"], "Press cue")
+        self.assertEqual(row_row["prescribed_sets"], 2)
+        self.assertEqual(row_row["target_reps"], "12,12")
+        self.assertEqual(row_row["target_weight"], "40,40")
+        self.assertEqual(row_row["rest_seconds"], 45)
+        self.assertIn("Row cue", row_row["notes"])
+        self.assertIn("Rests:45,45", row_row["notes"])
+        self.assertIn("Tempos:30X0,30X0", row_row["notes"])
+        self.assertEqual(row_row["superset_group"], "A")
+        self.assertFalse(row_row["chain_coach_open"])
+        self.assertFalse(row_row["chain_athlete_open"])
+        self.assertEqual(curl_row["prescribed_sets"], 4)
+        self.assertEqual(curl_row["target_reps"], "8,8,8,8")
+        self.assertTrue(curl_row["notes"].startswith("Brace"))
+        self.assertIn("Rests:30,30,30,30", curl_row["notes"])
+        self.assertEqual(curl_row["target_weight"], "25,25,25,25")
+        self.assertEqual(curl_row["superset_group"], "A")
+
+        squat_again = dict(squat_row)
+        squat_again.pop("exercise", None)
+        squat_again.pop("workout_id", None)
+        squat_again["prescribed_sets"] = 11
+        others = []
+        for item in body["exercises"]:
+            if item["id"] == squat_row["id"]:
+                continue
+            copy = dict(item)
+            copy.pop("exercise", None)
+            copy.pop("workout_id", None)
+            others.append(copy)
+        rewritten = self.client.put(f"/api/workouts/{day['id']}", json={"exercises": others + [squat_again]})
+        self.assertEqual(rewritten.status_code, 200, rewritten.text)
+        still = next(item for item in self.client.get("/api/chains").json() if item["id"] == chain["id"])
+        self.assertEqual(still["members"][0]["sets"], 4)
+        self.assertEqual(still["members"][0]["reps"], "8")
+        self.assertEqual(still["members"][0]["notes"], "Brace")
+
+        instance = squat_row["chain_instance"]
+        athlete_fold = self.client.post(f"/api/workouts/{day['id']}/chain-fold", json={
+            "chain_instance": instance, "audience": "athlete", "expanded": True,
+        })
+        self.assertEqual(athlete_fold.status_code, 200, athlete_fold.text)
+        folded = [item for item in athlete_fold.json()["exercises"] if item["chain_instance"] == instance]
+        self.assertTrue(all(item["chain_athlete_open"] for item in folded))
+        self.assertTrue(all(item["chain_coach_open"] is False for item in folded))
+        coach_fold = self.client.post(f"/api/workouts/{day['id']}/chain-fold", json={
+            "chain_instance": instance, "audience": "coach", "expanded": True,
+        })
+        self.assertEqual(coach_fold.status_code, 200, coach_fold.text)
+        both = self.client.get(f"/api/workouts/{day['id']}").json()
+        kept = [item for item in both["exercises"] if item["chain_instance"] == instance]
+        self.assertTrue(all(item["chain_athlete_open"] and item["chain_coach_open"] for item in kept))
+
+        blank = self.client.post("/api/workouts", json={
+            "title": f"Blank letter {self.stamp}",
+            "program_name": f"Sets {self.stamp}",
+            "calendar_date": eastern_day(2),
+            "scheduled_date": eastern_day(2),
+            "day_of_week": "Tuesday",
+            "week_number": 1,
+            "exercises": [{
+                "exercise_id": squat["id"],
+                "superset_group": "",
+                "prescribed_sets": 1,
+                "target_reps": "5",
+                "target_weight": "0",
+                "notes": "",
+                "chain_id": chain["id"],
+                "chain_instance": "blank-letter",
+                "chain_name": chain["name"],
+                "chain_kind": "Warm up",
+                "chain_order": 0,
+            }, {
+                "exercise_id": press["id"],
+                "superset_group": "",
+                "prescribed_sets": 1,
+                "target_reps": "5",
+                "target_weight": "0",
+                "notes": "",
+            }],
+        })
+        self.assertEqual(blank.status_code, 201, blank.text)
+        letters = {item["exercise_id"]: item["superset_group"] for item in blank.json()["exercises"]}
+        self.assertEqual(letters[squat["id"]], "")
+        self.assertEqual(letters[press["id"]], "A")
+
+
 def db_log(log_id):
     db = SessionLocal()
     try:

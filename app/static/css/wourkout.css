@@ -98,12 +98,20 @@ button { cursor: pointer; }
 .today-pill { background: #2a2a2a; }
 
 .cal-scroll { overflow: auto; padding: 8px 8px 24px; flex: 1; }
+.build-cal.mode-week .week { min-height: calc(100% - 4px); }
+.build-cal.mode-month .day { min-height: 220px; }
 .week { display: grid; grid-template-columns: repeat(7, minmax(168px, 1fr)); gap: 8px; margin-bottom: 14px; }
+.week-banner { grid-column: 1 / -1; color: #9ec0ef; font-size: 12px; font-weight: 700; letter-spacing: .04em; }
+.week.week-current { outline: 2px solid #3b82f6; border-radius: 10px; padding: 4px; }
+.week.week-current .week-banner { color: #dbe8ff; }
 .day {
   background: #1b1b1b; border: 1px solid #2c2c2c; border-radius: 8px; min-height: 280px;
   display: flex; flex-direction: column; position: relative; padding: 8px;
 }
 .day.focus { outline: 1px solid #3d6fd6; }
+.day.day-selected { outline: 2px solid #3b82f6; }
+.day.clip-hot { box-shadow: inset 0 0 0 2px #3b82f6; }
+.day-date { background: transparent; border: 0; color: inherit; font: inherit; font-weight: inherit; letter-spacing: inherit; padding: 0; cursor: pointer; }
 .day.read { cursor: pointer; }
 .day.rest-day { cursor: default; }
 .day.read .day-title { display: block; }
@@ -134,6 +142,7 @@ button { cursor: pointer; }
 }
 .ex:hover { background: #262626; }
 .ex.selected { background: #1d3358; }
+.ex.clip-hot, .chain-block.clip-hot { background: #16345c; box-shadow: inset 0 0 0 2px #3b82f6; }
 .letter {
   width: 16px; height: 16px; border-radius: 3px; color: #111; font-size: 11px; font-weight: 800;
   display: grid; place-items: center; flex-shrink: 0; margin-top: 1px;
@@ -195,7 +204,19 @@ button { cursor: pointer; }
 }
 .chain-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 2px 4px 4px; font-size: 12px; color: #c5d8f2; }
 .chain-head button { background: transparent; border: 0; color: #9ec0ef; font-size: 11px; padding: 0; }
-.chain-title { font-weight: 650; }
+.chain-title { font-weight: 650; background: transparent; border: 0; color: inherit; padding: 0; cursor: pointer; text-align: left; }
+.chain-block.chain-selected { outline: 2px solid #7eb6ff; }
+.chain-block.is-collapsed { padding-bottom: 4px; }
+.chain-fold { background: transparent; border: 0; color: #9ec0ef; width: 16px; }
+.chain-field { display: inline-flex; align-items: center; gap: 4px; color: #bbb; font-size: 12px; }
+.chain-field input { width: 72px; background: #1b1b1b; color: #eee; border: 1px solid #444; border-radius: 4px; padding: 3px 6px; }
+.chain-field.chain-notes input { width: 160px; }
+.athlete-player { display: block; width: min(420px, 100%); margin: 8px 0; background: #111; color: #fff; border: 0; border-radius: 8px; min-height: 84px; }
+.athlete-player.playing { position: relative; padding-top: 56.25%; }
+.athlete-player.playing iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+.circuit-entry { padding: 8px; }
+.circuit-field { display: flex; gap: 8px; align-items: center; margin: 6px 0; color: #ccc; }
+.circuit-field input { flex: 1; }
 .chain-member { display: flex; gap: 6px; align-items: center; padding: 4px 0; font-size: 13px; }
 .chain-member button { background: transparent; border: 0; color: #9ec0ef; }
 .chain-library { margin-top: 22px; }

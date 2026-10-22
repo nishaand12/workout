@@ -73,6 +73,8 @@ class WorkoutExerciseBase(BaseModel):
     chain_name: Optional[str] = ""
     chain_kind: Optional[str] = ""
     chain_order: Optional[int] = 0
+    chain_coach_open: Optional[bool] = False
+    chain_athlete_open: Optional[bool] = False
 
 class WorkoutExerciseCreate(WorkoutExerciseBase):
     pass
@@ -85,6 +87,9 @@ class WorkoutExerciseResponse(WorkoutExerciseBase):
 
 class ChainMemberInput(BaseModel):
     exercise_id: int
+    sets: Optional[int] = None
+    reps: Optional[str] = None
+    notes: Optional[str] = None
 
 class ChainWrite(BaseModel):
     name: str
@@ -110,8 +115,16 @@ class ChainMemberResponse(BaseModel):
     id: int
     exercise_id: int
     order_index: int
+    sets: Optional[int] = None
+    reps: Optional[str] = None
+    notes: Optional[str] = None
     exercise: ChainMemberExercise
     model_config = ConfigDict(from_attributes=True)
+
+class ChainFoldRequest(BaseModel):
+    chain_instance: str
+    audience: str
+    expanded: bool
 
 class ChainResponse(BaseModel):
     id: int

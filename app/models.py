@@ -199,6 +199,9 @@ class ExerciseChainMember(Base):
     chain_id = Column(Integer, ForeignKey("exercise_chains.id", ondelete="CASCADE"), nullable=False, index=True)
     exercise_id = Column(Integer, ForeignKey("exercises.id", ondelete="CASCADE"), nullable=False, index=True)
     order_index = Column(Integer, default=0, nullable=False)
+    sets = Column(Integer, nullable=True)
+    reps = Column(String(50), nullable=True)
+    notes = Column(Text, nullable=True)
 
     chain = relationship("ExerciseChain", back_populates="members")
     exercise = relationship("Exercise")
@@ -244,6 +247,8 @@ class WorkoutExercise(Base):
     chain_name = Column(String(255), default="")
     chain_kind = Column(String(32), default="")
     chain_order = Column(Integer, default=0)
+    chain_coach_open = Column(Boolean, default=False)
+    chain_athlete_open = Column(Boolean, default=False)
 
     workout = relationship("Workout", back_populates="exercises")
     exercise = relationship("Exercise", back_populates="workout_links")
