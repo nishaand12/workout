@@ -34,7 +34,7 @@ from app.schemas import (
     GymSavedItem, GymItemCreate, GymItemUpdate, HideExerciseRequest,
     CoachAssignRequest, AthleteNoteRequest, ScheduleItem,
     BulkAthleteUploadRequest, BulkAthleteUploadResponse, CalendarScheduleEntry,
-    ChainResponse, ChainWrite, ChainEditRequest, ChainEditResponse,
+    ChainResponse, ChainWrite, ChainEditRequest, ChainEditResponse, ChainFoldRequest,
 )
 from app import crud
 
@@ -151,6 +151,24 @@ def ensure_schema_migrations():
         for name, ddl in chain_columns:
             if name not in wecols:
                 statements.append(f"ALTER TABLE workout_exercises ADD COLUMN {name} {ddl}")
+        fold_columns = (
+            ("chain_coach_open", "BOOLEAN DEFAULT FALSE"),
+            ("chain_athlete_open", "BOOLEAN DEFAULT FALSE"),
+        )
+        for name, ddl in fold_columns:
+            if name not in wecols:
+                statements.append(f"ALTER TABLE workout_exercises ADD COLUMN {name} {ddl}")
+
+    if "exercise_chain_members" in tables:
+        mcols = {c["name"] for c in inspector.get_columns("exercise_chain_members")}
+        member_columns = (
+            ("sets", "INTEGER"),
+            ("reps", "VARCHAR(50)"),
+            ("notes", "TEXT"),
+        )
+        for name, ddl in member_columns:
+            if name not in mcols:
+                statements.append(f"ALTER TABLE exercise_chain_members ADD COLUMN {name} {ddl}")
 
     if "personal_records" in tables:
         cols = {c["name"] for c in inspector.get_columns("personal_records")}
@@ -309,6 +327,28 @@ def create_chain(chain_in: ChainWrite, db: Session = Depends(get_db)):
 @app.post("/api/chains/{chain_id}/edit", response_model=ChainEditResponse)
 def edit_chain(chain_id: int, req: ChainEditRequest, db: Session = Depends(get_db)):
     return crud.edit_chain(db, chain_id, req)
+
+@app.post("/api/workouts/{workout_id}/chain-fold", response_model=WorkoutDetailResponse)
+def set_chain_fold(
+    workout_id: int,
+    req: ChainFoldRequest,
+    db: Session = Depends(get_db),
+    viewer: Optional[crud.User] = Depends(get_current_user),
+):
+    workout = crud.get_workout(db, workout_id)
+    if not workout:
+        raise HTTPException(status_code=404, detail="Workout not found")
+    if viewer is not None and not _workout_visible(db, viewer, workout):
+        raise HTTPException(status_code=403, detail="That workout is not visible to you.")
+    audience = (req.audience or "").strip().lower()
+    if viewer is not None and not _staff(viewer):
+        audience = "athlete"
+    if audience not in ("coach", "athlete"):
+        raise HTTPException(status_code=400, detail="Choose the coach or the athlete view")
+    updated = crud.set_chain_fold(db, workout_id, req.chain_instance, audience, bool(req.expanded))
+    if not updated:
+        raise HTTPException(status_code=404, detail="That chain is not on this day")
+    return updated
 
 # Workout Endpoints
 def _workout_visible(db: Session, viewer: Optional[crud.User], workout) -> bool:

@@ -1,9 +1,10 @@
 /* Build day order: drag landing and A/B/C letter placement.
-   A drop keeps the landing index. It changes a letter only when the
-   neighbors share one, or when they are different letters (join the one above).
-   The end of the day and the slot before the first exercise keep the letter.
+   A drop keeps the landing index and the dragged exercise's letter.
+   The end of the day and the slot before the first exercise assign no letter.
    Choosing a letter from the menu moves that exercise to the bottom of the
-   group. Clearing it moves the exercise to the top. Neither re-sorts the rest. */
+   group. Clearing it moves the exercise to the top. Neither re-sorts the rest.
+   A chain shares one letter. Assigning it moves the whole block to the bottom
+   of that group. Clearing a chain letter does not move the block. */
 
 function takesLandingLetter(it) {
   return !!it && it.type !== "break" && it.type !== "rest" && it.type !== "video";
@@ -15,21 +16,13 @@ function indexBefore(items, beforeId) {
   return found < 0 ? items.length : found;
 }
 
-function letterForLanding(items, index) {
-  if (!items || index <= 0 || index >= items.length) return null;
-  const above = items[index - 1] && items[index - 1].letter;
-  const below = items[index] && items[index].letter;
-  if (!above || !below) return null;
-  return above;
+function letterForLanding() {
+  return null;
 }
 
 function insertAtLanding(items, moving, beforeId) {
   const next = (items || []).slice();
   const idx = indexBefore(next, beforeId);
-  const letter = letterForLanding(next, idx);
-  (moving || []).forEach((it) => {
-    if (letter && takesLandingLetter(it)) it.letter = letter;
-  });
   next.splice(idx, 0, ...(moving || []));
   return next;
 }
@@ -63,6 +56,24 @@ function reorderForLetter(items, id, letter) {
   }
   if (last < 0) return items;
   rest.splice(last + 1, 0, it);
+  items.splice(0, items.length, ...rest);
+  return items;
+}
+
+function reorderChainForLetter(items, instance, letter) {
+  if (!instance) return items;
+  const block = (items || []).filter((it) => it && it.chainInstance === instance);
+  if (!block.length) return items;
+  const nextLetter = letter || "";
+  block.forEach((it) => { it.letter = nextLetter; });
+  if (!nextLetter) return items;
+  const rest = items.filter((it) => !it || it.chainInstance !== instance);
+  let last = -1;
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i].letter === nextLetter) last = i;
+  }
+  if (last < 0) return items;
+  rest.splice(last + 1, 0, ...block);
   items.splice(0, items.length, ...rest);
   return items;
 }
@@ -105,6 +116,7 @@ this.letterForLanding = letterForLanding;
 this.insertAtLanding = insertAtLanding;
 this.placeDroppedItems = placeDroppedItems;
 this.reorderForLetter = reorderForLetter;
+this.reorderChainForLetter = reorderChainForLetter;
 this.sortByResetOrder = sortByResetOrder;
 this.nextUnusedLetter = nextUnusedLetter;
 this.letterForNewItem = letterForNewItem;

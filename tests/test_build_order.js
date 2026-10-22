@@ -13,6 +13,7 @@ const {
   insertAtLanding,
   placeDroppedItems,
   reorderForLetter,
+  reorderChainForLetter,
   sortByResetOrder,
   letterForNewItem,
   dragLandingIndex
@@ -44,27 +45,27 @@ assert.strictEqual(landing([], 20), "0:null");
 
 assert.strictEqual(letterForLanding([row("a", "A"), row("b", "B")], 0), null);
 assert.strictEqual(letterForLanding([row("a", "A"), row("b", "B")], 2), null);
-assert.strictEqual(letterForLanding([row("a", "A"), row("b", "A")], 1), "A");
-assert.strictEqual(letterForLanding([row("a", "A"), row("b", "B")], 1), "A");
-assert.strictEqual(letterForLanding([row("a", "B"), row("b", "A")], 1), "B");
+assert.strictEqual(letterForLanding([row("a", "A"), row("b", "A")], 1), null);
+assert.strictEqual(letterForLanding([row("a", "A"), row("b", "B")], 1), null);
+assert.strictEqual(letterForLanding([row("a", "B"), row("b", "A")], 1), null);
 assert.strictEqual(letterForLanding([row("a", "A"), row("b", "")], 1), null);
 assert.strictEqual(letterForLanding([row("a", ""), row("b", "B")], 1), null);
 
-// Between two exercises that share a letter: join that group, stay at that index.
+// Between two exercises that share a letter: keep the dragged letter.
 let shared = placeDroppedItems(
   [row("a1", "A"), row("a2", "A"), row("c1", "C")],
   ["c1"],
   "a2"
 );
-assert.strictEqual(sig(shared), "a1:A c1:A a2:A");
+assert.strictEqual(sig(shared), "a1:A c1:C a2:A");
 
-// Between the last A and the first B: take the letter above, and do not sort the day.
+// Between the last A and the first B: keep the dragged letter, and do not sort the day.
 let boundary = placeDroppedItems(
   [row("a1", "A"), row("a2", "A"), row("b1", "B"), row("c1", "C")],
   ["c1"],
   "b1"
 );
-assert.strictEqual(sig(boundary), "a1:A a2:A c1:A b1:B");
+assert.strictEqual(sig(boundary), "a1:A a2:A c1:C b1:B");
 
 // The letter rule does not sort the rest of a manual drop.
 let unsorted = placeDroppedItems(
@@ -72,7 +73,7 @@ let unsorted = placeDroppedItems(
   ["c1"],
   "b1"
 );
-assert.strictEqual(sig(unsorted), "a1:A c1:A b1:B a2:A");
+assert.strictEqual(sig(unsorted), "a1:A c1:C b1:B a2:A");
 assert.notStrictEqual(sig(unsorted), sig(sortByResetOrder(unsorted.map((it) => Object.assign({}, it)))));
 
 // A drop before the first exercise keeps its letter.
@@ -99,13 +100,13 @@ let besideBlank = placeDroppedItems(
 );
 assert.strictEqual(sig(besideBlank), "a1:A b1:B x:-");
 
-// Several dragged exercises join the shared letter and keep their order.
+// Several dragged exercises keep their own letters and their order.
 let block = placeDroppedItems(
   [row("a1", "A"), row("a2", "A"), row("c1", "C"), row("c2", "D")],
   ["c1", "c2"],
   "a2"
 );
-assert.strictEqual(sig(block), "a1:A c1:A c2:A a2:A");
+assert.strictEqual(sig(block), "a1:A c1:C c2:D a2:A");
 
 // A break dropped between two A's stays a break, not a letter in that group.
 let brk = placeDroppedItems(
@@ -122,7 +123,31 @@ let foreign = insertAtLanding(
   [row("d1", "C")],
   "b1"
 );
-assert.strictEqual(sig(foreign), "a1:A d1:A b1:B");
+assert.strictEqual(sig(foreign), "a1:A d1:C b1:B");
+
+// A chain letter moves the whole block to the bottom of that group.
+let chain = [
+  row("a1", "A"),
+  Object.assign(row("c1", ""), { chainInstance: "warm" }),
+  Object.assign(row("c2", ""), { chainInstance: "warm" }),
+  row("a2", "A"),
+  row("b1", "B")
+];
+reorderChainForLetter(chain, "warm", "A");
+assert.strictEqual(sig(chain), "a1:A a2:A c1:A c2:A b1:B");
+
+// Clearing a chain letter leaves the block where it is.
+reorderChainForLetter(chain, "warm", "");
+assert.strictEqual(sig(chain), "a1:A a2:A c1:- c2:- b1:B");
+
+// A chain letter nobody else has stays put.
+let aloneChain = [
+  row("a1", "A"),
+  Object.assign(row("c1", ""), { chainInstance: "warm" }),
+  Object.assign(row("c2", ""), { chainInstance: "warm" })
+];
+reorderChainForLetter(aloneChain, "warm", "D");
+assert.strictEqual(sig(aloneChain), "a1:A c1:D c2:D");
 
 // Changing a letter moves that exercise to the bottom of the group and leaves the rest put.
 let regroup = [row("c1", "C"), row("a1", "A"), row("b1", "B"), row("a2", "A")];

@@ -106,7 +106,8 @@ assert.equal(day.items[1].exerciseId, day.items[2].exerciseId);
 assert.equal(day.items[1].name, "Squat");
 assert.equal(day.items[0].videoUrl, "https://youtu.be/skip");
 assert.equal(day.items[1].videoUrl, "https://youtu.be/squat");
-assert.notEqual(day.items[0].letter, day.items[1].letter);
+assert.ok(day.items.every((it) => !it.letter));
+assert.ok(day.items.every((it) => it.chainCoachOpen === false && it.chainAthleteOpen === false));
 assert.equal(day.items[3].type, "note");
 assert.equal(day.items[3].sets, 0);
 assert.equal(day.items[3].note, "Read this");
@@ -124,14 +125,18 @@ const html = lib.dayExerciseHtml("2026-10-21", day);
 assert.equal((html.match(/chain-block/g) || []).length, 1);
 assert.ok(html.includes('data-chain-instance="'));
 assert.ok(html.includes("Break apart"));
-assert.ok(/class="chain-block" draggable="true"[^>]*ondragstart="dragStart/.test(html));
-const headAt = html.indexOf("chain-head");
-const nextDrag = html.indexOf('draggable="true" ondragstart="dragStart', headAt);
-const memberHtml = html.slice(headAt, nextDrag);
+assert.ok(html.includes("Ramp"));
+assert.ok(!html.slice(html.indexOf("chain-block"), html.indexOf("Station Circuit")).includes("Skip"));
+assert.ok(/class="chain-block[^"]*" draggable="true"[^>]*ondragstart="dragStart/.test(html));
+day.items.forEach((it) => { if (it.chainInstance) it.chainCoachOpen = true; });
+const openHtml = lib.dayExerciseHtml("2026-10-21", day);
+const headAt = openHtml.indexOf("chain-head");
+const nextDrag = openHtml.indexOf('draggable="true" ondragstart="dragStart', headAt + 1);
+const memberHtml = openHtml.slice(headAt, nextDrag < 0 ? openHtml.length : nextDrag);
 assert.ok(memberHtml.includes("Skip"));
 assert.ok(!memberHtml.includes("ondragstart"));
-assert.ok(html.indexOf("chain-block") < html.indexOf("Station Circuit"));
-assert.ok(html.slice(html.indexOf("chain-block"), html.indexOf("Station Circuit")).includes("Ramp"));
+assert.ok(openHtml.indexOf("chain-block") < openHtml.indexOf("Station Circuit"));
+day.items.forEach((it) => { if (it.chainInstance) it.chainCoachOpen = false; });
 
 const noteCard = lib.previewSheet(day.items[3], {});
 assert.ok(noteCard.includes("Read this"));
@@ -183,16 +188,18 @@ assert.deepEqual(lib.dragIdsForChain([loose].concat(members), [loose.id]), [loos
 
 const above = lib.item({ name: "Press", letter: "A", type: "lift" });
 const below = lib.item({ name: "Row", letter: "A", type: "lift" });
-const shared = sandbox.placeDroppedItems([above, below].concat(cloneRows(members)), memberIds, below.id);
+const lettered = cloneRows(members);
+lettered.forEach((it) => { it.letter = "C"; });
+const shared = sandbox.placeDroppedItems([above, below].concat(lettered), memberIds, below.id);
 assert.equal(shared[0].name, "Press");
 assert.deepEqual(shared.slice(1, 5).map((it) => it.name), members.map((it) => it.name));
-assert.ok(shared.slice(1, 5).every((it) => it.letter === "A" && it.chainInstance === members[0].chainInstance));
+assert.ok(shared.slice(1, 5).every((it) => it.letter === "C" && it.chainInstance === members[0].chainInstance));
 assert.equal(shared[5].name, "Row");
 
 const boundaryAbove = lib.item({ name: "Press", letter: "A", type: "lift" });
 const boundaryBelow = lib.item({ name: "Row", letter: "B", type: "lift" });
-const boundary = sandbox.placeDroppedItems([boundaryAbove, boundaryBelow].concat(cloneRows(members)), memberIds, boundaryBelow.id);
-assert.deepEqual(boundary.slice(1, 5).map((it) => it.letter), ["A", "A", "A", "A"]);
+const boundary = sandbox.placeDroppedItems([boundaryAbove, boundaryBelow].concat(cloneRows(lettered)), memberIds, boundaryBelow.id);
+assert.deepEqual(boundary.slice(1, 5).map((it) => it.letter), ["C", "C", "C", "C"]);
 assert.equal(boundary[5].letter, "B");
 assert.ok(boundary.slice(1, 5).every((it) => it.chainInstance === members[0].chainInstance));
 
@@ -206,9 +213,11 @@ const atEnd = sandbox.placeDroppedItems([tail].concat(cloneRows(members)), membe
 assert.deepEqual(atEnd.slice(1).map((it) => it.letter), members.map((it) => it.letter));
 assert.ok(atEnd.slice(1).every((it) => it.chainInstance));
 
+chainDay.items.forEach((it) => { if (it.chainInstance) it.letter = "B"; });
 lib.breakChain("2026-10-23", members[0].chainInstance);
 const apart = lib.ensureDay("2026-10-23");
 assert.ok(apart.items.every((it) => !it.chainInstance && !it.chainId));
+assert.ok(apart.items.every((it) => it.letter === "B"));
 assert.equal(state.chains[0].name, "Ramp");
 assert.deepEqual(lib.dragIdsForChain(apart.items, [apart.items[1].id]), [apart.items[1].id]);
 
