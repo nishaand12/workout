@@ -59,7 +59,8 @@ globalThis.__lib = {
   toggleItem, selectExercise, selectChain, selectDay, copySelection, pasteOn, undo,
   clipHotMatches, openCopy, openEditor, discardEditor, saveEditor, dismissEditorName,
   snapshot, entryColumns, setIsComplete, logCell, logCircuitField, entryItem,
-  playAthleteVideo, mediaKind, athletePlayerHtml, applyBuildParams, writeBuildQuery
+  playAthleteVideo, mediaKind, athletePlayerHtml, applyBuildParams, writeBuildQuery,
+  ensureBuildWindow, extendBuildWindow, loadEarlierWeeks, onBuildScroll, sundayOf, addDays, APP_TODAY, shiftWeek, buildView
 };
 `,
   sandbox,
@@ -68,7 +69,7 @@ globalThis.__lib = {
 
 const lib = sandbox.__lib;
 const state = lib.state;
-["addChainToDay", "ensureDay", "dayExerciseHtml", "chainEntryHtml", "dayCol", "item", "toggleItem", "selectExercise", "selectChain", "selectDay", "copySelection", "pasteOn", "undo", "clipHotMatches", "openCopy", "openEditor", "discardEditor", "saveEditor", "dismissEditorName", "snapshot", "entryColumns", "setIsComplete", "logCell", "logCircuitField", "entryItem", "playAthleteVideo", "mediaKind", "athletePlayerHtml", "applyBuildParams", "writeBuildQuery"].forEach((name) => {
+["addChainToDay", "ensureDay", "dayExerciseHtml", "chainEntryHtml", "dayCol", "item", "toggleItem", "selectExercise", "selectChain", "selectDay", "copySelection", "pasteOn", "undo", "clipHotMatches", "openCopy", "openEditor", "discardEditor", "saveEditor", "dismissEditorName", "snapshot", "entryColumns", "setIsComplete", "logCell", "logCircuitField", "entryItem", "playAthleteVideo", "mediaKind", "athletePlayerHtml", "applyBuildParams", "writeBuildQuery", "ensureBuildWindow", "extendBuildWindow", "loadEarlierWeeks", "onBuildScroll", "sundayOf", "addDays", "APP_TODAY", "shiftWeek", "buildView"].forEach((name) => {
   sandbox[name] = lib[name];
 });
 state.athleteId = "ath";
@@ -340,5 +341,83 @@ state.role = "athlete";
 written = "";
 sandbox.writeBuildQuery();
 assert.equal(written, "");
+
+const todayWeek = sandbox.sundayOf(sandbox.APP_TODAY);
+const earlierWeek = sandbox.addDays(todayWeek, -7);
+const laterWeek = sandbox.addDays(todayWeek, 7);
+const pastQuery = sandbox.applyBuildParams("?week=" + earlierWeek + "&athlete=u7&cal=week", "coach");
+assert.equal(pastQuery.next.weekStart, undefined);
+assert.equal(pastQuery.next.athleteId, "u7");
+assert.equal(pastQuery.next.viewMode, "week");
+const futureQuery = sandbox.applyBuildParams("?week=" + laterWeek + "&cal=month", "coach");
+assert.equal(futureQuery.next.weekStart, laterWeek);
+const stayed = sandbox.extendBuildWindow(todayWeek, 8, earlierWeek);
+assert.equal(stayed.origin, todayWeek);
+assert.equal(stayed.count, 8);
+const grew = sandbox.extendBuildWindow(todayWeek, 8, sandbox.addDays(todayWeek, 70));
+assert.equal(grew.origin, todayWeek);
+assert.ok(grew.count > 8);
+
+state.view = "build";
+state.role = "coach";
+state.weekStart = todayWeek;
+state.buildOrigin = null;
+state.buildWeekCount = 0;
+state.buildJumpWeek = "";
+sandbox.ensureBuildWindow();
+assert.equal(state.buildOrigin, todayWeek);
+assert.equal(state.buildWeekCount, 8);
+assert.equal(state.buildJumpWeek, "");
+state.weekStart = laterWeek;
+state.buildOrigin = null;
+state.buildWeekCount = 0;
+sandbox.ensureBuildWindow();
+assert.equal(state.buildOrigin, todayWeek);
+assert.ok(sandbox.addDays(state.buildOrigin, (state.buildWeekCount - 1) * 7) >= laterWeek);
+const html = sandbox.buildView();
+assert.ok(html.includes("Load Earlier"));
+assert.ok(html.includes('data-week="' + todayWeek + '"'));
+assert.ok(!html.includes('data-week="' + earlierWeek + '"'));
+assert.ok(html.includes(">Month<") || html.includes("Month"));
+assert.ok(html.includes("Week"));
+
+const originBeforeScroll = state.buildOrigin;
+const countBeforeScroll = state.buildWeekCount;
+sandbox.onBuildScroll({
+  scrollTop: 0,
+  scrollHeight: 5000,
+  clientHeight: 600,
+  getBoundingClientRect() { return { top: 0 }; },
+  querySelectorAll() { return []; }
+});
+assert.equal(state.buildOrigin, originBeforeScroll);
+assert.equal(state.buildWeekCount, countBeforeScroll);
+sandbox.onBuildScroll({
+  scrollTop: 4200,
+  scrollHeight: 5000,
+  clientHeight: 600,
+  getBoundingClientRect() { return { top: 0 }; },
+  querySelectorAll() { return []; }
+});
+assert.equal(state.buildOrigin, originBeforeScroll);
+assert.equal(state.buildWeekCount, countBeforeScroll + 4);
+
+state.weekStart = todayWeek;
+sandbox.shiftWeek(-1);
+assert.equal(state.weekStart, todayWeek);
+sandbox.loadEarlierWeeks();
+assert.equal(state.buildOrigin, sandbox.addDays(todayWeek, -28));
+assert.equal(state.buildWeekCount, countBeforeScroll + 8);
+sandbox.loadEarlierWeeks();
+assert.equal(state.buildOrigin, sandbox.addDays(todayWeek, -56));
+assert.equal(state.buildWeekCount, countBeforeScroll + 12);
+assert.equal(state.weekStart, todayWeek);
+sandbox.shiftWeek(-1);
+assert.equal(state.weekStart, earlierWeek);
+state.role = "athlete";
+state.view = "mine";
+state.weekStart = todayWeek;
+sandbox.shiftWeek(-1);
+assert.equal(state.weekStart, earlierWeek);
 
 console.log("round 3 ui tests passed");
