@@ -98,6 +98,12 @@ button { cursor: pointer; }
 .today-pill { background: #2a2a2a; }
 
 .cal-scroll { overflow: auto; padding: 8px 8px 24px; flex: 1; }
+.load-earlier {
+  display: block; width: 100%; margin: 0 0 10px; background: transparent;
+  border: 1px solid #3a3a3a; color: #ddd; border-radius: 6px; padding: 8px 10px;
+  font-size: 13px; cursor: pointer;
+}
+.load-earlier:hover { background: #2a2a2a; }
 .build-cal.mode-week .week { min-height: calc(100% - 4px); }
 .build-cal.mode-month .day { min-height: 220px; }
 .week { display: grid; grid-template-columns: repeat(7, minmax(168px, 1fr)); gap: 8px; margin-bottom: 14px; }

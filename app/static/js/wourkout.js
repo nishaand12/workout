@@ -1537,30 +1537,36 @@ function body() {
 }
 
 function ensureBuildWindow() {
+  const todayWeek = sundayOf(APP_TODAY);
   const first = !state.buildOrigin;
   if (first) {
-    state.buildOrigin = addDays(state.weekStart, -28);
-    state.buildWeekCount = 12;
-    state.buildJumpWeek = state.weekStart;
+    if (state.weekStart < todayWeek) state.weekStart = todayWeek;
+    state.buildOrigin = todayWeek;
+    state.buildWeekCount = 8;
+    if (state.weekStart !== todayWeek) state.buildJumpWeek = state.weekStart;
   }
   const fitted = extendBuildWindow(state.buildOrigin, state.buildWeekCount, state.weekStart);
   state.buildOrigin = fitted.origin;
   state.buildWeekCount = fitted.count;
 }
 function extendBuildWindow(origin, count, weekStart) {
-  let start = origin;
+  const start = origin;
   let total = count || 1;
-  if (weekStart < start) {
-    const extra = Math.max(1, Math.round((new Date(start + "T12:00:00") - new Date(weekStart + "T12:00:00")) / (7 * 86400000)));
-    start = addDays(start, -extra * 7);
-    total += extra;
-  }
   const end = addDays(start, (total - 1) * 7);
   if (weekStart > end) {
     const extra = Math.max(1, Math.round((new Date(weekStart + "T12:00:00") - new Date(end + "T12:00:00")) / (7 * 86400000)));
     total += extra;
   }
   return { origin: start, count: total };
+}
+function loadEarlierWeeks() {
+  ensureBuildWindow();
+  if (state.buildWeekCount > 80) return;
+  const el = document.querySelector(".build-cal");
+  if (el) state.buildPrepend = { prevHeight: el.scrollHeight, prevTop: el.scrollTop };
+  state.buildOrigin = addDays(state.buildOrigin, -28);
+  state.buildWeekCount += 4;
+  render();
 }
 function buildWeekStarts(origin, count) {
   const out = [];
@@ -1586,17 +1592,10 @@ function onBuildScroll(el) {
     writeBuildQuery();
   }
   if (state.buildWeekCount > 80) return;
-  const nearTop = el.scrollTop < 180;
   const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 280;
-  if (!nearTop && !nearBottom) return;
+  if (!nearBottom) return;
   onBuildScroll.locking = true;
-  if (nearTop) {
-    state.buildPrepend = { prevHeight: el.scrollHeight, prevTop: el.scrollTop };
-    state.buildOrigin = addDays(state.buildOrigin, -28);
-    state.buildWeekCount += 4;
-  } else {
-    state.buildWeekCount += 4;
-  }
+  state.buildWeekCount += 4;
   render();
   setTimeout(() => { onBuildScroll.locking = false; }, 80);
 }
@@ -1635,7 +1634,10 @@ function applyBuildParams(search, role) {
   if (role === "athlete") return { applied: false };
   const query = readBuildParams(search);
   const next = {};
-  if (/^\d{4}-\d{2}-\d{2}$/.test(query.week)) next.weekStart = sundayOf(query.week);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(query.week)) {
+    const week = sundayOf(query.week);
+    if (week >= sundayOf(APP_TODAY)) next.weekStart = week;
+  }
   if (query.cal === "week" || query.cal === "month") next.viewMode = query.cal;
   if (query.athlete && buildAthletes().some((a) => a.id === query.athlete)) next.athleteId = query.athlete;
   return { applied: !!(next.weekStart || next.viewMode || next.athleteId), next };
@@ -1712,7 +1714,7 @@ function buildView() {
           </select>
         </div>
       </div>
-      <div class="cal-scroll build-cal ${state.viewMode === "week" ? "mode-week" : "mode-month"}" onscroll="onBuildScroll(this)">${weeksHtml}</div>
+      <div class="cal-scroll build-cal ${state.viewMode === "week" ? "mode-week" : "mode-month"}" onscroll="onBuildScroll(this)"><button type="button" class="load-earlier" onclick="loadEarlierWeeks()">Load Earlier</button>${weeksHtml}</div>
       ${floatingEditor}
     </section>`;
 }
@@ -1846,8 +1848,11 @@ function switchAthlete(id) {
   loadCalendarSchedule(id);
 }
 function shiftWeek(n) {
-  state.weekStart = addDays(state.weekStart, n * 7);
-  if (state.view === "build" && state.role !== "athlete") {
+  const next = addDays(state.weekStart, n * 7);
+  const build = state.view === "build" && state.role !== "athlete";
+  if (build && state.buildOrigin && next < state.buildOrigin) return;
+  state.weekStart = next;
+  if (build) {
     ensureBuildWindow();
     state.buildJumpWeek = state.weekStart;
     writeBuildQuery();
@@ -6897,6 +6902,7 @@ window.closeEdit = closeEdit;
 window.setEditField = setEditField;
 window.switchAthlete = switchAthlete;
 window.shiftWeek = shiftWeek;
+window.loadEarlierWeeks = loadEarlierWeeks;
 window.jumpToday = jumpToday;
 window.undo = undo;
 window.openSearch = openSearch;
