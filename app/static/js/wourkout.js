@@ -326,6 +326,8 @@ const state = {
   chains: [],
   serverRecords: [],
   personalBests: [],
+  buildPanel: null,
+  panelBests: {},
   toolForm: {},
   recurPick: 4,
   evals: [],
@@ -584,7 +586,7 @@ function render() {
   const toastHtml = state.toast ? `<div class="toast">${esc(state.toast)}</div>` : "";
   const pending = state.pendingFocus;
   if (pending) state.pendingFocus = "";
-  root.innerHTML = nav() + '<div class="shell">' + body() + rightRail() + "</div>" + toastHtml + modalHtml() + fabHtml();
+  root.innerHTML = nav() + '<div class="shell">' + body() + "</div>" + toastHtml + modalHtml() + fabHtml();
   placeSearchPop();
   placeEditorPop();
   const focusKey = pending || focusId;
@@ -1596,25 +1598,145 @@ function goTool(view) {
   if (view === "whiteboard" && state.boardAthlete) loadCalendarSchedule(state.boardAthlete);
 }
 
-function rightRail() {
-  if (state.role === "athlete" || state.role === "admin" || state.view === "squad" || state.view === "admin") return "";
-  const btn = (view, icon, title) => `<button title="${title}" class="${state.view === view ? "on" : ""}" onclick="goTool('${view}')">${icon}</button>`;
-  return `<aside class="rail right">
-    ${btn("build", "▦", "Calendar")}
-    ${btn("entry", "☰", "Workout entry")}
-    ${btn("feed", "✎", "Feed")}
-    ${btn("users", "☺", "Users")}
-    <div style="flex:1"></div>
-    ${fabSuppressed() ? "" : `<button title="Add" onclick="onFab()">＋</button>`}
-  </aside>`;
-}
+const BUILD_PANELS = [
+  ["library", "▤", "Exercise library"],
+  ["prs", "★", "PRs & goals"],
+  ["history", "↺", "Action history"]
+];
 function leftRail() {
   return `<aside class="rail">
-    <button title="Collections" class="${state.sidebar ? "on" : ""}" onclick="state.sidebar=!state.sidebar;render()">☰</button>
-    <button title="Program Library" onclick="goTool('exercises')">▤</button>
-    <button title="Preview" class="${state.preview ? "on" : ""}" onclick="togglePreview()">▢</button>
-    <button title="Action History" onclick="state.sidebar=true;state.historyOpen=true;render()">↺</button>
+    ${BUILD_PANELS.map(([key, icon, title]) => `<button type="button" title="${title}" aria-label="${title}" aria-pressed="${state.buildPanel === key ? "true" : "false"}" class="${state.buildPanel === key ? "on" : ""}" onclick="toggleBuildPanel('${key}')">${icon}</button>`).join("")}
   </aside>`;
+}
+function toggleBuildPanel(key) {
+  state.buildPanel = state.buildPanel === key ? null : key;
+  state.panelQ = "";
+  if (state.buildPanel) state.preview = null;
+  if (state.buildPanel === "library" && !state.serverExercises.length) loadExercises();
+  render();
+}
+function buildPanelHtml() {
+  const panel = BUILD_PANELS.find((row) => row[0] === state.buildPanel);
+  if (!panel) return "";
+  let inner = "";
+  if (panel[0] === "library") inner = libraryPanelHtml();
+  else if (panel[0] === "prs") inner = prsPanelHtml();
+  else inner = historyPanelHtml();
+  return `<aside class="build-panel" aria-label="${panel[2]}">
+    <div class="bp-head"><strong>${panel[2]}</strong><button type="button" class="iconbtn" aria-label="Close panel" onclick="toggleBuildPanel('${panel[0]}')">✕</button></div>
+    ${inner}
+  </aside>`;
+}
+function libraryPanelHtml() {
+  const q = (state.panelQ || "").trim().toLowerCase();
+  const cat = state.panelCat || "All";
+  const date = state.focusDay || APP_TODAY;
+  const rows = (state.serverExercises || []).filter((e) => !e.hidden
+    && (cat === "All" || canonicalCategory(e.category || "Strength") === cat)
+    && (!q || e.name.toLowerCase().includes(q)));
+  const chains = cat === "All" ? (state.chains || []).filter((c) => !q || c.name.toLowerCase().includes(q)) : [];
+  const exRows = rows.slice(0, 120).map((e) => {
+    const open = state.panelOpen === e.id;
+    const defaults = exerciseDefaultsText(e);
+    const facts = [
+      ["Defaults", defaults],
+      ["Load", e.default_load], ["Rest", e.default_rest], ["Tempo", e.default_tempo]
+    ].filter((f) => f[1]).map((f) => `<div><span>${f[0]}</span>${esc(f[1])}</div>`).join("");
+    return `<div class="bp-row${open ? " open" : ""}">
+      <button type="button" class="bp-main" onclick="state.panelOpen=state.panelOpen===${e.id}?null:${e.id};render()">
+        <b>${esc(e.name)}</b><small>${esc(categoryLabel(e.category))}${defaults ? " · " + esc(defaults) : ""}${e.completion_only ? " · Completion only" : ""}</small>
+      </button>
+      <button type="button" class="bp-add" title="Add to ${esc(fmtDay(date))}" aria-label="Add ${esc(e.name)} to ${esc(fmtDay(date))}" onclick="addLibraryExercise(${e.id})">＋</button>
+      ${open ? `<div class="bp-detail">${facts}${e.default_notes ? `<p>${esc(e.default_notes)}</p>` : ""}${e.video_url ? `<a href="${esc(e.video_url)}" target="_blank" rel="noopener">▶ Watch video</a>` : ""}<button type="button" class="ghost" onclick="editExercise(${e.id})">Edit in library</button></div>` : ""}
+    </div>`;
+  }).join("");
+  const chainRows = chains.map((c) => `<div class="bp-row">
+      <div class="bp-main"><b><span class="chain-mark">Chain</span> ${esc(c.name)}</b><small>${esc(c.kind || "")} · ${(c.members || []).length} exercises</small></div>
+      <button type="button" class="bp-add" title="Add to ${esc(fmtDay(date))}" aria-label="Add ${esc(c.name)} to ${esc(fmtDay(date))}" onclick="addChainToDay('${date}', ${c.id})">＋</button>
+    </div>`).join("");
+  return `<div class="bp-tools">
+      <input type="search" placeholder="Search exercises" aria-label="Search exercise library" data-focus="panel-q" value="${esc(state.panelQ || "")}" oninput="state.panelQ=this.value;render()">
+      <select aria-label="Library category" onchange="state.panelCat=this.value;render()">${["All"].concat(EXERCISE_CATEGORIES).map((c) => `<option ${c === cat ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>
+      <div class="bp-note">＋ adds to <b>${esc(fmtDay(date))}</b>. Click a day to change it.</div>
+    </div>
+    <div class="bp-scroll">${chainRows}${exRows || `<div class="bp-empty">${state.serverExercises.length ? "No matches." : "Loading library…"}</div>`}</div>`;
+}
+function addLibraryExercise(id) {
+  const rec = (state.serverExercises || []).find((e) => e.id === id);
+  if (!rec) return;
+  const date = state.focusDay || APP_TODAY;
+  const index = CATALOG.findIndex((c) => c.name === rec.name);
+  if (index >= 0) addFromCatalog(date, index);
+  else addItem(date, fromCatalog({ name: rec.name, type: catalogType({ name: rec.name }) }));
+  toast("Added " + rec.name + " to " + fmtDay(date));
+}
+// Athletes the PR panel covers: the athlete, or everyone in the group.
+function panelPeople() {
+  const target = athlete();
+  if (!target || target.id === "none") return [];
+  if (target.isGroup) return ATHLETES.filter((a) => a.team_id === target.groupId && a.serverId).map((a) => a.serverId);
+  return target.serverId ? [target.serverId] : [];
+}
+function queuePanelBests() {
+  const target = athlete();
+  const key = target ? target.id : "";
+  if (!key || state.panelBests.key === key) return;
+  state.panelBests = { key, loading: true, bests: [], goals: [] };
+  const single = !target.isGroup && target.serverId;
+  const query = single ? "?user_id=" + target.serverId : "";
+  Promise.all([api("GET", "/api/personal-bests" + query), api("GET", "/api/records" + query)])
+    .then(([bests, goals]) => {
+      if (state.panelBests.key !== key) return;
+      state.panelBests = { key, loading: false, bests: bests || [], goals: goals || [] };
+      renderSoon();
+    })
+    .catch((err) => {
+      console.error(err);
+      if (state.panelBests.key === key) state.panelBests = { key, loading: false, bests: [], goals: [], error: true };
+      renderSoon();
+    });
+}
+function prsPanelHtml() {
+  queuePanelBests();
+  const target = athlete();
+  const pb = state.panelBests;
+  if (!target || target.id === "none") return `<div class="bp-empty">Pick an athlete or group to see PRs.</div>`;
+  if (pb.loading) return `<div class="bp-empty">Loading…</div>`;
+  if (pb.error) return `<div class="bp-empty">Could not load PRs.</div>`;
+  const people = new Set(panelPeople());
+  const saved = { bests: state.personalBests, goals: state.serverRecords };
+  state.personalBests = pb.bests.filter((r) => people.has(r.user_id));
+  state.serverRecords = pb.goals.filter((r) => people.has(r.user_id));
+  const rows = prGoalRows();
+  state.personalBests = saved.bests;
+  state.serverRecords = saved.goals;
+  const q = (state.panelQ || "").trim().toLowerCase();
+  const shown = rows.filter((r) => !q || r.lift.toLowerCase().includes(q) || String(r.userName || "").toLowerCase().includes(q));
+  const many = people.size > 1;
+  let lastUser = null;
+  const body = shown.map((r) => {
+    const header = many && r.userId !== lastUser ? `<div class="bp-group">${esc(r.userName || "")}</div>` : "";
+    lastUser = r.userId;
+    const best = r.best ? `${fmtLoad(r.best.weight)} ${esc(r.unit)}${r.best.reps ? " × " + fmtLoad(r.best.reps) : ""}` : "—";
+    let goal = "";
+    if (r.goal && r.goal.weight > 0) {
+      const pct = r.best ? Math.min(100, Math.round(r.best.weight / r.goal.weight * 100)) : 0;
+      goal = `<div class="bp-goal"><span>Goal ${fmtLoad(r.goal.weight)} ${esc(r.unit)}</span><span class="bp-bar${pct >= 100 ? " hit" : ""}"><i style="width:${pct}%"></i></span><span>${pct}%</span></div>`;
+    }
+    return `${header}<div class="bp-row"><div class="bp-main"><b>${esc(r.lift)}</b><small>${r.best && r.best.date ? esc(fmtShortDate(r.best.date)) : "Not logged yet"}</small>${goal}</div><div class="bp-best">${best}</div></div>`;
+  }).join("");
+  return `<div class="bp-tools">
+      <input type="search" placeholder="Search lifts" aria-label="Search PRs" data-focus="panel-q" value="${esc(state.panelQ || "")}" oninput="state.panelQ=this.value;render()">
+      <div class="bp-note">${many ? "Everyone in " + esc(target.name) : esc(target.name)}. Best logged set per lift.</div>
+    </div>
+    <div class="bp-scroll">${body || `<div class="bp-empty">${rows.length ? "No matches." : "No PRs or goals yet."}</div>`}</div>
+    <div class="bp-foot"><button type="button" class="ghost" onclick="goTool('goals')">Open Goals &amp; PRs →</button></div>`;
+}
+function historyPanelHtml() {
+  const rows = state.history.map((h) => `<div class="bp-hist"><span>${esc(h.t)}</span>${esc(h.text)}</div>`).join("");
+  return `<div class="bp-tools"><button type="button" class="ghost" ${state.undo.length ? "" : "disabled"} onclick="undo()">↺ Undo last change</button>
+      <div class="bp-note">${state.undo.length} change${state.undo.length === 1 ? "" : "s"} can be undone.</div></div>
+    <div class="bp-scroll">${rows || `<div class="bp-empty">No actions yet.</div>`}</div>`;
 }
 
 function body() {
@@ -1808,7 +1930,7 @@ function buildView() {
   const currentTarget = athlete();
   const saveLabel = currentTarget.isGroup ? "Save for group" : "Save for athlete";
   const floatingEditor = state.editor ? editorPop(state.editor.day) : "";
-  return leftRail() + (state.sidebar ? sidebarHtml() : "") + (state.preview ? previewHtml() : "") +
+  return leftRail() + buildPanelHtml() + (state.preview ? previewHtml() : "") +
     `<section class="stage">
       <div class="subhead">
         <div>
@@ -3460,6 +3582,15 @@ async function logAthleteSet(weId, setNumber, field, value, extra) {
       if (kind) details.intensityKind = kind;
     }
   }
+  if (extra && extra.fill) {
+    Object.keys(extra.fill).forEach((key) => {
+      const v = extra.fill[key];
+      if (key === "weight") current.weight = v;
+      else if (key === "reps") current.reps = v;
+      else if (key === "rest") current.rest_seconds = v;
+      else { details[key] = v; detailsChanged = true; }
+    });
+  }
   if (extra && extra.athlete) {
     details.athlete = extra.athlete;
     detailsChanged = true;
@@ -3476,7 +3607,7 @@ async function logAthleteSet(weId, setNumber, field, value, extra) {
   params.set("details", current.details || JSON.stringify(details));
   const saved = await api("POST", "/api/sessions/" + state.openSession.id + "/sets?" + params.toString());
   state.openSession.set_logs = logs.filter((l) => !(l.workout_exercise_id === weId && l.set_number === setNumber)).concat([saved]);
-  if (field === "weight" || field === "reps") state.entryBestsFor = null;
+  if (field === "weight" || field === "reps" || (extra && extra.fill && Object.keys(extra.fill).length)) state.entryBestsFor = null;
   render();
 }
 function savedDay(date) {
@@ -4237,7 +4368,7 @@ function openPreview(date, index) {
     playing: false
   };
   state.dayMenu = null;
-  state.sidebar = false;
+  state.buildPanel = null;
   state.focusDay = date;
   render();
 }
@@ -4449,22 +4580,6 @@ function completeItem(date, id) {
   state.logs[key] = { done: true, sets: it.sets, reps: it.reps.slice(), loads: it.loads.slice() };
   toast("Completed " + it.name);
   render();
-}
-
-function sidebarHtml() {
-  const recent = [];
-  Object.values(cal()).forEach((day) => day.items.forEach((it) => {
-    if (!recent.some((r) => r.name === it.name)) recent.push(it);
-  }));
-  return `<aside class="sidebar">
-    <div class="crumbs">Collections / ${esc(athlete().name)}</div>
-    <select class="ghost" style="width:100%" onchange="switchAthlete(this.value)">${buildAthletes().map((a) => `<option value="${esc(a.id)}" ${a.id === state.athleteId ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select>
-    <h4>Saved on this calendar</h4>
-    ${recent.slice(0, 8).map((it) => `<button class="side-item" onclick="goTool('entry');state.entryAthlete=state.athleteId;render()">${esc(it.name)}<small>${esc(scriptLine(it))}</small></button>`).join("")}
-    ${state.historyOpen ? `<h4>Action history</h4>${state.history.map((h) => `<div class="history">${esc(h.t)} ${esc(h.text)}</div>`).join("") || '<div class="hint">No actions yet</div>'}` : ""}
-    <div style="flex:1"></div>
-    <button class="ghost" onclick="goTool('entry');state.entryAthlete=state.athleteId">View in Workout Entry →</button>
-  </aside>`;
 }
 
 function undo() {
@@ -4937,17 +5052,30 @@ function logCell(key, i, field, value, date, itemId, weId) {
     log.cells[i].entered[field] = value;
     log.cells[i][field] = value;
   }
-  const ticked = field === "done" ? !!value : log.cells[i].done;
-  log.cells[i].done = !!(it && cellDone(it, log.cells[i].entered, ticked));
   const map = {
     w: "weight", r: "reps", rest: "rest", tempo: "tempo", velocity: "velocity",
     power: "power", pct: "pct", restRep: "restRep", distance: "distance", intensity: "intensity"
   };
+  // Ticking Done keeps what the boxes show, so prefilled reps and weight are saved too.
+  const fill = {};
+  if (field === "done" && value && it) {
+    entryColumns(it).forEach(([col]) => {
+      if (Object.prototype.hasOwnProperty.call(log.cells[i].entered, col)) return;
+      const shown = prescribedEntry(it, col, i);
+      if (shown == null || String(shown).trim() === "") return;
+      log.cells[i].entered[col] = shown;
+      log.cells[i][col] = shown;
+      fill[map[col]] = shown;
+    });
+  }
+  const ticked = field === "done" ? !!value : log.cells[i].done;
+  log.cells[i].done = !!(it && cellDone(it, log.cells[i].entered, ticked));
   if (weId && state.openSession && (state.role === "athlete" || state.coachSessionFor)) {
     const apiField = field === "done" ? "completed" : map[field];
     logAthleteSet(weId, i + 1, apiField || "", field === "done" ? log.cells[i].done : log.cells[i][field], {
       athlete: log.cells[i].entered,
-      completed: log.cells[i].done
+      completed: log.cells[i].done,
+      fill
     });
     return;
   }
@@ -8265,6 +8393,8 @@ window.removeAthleteFromGroup = removeAthleteFromGroup;
 window.assignWorkout = assignWorkout;
 window.openAthleteInBuild = openAthleteInBuild;
 window.openAthleteCalendar = openAthleteCalendar;
+window.toggleBuildPanel = toggleBuildPanel;
+window.addLibraryExercise = addLibraryExercise;
 window.startGoal = startGoal;
 window.editServerGroup = editServerGroup;
 window.deleteServerGroup = deleteServerGroup;

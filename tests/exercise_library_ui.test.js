@@ -62,7 +62,7 @@ globalThis.__lib = {
   addExerciseRecord, onFab, closeEdit, saveEdit, setEditField, catalogType,
   addItem, setLetter, ensureDay, item, liftsView, dayItemType, setIntensityKind,
   libraryExercisePayload, editModalHtml, mapEditFields, entryColumns,
-  goalsView, prGoalRows, squadView
+  goalsView, prGoalRows, squadView, logCell
 };
 globalThis.__setApi = (fn) => { api = fn; };
 `;
@@ -337,6 +337,27 @@ assert.equal(roundTrip.intensityKind, "rpe");
   assert.ok(grid.includes("edit-fields grid"));
   assert.ok(/edit-field span"><span>Name/.test(grid));
   assert.ok(grid.includes(">Save<") && grid.includes(">Cancel<"));
+}
+
+{
+  // Ticking Done sends the reps and weight the boxes show, not zeros.
+  const day = "2026-10-29";
+  const row = lib.item({ name: "Front Squat", type: "lift", sets: 2, reps: ["5"], loads: ["80"], props: [] });
+  row.weId = 4242;
+  lib.ensureDay(day).items.push(row);
+  state.entryAthlete = null;
+  state.coachSessionFor = "x";
+  state.openSession = { id: 77, set_logs: [] };
+  const sent = [];
+  sandbox.__setApi(async (method, url) => { sent.push(url); return { workout_exercise_id: 4242, set_number: 1 }; });
+  lib.logCell("x:" + day + ":" + row.id, 0, "done", true, day, row.id, 4242);
+  await new Promise((r) => setTimeout(r, 0));
+  const params = new URLSearchParams(sent[0].split("?")[1]);
+  assert.equal(params.get("weight"), "80");
+  assert.equal(params.get("reps"), "5");
+  assert.equal(params.get("completed"), "true");
+  state.openSession = null;
+  state.coachSessionFor = null;
 }
 
 {
