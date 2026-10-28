@@ -61,7 +61,8 @@ globalThis.__lib = {
   workoutToDayItems, previewSheet, entryItem, itemNotes, parseNotes,
   addExerciseRecord, onFab, closeEdit, saveEdit, setEditField, catalogType,
   addItem, setLetter, ensureDay, item, liftsView, dayItemType, setIntensityKind,
-  libraryExercisePayload, editModalHtml, mapEditFields, entryColumns
+  libraryExercisePayload, editModalHtml, mapEditFields, entryColumns,
+  goalsView, prGoalRows, squadView
 };
 globalThis.__setApi = (fn) => { api = fn; };
 `;
@@ -311,6 +312,56 @@ assert.equal(roundTrip.intensityKind, "rpe");
   assert.ok(lib.entryColumns(squat).some((col) => col[0] === "w"));
   assert.ok(!lib.entryColumns(plank).some((col) => col[0] === "w"));
   assert.ok(lib.itemNotes(plank).includes("completionOnly"));
+}
+
+{
+  // An unticked checkbox saves as off. Its DOM value is "on" either way.
+  let saved = null;
+  lib.state.modal = {
+    type: "edit",
+    fields: lib.mapEditFields([{ key: "name", value: "Push Up" }, { key: "completion_only", checkbox: "Completion only", value: "1" }]),
+    onSave: async (values) => { saved = values; }
+  };
+  const realQuery = sandbox.document.querySelectorAll;
+  sandbox.document.querySelectorAll = () => [
+    { dataset: { editKey: "name" }, type: "text", value: "Push Up" },
+    { dataset: { editKey: "completion_only" }, type: "checkbox", value: "on", checked: false }
+  ];
+  await lib.saveEdit();
+  sandbox.document.querySelectorAll = realQuery;
+  assert.equal(saved.completion_only, "");
+  lib.state.modal = null;
+
+  // Long forms lay out in two columns; name and multiline fields take the full row.
+  const grid = lib.editModalHtml({ title: "Edit exercise", fields: lib.mapEditFields(lib.exerciseFields({ name: "Squat", category: "Strength" })) });
+  assert.ok(grid.includes("edit-fields grid"));
+  assert.ok(/edit-field span"><span>Name/.test(grid));
+  assert.ok(grid.includes(">Save<") && grid.includes(">Cancel<"));
+}
+
+{
+  // Goals & PRs merges logged bests with goals, one row per athlete and lift.
+  lib.state.role = "coach";
+  lib.state.personalBests = [
+    { user_id: 7, user_name: "Eric", exercise_id: 1, exercise_name: "Back Squat", weight: 140, reps: 3, date: "2026-10-20", load_unit: "kg" },
+    { user_id: 7, user_name: "Eric", exercise_id: 2, exercise_name: "Bench", weight: 90, reps: 5, date: "2026-10-01", load_unit: "kg" }
+  ];
+  lib.state.serverRecords = [
+    { id: 50, user_id: 7, exercise_id: 1, weight: 160, user: { name: "Eric" }, exercise: { name: "Back Squat" } },
+    { id: 51, user_id: 7, exercise_id: 3, weight: 200, user: { name: "Eric" }, exercise: { name: "Deadlift" } }
+  ];
+  const rows = lib.prGoalRows();
+  assert.equal(rows.length, 3);
+  const squatRow = rows.find((r) => r.lift === "Back Squat");
+  assert.equal(squatRow.best.weight, 140);
+  assert.equal(squatRow.goal.id, 50);
+  assert.equal(rows.find((r) => r.lift === "Deadlift").best, null);
+  const page = lib.goalsView();
+  assert.ok(page.includes("88%"));
+  assert.ok(page.includes("Not logged yet"));
+  assert.ok(page.includes("startGoal(&quot;Bench&quot;, 7)"));
+  lib.state.serverRecords[0].weight = 120;
+  assert.ok(lib.goalsView().includes("Goal hit"));
 }
 
 console.log("exercise library ui tests passed");

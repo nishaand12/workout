@@ -325,6 +325,7 @@ const state = {
   serverExercises: [],
   chains: [],
   serverRecords: [],
+  personalBests: [],
   toolForm: {},
   recurPick: 4,
   evals: [],
@@ -1631,7 +1632,7 @@ function body() {
     case "daily": return dailyView();
     case "weightroom": return weightroomView();
     case "whiteboard": return boardView();
-    case "maxes": return maxesView();
+    case "maxes": return goalsView();
     case "leaderboard": return boardLeader();
     case "evaluations": return evalView();
     case "calendars": return calendarsView();
@@ -3475,6 +3476,7 @@ async function logAthleteSet(weId, setNumber, field, value, extra) {
   params.set("details", current.details || JSON.stringify(details));
   const saved = await api("POST", "/api/sessions/" + state.openSession.id + "/sets?" + params.toString());
   state.openSession.set_logs = logs.filter((l) => !(l.workout_exercise_id === weId && l.set_number === setNumber)).concat([saved]);
+  if (field === "weight" || field === "reps") state.entryBestsFor = null;
   render();
 }
 function savedDay(date) {
@@ -3649,11 +3651,10 @@ function athleteOpenPanel() {
 }
 function noteForm(workoutId) {
   const existing = (state.notesByWorkout && state.notesByWorkout[workoutId]) || "";
-  return `<form class="note-box" onsubmit="sendAthleteNote(event, ${workoutId}); return false;">
-    <label>Note to your coach</label>
-    <textarea id="athlete-note" placeholder="How did this workout feel?">${esc(existing)}</textarea>
-    <button class="req" type="submit">Send note</button>
-    ${existing ? `<div class="hint">Sent: ${esc(existing)}</div>` : ""}
+  return `<form class="note-box ui-form" onsubmit="sendAthleteNote(event, ${workoutId}); return false;">
+    <label class="ui-field"><span class="ui-label">Note to your coach</span>
+    <textarea class="textarea" id="athlete-note" placeholder="How did this workout feel?">${esc(existing)}</textarea></label>
+    <div class="ui-inline" style="justify-content:space-between">${existing ? `<p class="ui-hint">Sent: ${esc(existing)}</p>` : "<span></span>"}<button class="btn btn-primary" type="submit">Send note</button></div>
   </form>`;
 }
 function weTracksTime(we) {
@@ -4485,12 +4486,11 @@ function importedDataPanel(day) {
   const logs = ((state.openSession && state.openSession.set_logs) || []).filter((log) => setLogTouched(log));
   const rows = logs.map((log) => {
     const item = items.find((it) => it.weId === log.workout_exercise_id);
-    return `<tr><td>${esc((item && item.name) || "Exercise")}</td><td>${esc(log.set_number)}</td><td>${esc(log.weight)}</td><td>${esc(log.reps)}</td></tr>`;
+    return `<tr><td>${esc((item && item.name) || "Exercise")}</td><td class="num">${esc(log.set_number)}</td><td class="num">${esc(log.weight)}</td><td class="num">${esc(log.reps)}</td></tr>`;
   }).join("");
-  const body = rows
-    ? `<table class="data"><tr><th>Exercise</th><th>Set</th><th>Kg</th><th>Reps</th></tr>${rows}</table>`
-    : `<p class="hint">No Imported Data for this session.</p>`;
-  return `<div class="panel" style="margin-top:10px"><strong>Imported Data</strong>${body}</div>`;
+  if (!rows) return "";
+  return `<section class="ui-card"><div class="ui-card-head plain"><h2 class="ui-card-title">Logged sets</h2></div>
+    <div class="ui-table-wrap"><table class="ui-table"><thead><tr><th>Exercise</th><th class="num">Set</th><th class="num">${esc(unitTitle(entryUnit()))}</th><th class="num">Reps</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
 }
 function queueCoachEntrySession() {
   if (state.role === "athlete") return;
@@ -4523,54 +4523,121 @@ async function loadCoachEntrySession() {
     console.error(err);
   }
 }
+function entryHasWorkout(aid, date) {
+  if (state.role === "athlete") {
+    const saved = savedDay(date);
+    return !!(saved && saved.items && saved.items.length);
+  }
+  const day = (state.calendars[aid] || {})[date];
+  return !!(day && day.items && day.items.length);
+}
+function entryWeekStrip(aid, pick) {
+  const days = Array.from({ length: 7 }, (_, i) => addDays(sundayOf(state.entryDate), i));
+  const go = (d) => pick.replace("$D", d);
+  return `<div class="entry-week">
+    <button class="btn btn-ghost btn-icon" type="button" aria-label="Previous week" onclick="${go(addDays(state.entryDate, -7))}">‹</button>
+    <div class="entry-days">${days.map((d) => {
+      const dt = new Date(d + "T12:00:00");
+      const cls = ["entry-day", d === state.entryDate ? "on" : "", d === APP_TODAY ? "today" : "", entryHasWorkout(aid, d) ? "has" : ""].filter(Boolean).join(" ");
+      return `<button class="${cls}" type="button" onclick="${go(d)}"><span>${dt.toLocaleDateString("en-US", { weekday: "short" })}</span><b>${dt.getDate()}</b></button>`;
+    }).join("")}</div>
+    <button class="btn btn-ghost btn-icon" type="button" aria-label="Next week" onclick="${go(addDays(state.entryDate, 7))}">›</button>
+  </div>`;
+}
+function entryPageHtml(o) {
+  const items = o.items || [];
+  const statuses = items.map((it) => entryItemStatus(o.aid, state.entryDate, it)).filter(Boolean);
+  const finished = statuses.filter((st) => st.done >= st.total).length;
+  const summary = o.summary;
+  const unit = o.unit || "kg";
+  const progress = statuses.length
+    ? `<span class="ui-badge${finished === statuses.length ? " green" : ""}">${finished} of ${statuses.length} done</span>`
+    : "";
+  return `<section class="stage ui-page light-page entry-page" id="${o.id || "workout-entry"}"><div class="ui-wrap">
+    <header class="ui-head">
+      <div class="ui-person">${uiAvatar(o.name, "lg")}<div class="who">
+        <div class="ui-kicker">Workout entry</div>
+        <h1 class="ui-title">${esc(o.name)}</h1>
+      </div></div>
+      <div class="ui-actions">${o.actions || ""}</div>
+    </header>
+    ${o.picker || ""}
+    <section class="ui-card">${entryWeekStrip(o.aid, o.pick)}</section>
+    <div class="ui-grid side">
+      <section class="ui-card">
+        <div class="ui-card-head">
+          <div><h2 class="ui-card-title">${esc(o.title)}</h2><p class="ui-card-sub">${esc(fmtLong(state.entryDate))}</p></div>
+          ${progress}
+        </div>
+        <div class="entry-list">${o.listHtml || `<div class="ui-empty"><b>Rest day</b>Nothing is scheduled for this day.</div>`}</div>
+        ${o.noteHtml ? `<div class="ui-card-foot">${o.noteHtml}</div>` : ""}
+      </section>
+      <div class="ui-stack">
+        <section class="ui-card">
+          <div class="ui-card-head plain"><h2 class="ui-card-title">Session summary</h2></div>
+          <div class="ui-card-body"><div class="ui-stats compact">
+            <div class="ui-stat"><div class="label">Sets done</div><div class="value">${summary.sets}</div></div>
+            <div class="ui-stat"><div class="label">Total reps</div><div class="value">${summary.reps}</div></div>
+            <div class="ui-stat"><div class="label">Tonnage (${esc(unit)})</div><div class="value">${Math.round(summary.tonnage)}</div></div>
+            <div class="ui-stat"><div class="label">Duration</div><div class="value">${summary.duration}</div></div>
+          </div></div>
+        </section>
+        ${entryPrPanel(o.aid, items)}
+        ${o.extra || ""}
+      </div>
+    </div>
+  </div></section>`;
+}
+function queueEntryBests(userId) {
+  if (!userId || state.entryBestsFor === userId) return;
+  state.entryBestsFor = userId;
+  api("GET", "/api/personal-bests?user_id=" + userId)
+    .then((rows) => { state.personalBests = rows || []; renderSoon(); })
+    .catch((err) => console.error(err));
+}
+// Lifts on this day whose best-ever set was logged on this day.
+function entryPrPanel(aid, items) {
+  const person = buildAthletes().find((a) => a.id === aid) || ATHLETES.find((a) => a.id === aid);
+  const me = state.auth && state.auth.user;
+  const userId = (person && person.serverId) || (state.role === "athlete" && me ? me.id : null);
+  queueEntryBests(userId);
+  const names = new Set((items || []).map((it) => String(it.name || "").toLowerCase()));
+  const prs = (state.personalBests || []).filter((pb) => pb.user_id === userId && pb.date === state.entryDate && names.has(String(pb.exercise_name).toLowerCase()));
+  const body = prs.length
+    ? prs.map((pb) => `<div class="ui-list-row"><span class="strong">${esc(pb.exercise_name)}</span><span class="ui-badge green">${fmtLoad(pb.weight)} ${esc(normalizeUnit(pb.load_unit))}${pb.reps ? " × " + fmtLoad(pb.reps) : ""}</span></div>`).join("")
+    : `<p class="ui-hint">No new PRs in this session yet.</p>`;
+  return `<section class="ui-card"><div class="ui-card-head plain"><h2 class="ui-card-title">New PRs</h2></div><div class="ui-card-body">${body}</div></section>`;
+}
 function entryView() {
   if (state.role === "athlete") return athleteEntryView();
   queueCoachEntrySession();
   const who = state.entryAthlete;
   const athleteObj = ATHLETES.find((a) => a.id === who) || buildAthletes().find((a) => a.id === who && !a.isGroup);
-  const activeWho = athleteObj ? athleteObj.id : null;
-  const day = activeWho ? ensureDay(state.entryDate, activeWho) : null;
-  const week = sundayOf(state.entryDate);
-  const days = Array.from({ length: 7 }, (_, i) => addDays(week, i));
-  const summary = summarize(activeWho, state.entryDate);
-  return `<section class="stage light-page">
-    <h1 style="font-size:18px;color:#666;font-weight:600">Workout Entry</h1>
-    <div class="entry-wrap">
-      <div>
-        ${athleteObj ? `<div class="panel athlete-mini">
-            <div class="bigav">${esc((athleteObj.name || "A").slice(0, 1))}</div>
-            <strong>${esc(athleteObj.name)}</strong>
-            ${unitSelect(athleteObj.id)}
-            <div><button class="switch" onclick="state.entryOpen=!state.entryOpen;render()">SWITCH ATHLETE</button></div>
-            ${state.entryOpen ? athletePicker() : ""}
-            <button class="blackbtn" onclick="goTool('exercises')">Program Library</button>
-            <button class="blackbtn" onclick="window.print()">Print Workout</button>
-            <button class="blackbtn" onclick="state.view='build';state.athleteId='${esc(activeWho)}';state.weekStart=sundayOf('${state.entryDate}');render()">Go to Calendar</button>
-          </div>` : `<div class="panel">${athletePicker()}</div>`}
-      </div>
-      <div class="panel">
-        ${athleteObj ? `<div class="weekstrip">
-            <button class="iconbtn" style="color:#333" onclick="state.entryDate=addDays(state.entryDate,-7);render()">‹</button>
-            <div style="text-align:center"><div>${fmtLong(state.entryDate).replace(/,.*/, "")}</div>
-              <div>${days.map((d) => `<button class="d ${d === state.entryDate ? "on" : ""}" onclick="state.entryDate='${d}';render()">${new Date(d + "T12:00:00").getDate()}</button>`).join("")}</div>
-            </div>
-            <button class="iconbtn" style="color:#333" onclick="state.entryDate=addDays(state.entryDate,7);render()">›</button>
-          </div>
-          <h3>${esc(day.title || "Workout")}</h3>
-          ${entryListHtml(activeWho, state.entryDate, day.items) || '<div class="empty">No exercises this day</div>'}` : `<div class="empty"><div><div class="book">◎</div><div>Please Select An Athlete</div></div></div>`}
-      </div>
-      <div>
-        <div class="panel"><strong>Session Summary</strong><div class="kpis" style="margin-top:8px">
-          <div class="kpi"><b>${summary.sets}</b><span>Sets Completed</span></div>
-          <div class="kpi"><b>${summary.reps}</b><span>Total Reps</span></div>
-          <div class="kpi"><b>${summary.tonnage}</b><span>Tonnage</span></div>
-          <div class="kpi"><b>${summary.duration}</b><span>Session Duration</span></div>
-        </div></div>
-        ${importedDataPanel(day)}
-        <div class="panel" style="margin-top:10px"><strong>New PR's</strong><p class="hint">${summary.prs || "No PRs for this Session"}</p></div>
-      </div>
-    </div>
-  </section>`;
+  if (!athleteObj) {
+    return `<section class="stage ui-page light-page entry-page"><div class="ui-wrap narrow">
+      ${uiHead("Workout entry", "Pick an athlete", "Log sets for an athlete, or check what they have logged.", "")}
+      <section class="ui-card"><div class="ui-card-body">${athletePicker()}</div></section>
+    </div></section>`;
+  }
+  const activeWho = athleteObj.id;
+  const day = ensureDay(state.entryDate, activeWho);
+  const actions = `${unitSelect(activeWho)}
+    <span class="ui-pop-anchor"><button class="btn btn-secondary" type="button" onclick="state.entryOpen=!state.entryOpen;render()">Switch athlete</button>
+      ${state.entryOpen ? `<div class="ui-pop" style="left:auto;right:0">${athletePicker()}</div>` : ""}</span>
+    <button class="btn btn-secondary" type="button" onclick="window.print()">Print</button>
+    <button class="btn btn-primary" type="button" onclick="state.view='build';state.athleteId='${esc(activeWho)}';state.weekStart=sundayOf('${state.entryDate}');render()">Open calendar</button>`;
+  return entryPageHtml({
+    aid: activeWho,
+    name: athleteObj.name,
+    title: day.title || (day.items.length ? "Workout" : "Rest"),
+    items: day.items,
+    listHtml: entryListHtml(activeWho, state.entryDate, day.items),
+    pick: "state.entryDate='$D';render()",
+    actions,
+    unit: normalizeUnit(athleteObj.load_unit),
+    summary: summarize(activeWho, state.entryDate, day.items),
+    extra: importedDataPanel(day)
+  });
 }
 function athleteEntryView() {
   const who = { id: ownAthleteId(), name: viewedAthleteName() };
@@ -4581,50 +4648,29 @@ function athleteEntryView() {
     workoutId: saved.workoutId,
     items: (saved.items || []).map((it, i) => Object.assign({}, it, { id: it.id || ("wx" + (it.weId || i)) }))
   } : { title: "Rest", items: [], workoutId: null };
-  const week = sundayOf(state.entryDate);
-  const days = Array.from({ length: 7 }, (_, i) => addDays(week, i));
-  const summary = summarize(who.id, state.entryDate);
-  return `<section class="stage light-page" id="workout-entry">
-    <h1 style="font-size:18px;color:#666;font-weight:600">Workout Entry</h1>
-    <div class="entry-wrap">
-      <div>
-        <div class="panel athlete-mini">
-          <div class="bigav">${esc((who.name || "A").slice(0, 1))}</div>
-          <strong>${esc(who.name)}</strong>
-          ${unitSelect(who.id)}
-          <button class="blackbtn" type="button" onclick="go('mine')">My Schedule</button>
-          <button class="blackbtn" type="button" onclick="window.print()">Print Workout</button>
-        </div>
-      </div>
-      <div class="panel">
-        <div class="weekstrip">
-          <button class="iconbtn" style="color:#333" type="button" onclick="selectEntryDate(addDays(state.entryDate,-7))">‹</button>
-          <div style="text-align:center"><div>${fmtLong(state.entryDate).replace(/,.*/, "")}</div>
-            <div>${days.map((d) => `<button class="d ${d === state.entryDate ? "on" : ""}" type="button" onclick="selectEntryDate('${d}')">${new Date(d + "T12:00:00").getDate()}</button>`).join("")}</div>
-          </div>
-          <button class="iconbtn" style="color:#333" type="button" onclick="selectEntryDate(addDays(state.entryDate,7))">›</button>
-        </div>
-        <h3>${esc(day.items.length ? (day.title || "Workout") : "Rest")}</h3>
-        ${entryListHtml(who.id, state.entryDate, day.items, "athlete") || '<div class="empty">No exercises this day</div>'}
-        ${ownAthleteSession() && day.workoutId ? noteForm(day.workoutId) : ""}
-      </div>
-      <div>
-        <div class="panel"><strong>Session Summary</strong><div class="kpis" style="margin-top:8px">
-          <div class="kpi"><b>${summary.sets}</b><span>Sets Completed</span></div>
-          <div class="kpi"><b>${summary.reps}</b><span>Total Reps</span></div>
-          <div class="kpi"><b>${summary.tonnage}</b><span>Tonnage</span></div>
-          <div class="kpi"><b>${summary.duration}</b><span>Session Duration</span></div>
-        </div></div>
-        ${importedDataPanel(day)}
-        <div class="panel" style="margin-top:10px"><strong>New PR's</strong><p class="hint">${summary.prs || "No PRs for this Session"}</p></div>
-      </div>
-    </div>
-  </section>`;
+  return entryPageHtml({
+    id: "workout-entry",
+    aid: who.id,
+    name: who.name,
+    title: day.items.length ? (day.title || "Workout") : "Rest",
+    items: day.items,
+    listHtml: entryListHtml(who.id, state.entryDate, day.items, "athlete"),
+    pick: "selectEntryDate('$D')",
+    actions: `${unitSelect(who.id)}
+      <button class="btn btn-secondary" type="button" onclick="window.print()">Print</button>
+      <button class="btn btn-primary" type="button" onclick="go('mine')">My schedule</button>`,
+    unit: entryUnit(),
+    summary: summarize(who.id, state.entryDate, day.items),
+    noteHtml: ownAthleteSession() && day.workoutId ? noteForm(day.workoutId) : "",
+    extra: importedDataPanel(day)
+  });
 }
 function athletePicker() {
-  return `<input class="plain" placeholder="Search" style="width:100%;margin:8px 0" data-focus="ath-search" oninput="state.athQ=this.value;render()">
-    ${ATHLETES.filter((a) => !state.athQ || a.name.toLowerCase().includes(state.athQ.toLowerCase())).map((a) => `<button class="opt" style="color:#222" onclick="pickAthlete('${a.id}')"><span class="dotav">${esc(a.name[0])}</span> ${esc(a.name)}</button>`).join("") || `<div class="hint" style="padding:8px 0">No athletes yet. Add athletes in Manage Users.</div>`}
-    <label class="chk"><input type="checkbox" ${state.showHidden ? "checked" : ""} onchange="state.showHidden=this.checked"> View workouts hidden from athletes</label>`;
+  const q = (state.athQ || "").toLowerCase();
+  const list = ATHLETES.filter((a) => !q || a.name.toLowerCase().includes(q));
+  return `<div class="ui-search" style="margin-bottom:6px"><input class="input" placeholder="Search athletes" aria-label="Search athletes" data-focus="ath-search" value="${esc(state.athQ || "")}" oninput="state.athQ=this.value;render()"></div>
+    ${list.map((a) => `<button class="opt" type="button" onclick="pickAthlete('${a.id}')">${uiAvatar(a.name)} ${esc(a.name)}</button>`).join("") || `<p class="ui-hint" style="padding:8px">No athletes yet. Add athletes in Manage Users.</p>`}
+    <label class="ui-check" style="padding:8px"><input type="checkbox" ${state.showHidden ? "checked" : ""} onchange="state.showHidden=this.checked"> Show workouts hidden from athletes</label>`;
 }
 function pickAthlete(id) {
   state.entryAthlete = id;
@@ -4821,40 +4867,47 @@ function circuitEntryHtml(aid, date, it) {
     <button type="button" class="complete${done ? " done" : ""}" aria-pressed="${done ? "true" : "false"}">${done ? "✓ Complete" : "Complete"}</button>
   </div>`;
 }
+function entryItemStatus(aid, date, it) {
+  if (!it || it.type === "note" || it.type === "break" || it.type === "rest" || it.type === "video") return null;
+  const log = state.logs[aid + ":" + date + ":" + it.id] || {};
+  if (it.type === "circuit") return { done: setIsComplete(it, log.entered || {}) ? 1 : 0, total: 1 };
+  if (it.type === "questionnaire" || (it.completionOnly && (it.type || "lift") === "lift")) return { done: log.done ? 1 : 0, total: 1 };
+  const total = it.sets || 1;
+  const cells = log.cells || {};
+  let done = 0;
+  for (let i = 0; i < total; i++) if (cells[i] && cells[i].done) done += 1;
+  return { done, total };
+}
+function entryHead(aid, date, it) {
+  const status = entryItemStatus(aid, date, it);
+  const open = state.entryItem === it.id;
+  let badge = "";
+  if (status && status.done >= status.total) badge = `<span class="ui-badge green">✓ Done</span>`;
+  else if (status && status.total > 1 && status.done) badge = `<span class="ui-badge">${status.done}/${status.total} sets</span>`;
+  const letter = it.type === "note" || it.type === "circuit" ? (it.letter || "•") : (it.chainInstance ? "" : (it.letter || "•"));
+  return `<button class="entry-item" type="button" aria-expanded="${open ? "true" : "false"}" onclick="state.entryItem=state.entryItem==='${it.id}'?null:'${it.id}';render()">
+      <span class="letter" style="background:${LETTER_COLOR[it.letter] || "#999"}">${esc(letter)}</span>
+      <span class="entry-name"><strong>${esc(it.name)}</strong><div class="hint">${esc(scriptLine(it))}</div></span>
+      ${badge}<span class="entry-chev" aria-hidden="true">${open ? "▾" : "▸"}</span>
+    </button>`;
+}
+function entryShell(aid, date, it, body) {
+  const status = entryItemStatus(aid, date, it);
+  const open = state.entryItem === it.id;
+  const done = status && status.done >= status.total;
+  return `<div class="entry-ex${open ? " open" : ""}${done ? " done" : ""}">${entryHead(aid, date, it)}${open && body ? `<div class="entry-body">${body}</div>` : ""}</div>`;
+}
 function entryItem(aid, date, it) {
   const key = aid + ":" + date + ":" + it.id;
-  const open = state.entryItem === it.id;
-  if (it.type === "note") {
-    return `<div>
-      <button class="entry-item" onclick="state.entryItem=state.entryItem==='${it.id}'?null:'${it.id}';render()">
-        <span class="letter" style="background:${LETTER_COLOR[it.letter] || "#999"}">${esc(it.letter || "•")}</span>
-        <span><strong>${esc(it.name)}</strong><div class="hint">${esc(scriptLine(it))}</div></span>
-      </button>
-      ${open ? `<div class="preview-copy">${esc(it.note || "")}</div>` : ""}
-    </div>`;
-  }
-  if (it.type === "circuit") {
-    return `<div>
-      <button class="entry-item" onclick="state.entryItem=state.entryItem==='${it.id}'?null:'${it.id}';render()">
-        <span class="letter" style="background:${LETTER_COLOR[it.letter] || "#999"}">${esc(it.letter || "•")}</span>
-        <span><strong>${esc(it.name)}</strong><div class="hint">${esc(scriptLine(it))}</div></span>
-      </button>
-      ${open ? circuitEntryHtml(aid, date, it) : ""}
-    </div>`;
-  }
+  if (it.type === "note") return entryShell(aid, date, it, `<div class="preview-copy">${esc(it.note || "")}</div>`);
+  if (it.type === "circuit") return entryShell(aid, date, it, circuitEntryHtml(aid, date, it));
   if (it.completionOnly && (it.type || "lift") === "lift") {
     const done = !!(state.logs[key] && state.logs[key].done);
-    return `<div>
-      <button class="entry-item" onclick="state.entryItem=state.entryItem==='${it.id}'?null:'${it.id}';render()">
-        <span class="letter" style="background:${LETTER_COLOR[it.letter] || "#999"}">${esc(it.chainInstance ? "" : (it.letter || "•"))}</span>
-        <span><strong>${esc(it.name)}</strong><div class="hint">${esc(scriptLine(it))}</div></span>
-      </button>
-      ${open ? `<div class="circuit-entry">
+    return entryShell(aid, date, it, `<div class="circuit-entry">
         ${it.note ? `<div class="preview-copy">${esc(it.note)}</div>` : ""}
         ${athletePlayerHtml(it)}
         <button type="button" class="complete${done ? " done" : ""}" aria-pressed="${done ? "true" : "false"}" onclick="toggleExerciseComplete('${key}','${date}','${it.id}',${it.weId || 0})">${done ? "✓ Completed" : "✓ Complete"}</button>
-      </div>` : ""}
-    </div>`;
+      </div>`);
   }
   const fields = entryColumns(it);
   const rows = Array.from({ length: it.sets || 1 }, (_, i) => {
@@ -4863,22 +4916,16 @@ function entryItem(aid, date, it) {
     const done = cellDone(it, entered, cell.done);
     const inputs = fields.map(([field, label]) => {
       const value = shownEntry(entered, field, prescribedEntry(it, field, i));
-      return `<td><input aria-label="${esc(label)} set ${i + 1}" value="${esc(value)}" onchange="logCell('${key}',${i},'${field}',this.value,'${date}','${it.id}',${it.weId || 0})"></td>`;
+      const mode = field === "tempo" ? "text" : "decimal";
+      return `<td><input aria-label="${esc(label)} set ${i + 1}" inputmode="${mode}" value="${esc(value)}" onchange="logCell('${key}',${i},'${field}',this.value,'${date}','${it.id}',${it.weId || 0})"></td>`;
     }).join("");
-    return `<tr><td>${i + 1}</td>${inputs}<td><input aria-label="Done set ${i + 1}" type="checkbox" ${done ? "checked" : ""} onchange="logCell('${key}',${i},'done',this.checked,'${date}','${it.id}',${it.weId || 0})"></td></tr>`;
+    return `<tr class="${done ? "set-done" : ""}"><td class="set-n">${i + 1}</td>${inputs}<td class="set-tick"><input aria-label="Done set ${i + 1}" type="checkbox" ${done ? "checked" : ""} onchange="logCell('${key}',${i},'done',this.checked,'${date}','${it.id}',${it.weId || 0})"></td></tr>`;
   }).join("");
   const table = it.type === "questionnaire"
     ? (it.questions || []).map((q) => `<label class="chk"><input type="checkbox" onchange="logCheck('${key}', this.checked)"> ${esc(q)}</label>`).join("")
     : `<table class="sets"><tr><th>Set</th>${fields.map((field) => `<th>${field[1]}</th>`).join("")}<th>Done</th></tr>${rows}</table>`;
   const safeName = String(it.name || "Exercise").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-  const player = open ? athletePlayerHtml(it) : "";
-  return `<div>
-    <button class="entry-item" onclick="state.entryItem=state.entryItem==='${it.id}'?null:'${it.id}';render()">
-      <span class="letter" style="background:${LETTER_COLOR[it.letter] || "#999"}">${esc(it.chainInstance ? "" : (it.letter || "•"))}</span>
-      <span><strong>${esc(it.name)}</strong><div class="hint">${esc(scriptLine(it))}</div></span>
-    </button>
-    ${open ? `<div style="padding:6px 8px 10px">${player}${table}<button class="complete" onclick="markDone('${key}','${safeName}',${it.weId || 0},${it.sets || 1})">Complete</button></div>` : ""}
-  </div>`;
+  return entryShell(aid, date, it, `${athletePlayerHtml(it)}${table}<button class="complete" type="button" onclick="markDone('${key}','${safeName}',${it.weId || 0},${it.sets || 1})">Complete</button>`);
 }
 function logCell(key, i, field, value, date, itemId, weId) {
   const log = state.logs[key] || (state.logs[key] = { cells: {}, hydrated: true });
@@ -4941,16 +4988,22 @@ async function markDone(key, name) {
   toast("Logged " + name);
   render();
 }
-function summarize(aid, date) {
+// Pass the items the page shows; athletes' days come from savedDay, not the coach calendar.
+function summarize(aid, date, items) {
   if (!aid) return { sets: 0, reps: 0, tonnage: 0, duration: "N/A", prs: "" };
-  const day = ensureDay(date, aid);
+  const list = items || ensureDay(date, aid).items;
   let sets = 0, reps = 0, tonnage = 0;
-  day.items.forEach((it) => {
+  list.forEach((it) => {
     const log = state.logs[aid + ":" + date + ":" + it.id];
     if (!log) return;
     if (log.done && !log.cells) { sets += it.sets || 1; reps += (it.reps || []).reduce((a, b) => a + (+b || 0), 0); }
-    Object.values(log.cells || {}).forEach((c) => {
-      if (c.done) { sets += 1; reps += +c.r || 0; tonnage += (+c.r || 0) * (+c.w || 0); }
+    Object.keys(log.cells || {}).forEach((i) => {
+      const c = log.cells[i];
+      if (!c.done) return;
+      const entered = c.entered || {};
+      const r = +shownEntry(entered, "r", prescribedEntry(it, "r", +i)) || 0;
+      const w = +shownEntry(entered, "w", prescribedEntry(it, "w", +i)) || 0;
+      sets += 1; reps += r; tonnage += r * w;
     });
   });
   const dur = state.startedAt ? fmtDur(Date.now() - state.startedAt) : "00:00";
@@ -5783,49 +5836,78 @@ function exerciseRows() {
     return categoryVisible(mapped) && l.name.toLowerCase().includes(q);
   });
 }
+function exerciseDefaultsText(l) {
+  const category = canonicalCategory(l.category || "Strength");
+  if (category === "Notes") return "";
+  if (category === "Circuit") return l.default_sets ? l.default_sets + " round" + (+l.default_sets === 1 ? "" : "s") : "";
+  const sets = l.default_sets || "";
+  const reps = l.default_reps || "";
+  if (sets && reps) return sets + " × " + reps;
+  return sets ? sets + " sets" : "";
+}
 function liftsView() {
   const rows = exerciseRows();
   const server = state.serverExercises.length > 0;
+  const total = server ? state.serverExercises.filter((e) => !e.hidden).length : state.lifts.length;
   const filters = ["All"].concat(EXERCISE_CATEGORIES);
   const empty = state.managing === "All" ? "No exercises yet." : ("No " + state.managing + " exercises yet.");
-  return `<section class="stage" style="background:#eee">
-    <div class="light-page">
-      <div class="feed-top"><h1 style="display:flex;gap:8px;align-items:center">Master Database
-        <select class="plain" aria-label="Exercise category" onchange="state.managing=this.value;render()">${filters.map((t) => `<option ${state.managing === t ? "selected" : ""}>${t}</option>`).join("")}</select>
-      </h1></div>
-      <form class="toolbar" onsubmit="addExerciseRecord(); return false;">
-        <input class="plain" placeholder="Exercise name" data-focus="ex-name" value="${esc(state.toolForm.exName || "")}" oninput="state.toolForm.exName=this.value">
-        <button class="req" type="submit">Add exercise</button>
-      </form>
-      <input class="plain" style="width:100%;margin:8px 0" placeholder="Search" data-focus="lift-q" value="${esc(state.liftQ)}" oninput="state.liftQ=this.value;render()">
-      <table class="data"><tr><th>Name</th><th>Category</th><th></th></tr>
-        ${rows.map((l) => server ? `<tr>
-          <td>${esc(l.name)}</td>
-          <td>${esc(categoryLabel(l.category))}</td>
-          <td><button class="icon-a" onclick="editExercise(${l.id})">Edit</button> <button class="icon-a" onclick="hideExercise(${l.id})">Hide</button></td>
-        </tr>` : `<tr><td>${esc(l.name)}</td><td>${esc(l.type)}</td><td></td></tr>`).join("")}
-      </table>
-      ${rows.length ? "" : `<p class="hint">${esc(empty)}</p>`}
-      ${chainLibraryHtml()}
-    </div>
-  </section>`;
+  const body = rows.map((l) => {
+    if (!server) return `<tr><td class="strong">${esc(l.name)}</td><td>${esc(l.type)}</td><td></td><td></td><td></td></tr>`;
+    const tags = [
+      l.video_url ? `<span class="ui-badge">Video</span>` : "",
+      l.completion_only ? `<span class="ui-badge green">Completion only</span>` : ""
+    ].join(" ");
+    return `<tr>
+      <td class="strong">${esc(l.name)}</td>
+      <td><span class="ui-badge">${esc(categoryLabel(l.category))}</span></td>
+      <td class="muted hide-sm">${esc(exerciseDefaultsText(l)) || "—"}</td>
+      <td class="hide-sm">${tags}</td>
+      <td class="row-actions"><button class="btn btn-ghost btn-sm" type="button" onclick="editExercise(${l.id})">Edit</button><button class="btn btn-ghost btn-sm btn-danger" type="button" onclick="hideExercise(${l.id})">Hide</button></td>
+    </tr>`;
+  }).join("");
+  return `<section class="stage ui-page"><div class="ui-wrap">
+    ${uiHead("Coach tools", "Exercise library", `${total} exercise${total === 1 ? "" : "s"} in your gym's master database. Defaults here fill in when an exercise is added to a calendar.`,
+      `<button class="btn btn-secondary" type="button" onclick="openChainEditor()">New chain</button>`)}
+    <section class="ui-card">
+      <div class="ui-card-body ui-inline">
+        <div class="ui-search"><input class="input" placeholder="Search exercises and chains" aria-label="Search exercises" data-focus="lift-q" value="${esc(state.liftQ)}" oninput="state.liftQ=this.value;render()"></div>
+        <select class="select auto" aria-label="Exercise category" onchange="state.managing=this.value;render()">${filters.map((t) => `<option ${state.managing === t ? "selected" : ""}>${t}</option>`).join("")}</select>
+        <form class="ui-inline" onsubmit="addExerciseRecord(); return false;">
+          <input class="input auto" style="width:220px" placeholder="New exercise name" aria-label="New exercise name" data-focus="ex-name" value="${esc(state.toolForm.exName || "")}" oninput="state.toolForm.exName=this.value">
+          <button class="btn btn-primary" type="submit">Add exercise</button>
+        </form>
+      </div>
+    </section>
+    <section class="ui-card">
+      <div class="ui-card-head"><h2 class="ui-card-title">Exercises <span class="count">${rows.length}</span></h2></div>
+      <div class="ui-table-wrap"><table class="ui-table">
+        <thead><tr><th>Name</th><th>Category</th><th class="hide-sm">Defaults</th><th class="hide-sm">Tags</th><th></th></tr></thead>
+        <tbody>${body || `<tr><td colspan="5"><div class="ui-empty"><b>${esc(empty)}</b>${state.liftQ ? "Try a different search." : "Add one above."}</div></td></tr>`}</tbody>
+      </table></div>
+    </section>
+    ${chainLibraryHtml()}
+  </div></section>`;
 }
 function chainLibraryHtml() {
   const q = state.liftQ.toLowerCase();
   const chains = (state.chains || []).filter((chain) => !q || chain.name.toLowerCase().includes(q) || String(chain.kind || "").toLowerCase().includes(q));
   const body = chains.map((chain) => `<tr>
-    <td><span class="chain-mark">Chain</span> ${esc(chain.name)}</td>
-    <td>${esc(chain.kind || "")}</td>
-    <td>${(chain.members || []).length}</td>
-    <td><button class="icon-a" onclick="openChainEditor(${chain.id})">Edit</button></td>
+    <td class="strong"><span class="chain-mark">Chain</span> ${esc(chain.name)}</td>
+    <td><span class="ui-badge">${esc(chain.kind || "")}</span></td>
+    <td class="num">${(chain.members || []).length}</td>
+    <td class="row-actions"><button class="btn btn-ghost btn-sm" type="button" onclick="openChainEditor(${chain.id})">Edit</button></td>
   </tr>`).join("");
-  return `<div class="chain-library">
-    <div class="feed-top"><h2>Chains</h2><button class="req" type="button" onclick="openChainEditor()">New chain</button></div>
-    <p class="hint">A chain is a saved group. It is not an A/B/C superset and not a stations circuit. It has no video of its own.</p>
-    <table class="data"><tr><th>Name</th><th>Kind</th><th>Exercises</th><th></th></tr>
-      ${body || `<tr><td colspan="4">No chains yet.</td></tr>`}
-    </table>
-  </div>`;
+  return `<section class="ui-card chain-library">
+    <div class="ui-card-head">
+      <div><h2 class="ui-card-title">Chains <span class="count">${chains.length}</span></h2>
+      <p class="ui-card-sub">A saved group of exercises, added to a day in one go. Not a superset, not a stations circuit, and no video of its own.</p></div>
+      <button class="btn btn-secondary btn-sm" type="button" onclick="openChainEditor()">New chain</button>
+    </div>
+    <div class="ui-table-wrap"><table class="ui-table">
+      <thead><tr><th>Name</th><th>Kind</th><th class="num">Exercises</th><th></th></tr></thead>
+      <tbody>${body || `<tr><td colspan="4"><div class="ui-empty"><b>No chains yet</b>Group a warm-up or cooldown you reuse.</div></td></tr>`}</tbody>
+    </table></div>
+  </section>`;
 }
 function rememberChain(chain) {
   if (!chain) return;
@@ -6336,46 +6418,131 @@ async function renameCalendar(id, name) {
   toast("Calendar renamed");
   render();
 }
+function goalUnit(userId) {
+  const person = ATHLETES.find((a) => a.serverId === userId);
+  if (person) return normalizeUnit(person.load_unit);
+  const me = state.auth && state.auth.user;
+  return normalizeUnit(me && me.id === userId ? me.load_unit : "kg");
+}
+function fmtLoad(value) {
+  const num = Number(value);
+  if (Number.isNaN(num)) return String(value || "");
+  return String(Math.round(num * 10) / 10);
+}
+// One row per athlete and lift: the best logged set, plus the goal if one is set.
+function prGoalRows() {
+  const rows = new Map();
+  (state.personalBests || []).forEach((pb) => {
+    rows.set(pb.user_id + ":" + pb.exercise_id, {
+      userId: pb.user_id, userName: pb.user_name, exerciseId: pb.exercise_id, lift: pb.exercise_name,
+      best: pb, goal: null, unit: normalizeUnit(pb.load_unit)
+    });
+  });
+  (state.serverRecords || []).forEach((r) => {
+    const key = r.user_id + ":" + r.exercise_id;
+    const row = rows.get(key) || {
+      userId: r.user_id, userName: (r.user && r.user.name) || "Team", exerciseId: r.exercise_id,
+      lift: (r.exercise && r.exercise.name) || "Lift", best: null, goal: null, unit: goalUnit(r.user_id)
+    };
+    if (!row.goal || r.weight > row.goal.weight) row.goal = r;
+    rows.set(key, row);
+  });
+  return Array.from(rows.values()).sort((a, b) => (a.userName || "").localeCompare(b.userName || "") || a.lift.localeCompare(b.lift));
+}
 function goalsView() {
-  const rows = state.serverRecords || [];
-  const athletesList = ATHLETES;
   const isCoach = state.role === "coach" || state.role === "admin";
-  return `<section class="stage light-page">
-    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:14px">
-      <h1>Goals & Personal Records</h1>
-      ${isCoach ? `
-        <div style="display:flex;align-items:center;gap:8px">
-          <label style="font-size:12px;font-weight:700;color:#555">Filter athlete:</label>
-          <select class="plain" onchange="filterGoalsAthlete(this.value)">
-            <option value="all" ${state.selectedGoalAthlete === 'all' ? 'selected' : ''}>All Athletes</option>
-            ${athletesList.map(a => `<option value="${a.id}" ${state.selectedGoalAthlete === a.id ? 'selected' : ''}>${esc(a.name)}</option>`).join("")}
-          </select>
-        </div>
-      ` : ""}
+  const filtered = isCoach && state.selectedGoalAthlete && state.selectedGoalAthlete !== "all";
+  const showAthlete = isCoach && !filtered;
+  const q = (state.goalQ || "").trim().toLowerCase();
+  const all = prGoalRows();
+  const rows = all.filter((r) => !q || r.lift.toLowerCase().includes(q) || String(r.userName || "").toLowerCase().includes(q));
+  const monthAgo = addDays(APP_TODAY, -30);
+  const prCount = all.filter((r) => r.best).length;
+  const recent = all.filter((r) => r.best && r.best.date && r.best.date >= monthAgo).length;
+  const goals = all.filter((r) => r.goal);
+  const hit = goals.filter((r) => r.best && r.best.weight >= r.goal.weight).length;
+  const who = filtered ? ((ATHLETES.find((a) => a.id === state.selectedGoalAthlete) || {}).name || "this athlete") : (isCoach ? "your athletes" : "you");
+  const body = rows.map((r) => {
+    const best = r.best
+      ? `<span class="strong">${fmtLoad(r.best.weight)} ${esc(r.unit)}</span>${r.best.reps ? ` <span class="muted">× ${fmtLoad(r.best.reps)}</span>` : ""}`
+      : `<span class="muted">Not logged yet</span>`;
+    const goal = r.goal ? `${fmtLoad(r.goal.weight)} ${esc(r.unit)}` : `<span class="muted">—</span>`;
+    let progress = "";
+    if (r.goal && r.goal.weight > 0) {
+      const pct = r.best ? Math.min(100, Math.round(r.best.weight / r.goal.weight * 100)) : 0;
+      progress = pct >= 100
+        ? `<span class="ui-badge green">✓ Goal hit</span>`
+        : `<span class="ui-inline" style="flex-wrap:nowrap"><span class="ui-progress" style="flex:1"><span style="width:${pct}%"></span></span><span class="muted" style="font-size:12px">${pct}%</span></span>`;
+    }
+    const actions = r.goal
+      ? `<button class="btn btn-ghost btn-sm" type="button" onclick="editGoal(${r.goal.id})">Edit goal</button><button class="btn btn-ghost btn-sm btn-danger" type="button" onclick="deleteGoalRecord(${r.goal.id})">Remove</button>`
+      : `<button class="btn btn-ghost btn-sm" type="button" onclick="startGoal(${esc(JSON.stringify(r.lift))}, ${r.userId || 0})">Set goal</button>`;
+    return `<tr>
+      <td class="strong">${esc(r.lift)}</td>
+      ${showAthlete ? `<td><span class="ui-person">${uiAvatar(r.userName)}<span class="who"><b>${esc(r.userName || "Team")}</b></span></span></td>` : ""}
+      <td>${best}</td>
+      <td class="muted hide-sm">${r.best && r.best.date ? esc(fmtShortDate(r.best.date)) : ""}</td>
+      <td>${goal}</td>
+      <td style="min-width:140px">${progress}</td>
+      <td class="row-actions">${actions}</td>
+    </tr>`;
+  }).join("");
+  const cols = showAthlete ? 7 : 6;
+  const athleteOptions = ATHLETES.map((a) => `<option value="${a.id}" ${state.toolForm.goalAthlete === a.id ? "selected" : ""}>${esc(a.name)}</option>`).join("");
+  const liftOptions = (state.serverExercises || []).filter((e) => !e.hidden).map((e) => `<option value="${esc(e.name)}"></option>`).join("");
+  return `<section class="stage ui-page" id="goals"><div class="ui-wrap">
+    ${uiHead(isCoach ? "Coach tools" : "", "Goals & PRs", `Personal records come from the sets ${isCoach ? "athletes log" : "you log"}. Set a goal next to any lift to track progress toward it.`,
+      isCoach ? `<select class="select auto" aria-label="Filter athlete" onchange="filterGoalsAthlete(this.value)">
+          <option value="all" ${!filtered ? "selected" : ""}>All athletes</option>
+          ${ATHLETES.map((a) => `<option value="${a.id}" ${state.selectedGoalAthlete === a.id ? "selected" : ""}>${esc(a.name)}</option>`).join("")}
+        </select>` : "")}
+    <div class="ui-stats">
+      <div class="ui-stat"><div class="label">Lifts with a PR</div><div class="value">${prCount}</div><div class="note">For ${esc(who)}</div></div>
+      <div class="ui-stat"><div class="label">New in the last 30 days</div><div class="value">${recent}</div><div class="note">Best set logged recently</div></div>
+      <div class="ui-stat"><div class="label">Goals set</div><div class="value">${goals.length}</div><div class="note">Target weights</div></div>
+      <div class="ui-stat"><div class="label">Goals hit</div><div class="value">${hit}</div><div class="note">${goals.length ? Math.round(hit / goals.length * 100) + "% of goals" : "No goals yet"}</div></div>
     </div>
-    <form class="toolbar" onsubmit="addGoalRecord(); return false;">
-      <input class="plain" placeholder="Lift (e.g. Back Squat)" data-focus="goal-name" value="${esc(state.toolForm.goalName || "")}" oninput="state.toolForm.goalName=this.value">
-      <input class="plain" placeholder="Kg (e.g. 180)" data-focus="goal-kg" value="${esc(state.toolForm.goalWeight || "")}" oninput="state.toolForm.goalWeight=this.value">
-      ${isCoach ? `
-        <select class="plain" onchange="state.toolForm.goalAthlete=this.value">
-          <option value="">Assign to Athlete (optional)</option>
-          ${athletesList.map(a => `<option value="${a.id}" ${state.toolForm.goalAthlete === a.id ? 'selected' : ''}>${esc(a.name)}</option>`).join("")}
-        </select>
-      ` : ""}
-      <button class="req" type="submit">Add goal</button>
-    </form>
-    <div class="grid-cards">${rows.map((r) => {
-      const athleteName = r.user ? r.user.name : "Unassigned / Team";
-      return `<article class="card">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start">
-          <strong>${esc((r.exercise && r.exercise.name) || "Goal")}</strong>
-          <button class="icon-a" title="Delete Goal" onclick="deleteGoalRecord(${r.id})">🗑</button>
-        </div>
-        <div class="row" style="margin:8px 0"><strong>${esc(r.weight)}</strong> kg <button class="comment" onclick="editGoal(${r.id})">Edit</button></div>
-        <div><span class="goal-assignee-tag ${r.user ? '' : 'team'}">👤 ${esc(athleteName)}</span></div>
-        <div class="hint" style="margin-top:6px">${esc(r.notes || "")}</div>
-      </article>`;
-    }).join("") || `<p class="hint">No goals saved yet.</p>`}</div></section>`;
+    <section class="ui-card">
+      <div class="ui-card-head"><div><h2 class="ui-card-title">Set a goal</h2><p class="ui-card-sub">A target weight for one lift. Progress fills in from logged sets.</p></div></div>
+      <form class="ui-card-body goal-form" onsubmit="addGoalRecord(); return false;">
+        <label class="ui-field"><span class="ui-label">Lift</span>
+          <input class="input" list="goal-lifts" placeholder="e.g. Back Squat" data-focus="goal-name" value="${esc(state.toolForm.goalName || "")}" oninput="state.toolForm.goalName=this.value">
+          <datalist id="goal-lifts">${liftOptions}</datalist></label>
+        <label class="ui-field"><span class="ui-label">Target weight</span>
+          <input class="input" type="number" min="0" step="0.5" inputmode="decimal" placeholder="e.g. 180" data-focus="goal-kg" value="${esc(state.toolForm.goalWeight || "")}" oninput="state.toolForm.goalWeight=this.value"></label>
+        ${isCoach ? `<label class="ui-field"><span class="ui-label">Athlete</span>
+          <select class="select" onchange="state.toolForm.goalAthlete=this.value">
+            <option value="">${filtered ? "Filtered athlete" : "Myself"}</option>
+            ${athleteOptions}
+          </select></label>` : ""}
+        <button class="btn btn-primary" type="submit">Save goal</button>
+      </form>
+    </section>
+    <section class="ui-card">
+      <div class="ui-card-head">
+        <h2 class="ui-card-title">Personal records <span class="count">${rows.length}</span></h2>
+        <div class="ui-search" style="max-width:280px"><input class="input" placeholder="Search lifts${showAthlete ? " or athletes" : ""}" aria-label="Search records" data-focus="goal-q" value="${esc(state.goalQ || "")}" oninput="state.goalQ=this.value;render()"></div>
+      </div>
+      <div class="ui-table-wrap"><table class="ui-table nowrap">
+        <thead><tr><th>Lift</th>${showAthlete ? "<th>Athlete</th>" : ""}<th>Best set</th><th class="hide-sm">Date</th><th>Goal</th><th>Progress</th><th></th></tr></thead>
+        <tbody>${body || `<tr><td colspan="${cols}"><div class="ui-empty"><b>${all.length ? "No matches" : "No records yet"}</b>${all.length ? "Try a different search." : "PRs appear here once weights are logged in Workout Entry."}</div></td></tr>`}</tbody>
+      </table></div>
+    </section>
+  </div></section>`;
+}
+function fmtShortDate(iso) {
+  const d = new Date(String(iso).slice(0, 10) + "T12:00:00");
+  if (Number.isNaN(d.getTime())) return String(iso);
+  const sameYear = String(iso).slice(0, 4) === String(APP_TODAY).slice(0, 4);
+  return d.toLocaleDateString("en-US", sameYear ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" });
+}
+function startGoal(lift, userId) {
+  state.toolForm.goalName = lift;
+  state.toolForm.goalWeight = "";
+  const person = ATHLETES.find((a) => a.serverId === userId);
+  state.toolForm.goalAthlete = person ? person.id : "";
+  state.pendingFocus = "goal-kg";
+  render();
 }
 async function filterGoalsAthlete(athleteId) {
   state.selectedGoalAthlete = athleteId;
@@ -6423,14 +6590,21 @@ async function saveGoalWeight(id) {
   }
 }
 async function loadGoals(userId) {
+  if (!state.serverExercises.length) loadExercises();
   try {
-    let url = "/api/records";
+    let query = "";
     if (userId) {
-      url += "?user_id=" + userId;
+      query = "?user_id=" + userId;
     } else if (state.role === "athlete" && state.serverUserId) {
-      url += "?user_id=" + state.serverUserId;
+      query = "?user_id=" + state.serverUserId;
     }
-    state.serverRecords = await api("GET", url);
+    const [records, bests] = await Promise.all([
+      api("GET", "/api/records" + query),
+      api("GET", "/api/personal-bests" + query).catch(() => [])
+    ]);
+    state.serverRecords = records;
+    state.personalBests = bests;
+    state.entryBestsFor = null;
     render();
   } catch (err) { console.error(err); }
 }
@@ -6831,22 +7005,25 @@ async function saveEdit() {
   if (!m || m.type !== "edit" || typeof m.onSave !== "function") return;
   document.querySelectorAll(".edit-modal [data-edit-key]").forEach((el) => {
     const field = m.fields.find((f) => f.key === el.dataset.editKey);
-    if (field) field.value = el.value;
+    if (field) field.value = el.type === "checkbox" ? (el.checked ? "1" : "") : el.value;
   });
   const values = {};
   m.fields.forEach((f) => { values[f.key] = f.value; });
   await m.onSave(values);
 }
+const EDIT_FULL_WIDTH = ["name", "video_url"];
 function editModalHtml(m) {
   const hint = m.hint ? `<div class="sub">${esc(m.hint)}</div>` : "";
+  const grid = (m.fields || []).length > 4;
   const fields = (m.fields || []).map((f) => {
+    const span = !grid || f.multiline || f.checkbox || f.button || EDIT_FULL_WIDTH.indexOf(f.key) >= 0 ? " span" : "";
     const max = f.maxlength ? ` maxlength="${f.maxlength}"` : "";
     const key = esc(f.key);
     let control;
     if (f.button) {
       control = `<button type="button" class="pill" onclick="setEditField('${key}', '1')">${esc(f.button)}</button>`;
     } else if (f.checkbox) {
-      return `<div class="edit-field"><span class="edit-label">${esc(f.label)}</span><label class="chk edit-check"><input type="checkbox" data-edit-key="${key}" ${f.value ? "checked" : ""} onchange="setEditField('${key}', this.checked ? '1' : '')"> ${esc(f.checkbox)}</label>${f.hint ? `<div class="hint">${esc(f.hint)}</div>` : ""}</div>`;
+      return `<div class="edit-field${span}"><span class="edit-label">${esc(f.label)}</span><label class="chk edit-check"><input type="checkbox" data-edit-key="${key}" ${f.value ? "checked" : ""} onchange="setEditField('${key}', this.checked ? '1' : '')"> ${esc(f.checkbox)}</label>${f.hint ? `<div class="hint">${esc(f.hint)}</div>` : ""}</div>`;
     } else if (f.options) {
       const options = f.options.slice();
       if (f.value && options.indexOf(f.value) < 0) options.unshift(f.value);
@@ -6858,9 +7035,9 @@ function editModalHtml(m) {
       const maxBound = f.max != null ? ` max="${esc(f.max)}"` : "";
       control = `<input class="field" type="${esc(f.type || "text")}" data-edit-key="${key}" data-focus="edit-${key}" value="${esc(f.value)}"${max}${bounds}${maxBound} oninput="setEditField('${key}', this.value)">`;
     }
-    return `<label class="edit-field"><span>${esc(f.label)}</span>${control}</label>`;
+    return `<label class="edit-field${span}"><span>${esc(f.label)}</span>${control}</label>`;
   }).join("");
-  return `<div class="modal-back" onclick="if(event.target===this) closeEdit()"><div class="modal edit-modal" onclick="event.stopPropagation()"><h3>${esc(m.title)}</h3>${hint}<div class="edit-fields">${fields}</div><button class="full save" type="button" onclick="saveEdit()">SAVE</button><button class="full" type="button" onclick="closeEdit()">CANCEL</button></div></div>`;
+  return `<div class="modal-back" onclick="if(event.target===this) closeEdit()"><div class="modal edit-modal${grid ? " wide" : ""}" onclick="event.stopPropagation()"><h3>${esc(m.title)}</h3>${hint}<div class="modal-body edit-fields${grid ? " grid" : ""}">${fields}</div><div class="modal-foot"><button class="full" type="button" onclick="closeEdit()">Cancel</button><button class="full save" type="button" onclick="saveEdit()">Save</button></div></div></div>`;
 }
 function chainMemberDraft(member) {
   const exercise = (member && member.exercise) || {};
@@ -7209,49 +7386,70 @@ function ledTeams(ctx) {
   const id = state.auth && state.auth.user && state.auth.user.id;
   return ((ctx && ctx.teams) || []).filter((t) => t.coach_id === id);
 }
+function uiHead(kicker, title, sub, actions) {
+  return `<header class="ui-head"><div>
+      ${kicker ? `<div class="ui-kicker">${esc(kicker)}</div>` : ""}
+      <h1 class="ui-title">${esc(title)}</h1>
+      ${sub ? `<p class="ui-sub">${sub}</p>` : ""}
+    </div>${actions ? `<div class="ui-actions">${actions}</div>` : ""}</header>`;
+}
+function uiAvatar(name, cls) {
+  const parts = String(name || "?").trim().split(/\s+/);
+  const letters = (parts[0] || "?").charAt(0) + (parts.length > 1 ? parts[parts.length - 1].charAt(0) : "");
+  return `<span class="ui-avatar${cls ? " " + cls : ""}" aria-hidden="true">${esc(letters.toUpperCase())}</span>`;
+}
 function groupControl(athlete, led) {
   if (athlete.team_id && led.some((t) => t.id === athlete.team_id)) {
-    return `<button class="team-action" type="button" onclick="removeAthleteFromGroup(${athlete.team_id}, ${athlete.id})">Remove from ${esc(athlete.team_name || "group")}</button>`;
+    return `<button class="btn btn-ghost btn-sm" type="button" onclick="removeAthleteFromGroup(${athlete.team_id}, ${athlete.id})">Remove from group</button>`;
   }
-  if (athlete.team_id) return `<span class="hint">${esc(athlete.team_name || "On another group")}</span>`;
-  if (!led.length) return `<span class="hint">Create a group, then add them</span>`;
+  if (athlete.team_id || !led.length) return "";
   if (led.length === 1) {
-    return `<button class="team-action add" type="button" onclick="addAthleteToGroup(${led[0].id}, ${athlete.id})">Add to ${esc(led[0].name)}</button>`;
+    return `<button class="btn btn-secondary btn-sm" type="button" onclick="addAthleteToGroup(${led[0].id}, ${athlete.id})">Add to ${esc(led[0].name)}</button>`;
   }
-  return `<span class="inline-form" style="margin:0">
-    <select class="plain" id="add-team-${athlete.id}">
+  return `<span class="ui-inline">
+    <select class="select auto" style="height:32px" id="add-team-${athlete.id}" aria-label="Group for ${esc(athlete.name)}">
       ${led.map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join("")}
     </select>
-    <button class="team-action add" type="button" onclick="addAthleteToGroup(document.getElementById('add-team-${athlete.id}').value, ${athlete.id})">Add</button>
+    <button class="btn btn-secondary btn-sm" type="button" onclick="addAthleteToGroup(document.getElementById('add-team-${athlete.id}').value, ${athlete.id})">Add</button>
   </span>`;
+}
+function groupBadge(athlete) {
+  if (athlete.team_id) return `<span class="ui-badge blue">${esc(athlete.team_name || "Group")}</span>`;
+  return `<span class="ui-badge amber"><span class="ui-dot"></span>No group</span>`;
 }
 function groupCards(led, athletes) {
   const free = athletes.filter((a) => !a.team_id);
-  const cards = led.map((t) => {
+  const manage = `<button class="btn btn-ghost btn-sm" type="button" onclick="goTool('users');state.userTab='groups';render()">Manage</button>`;
+  if (!led.length) {
+    return `<section class="ui-card" id="group-cards"><div class="ui-card-head"><h2 class="ui-card-title">Your groups</h2>${manage}</div>
+      <div class="ui-empty"><b>No groups yet</b>Create a group and its join code in Manage Groups.</div></section>`;
+  }
+  return led.map((t) => {
     const members = athletes.filter((a) => a.team_id === t.id);
-    const memberHtml = members.map((a) => `<div class="member-row"><span>${esc(a.name)}</span><button class="team-action" type="button" onclick="removeAthleteFromGroup(${t.id}, ${a.id})">Remove</button></div>`).join("")
-      || `<p class="hint">No athletes in this group yet.</p>`;
+    const memberHtml = members.map((a) => `<div class="ui-list-row"><span class="ui-person">${uiAvatar(a.name)}<span class="who"><b>${esc(a.name)}</b></span></span><button class="btn btn-ghost btn-sm" type="button" onclick="removeAthleteFromGroup(${t.id}, ${a.id})">Remove</button></div>`).join("")
+      || `<p class="ui-hint">No athletes in this group yet.</p>`;
     const addHtml = free.length
-      ? `<form class="inline-form" onsubmit="addAthleteToGroup(${t.id}); return false;">
-          <select class="plain" id="add-athlete-${t.id}">
+      ? `<form class="ui-inline" style="margin-top:12px" onsubmit="addAthleteToGroup(${t.id}); return false;">
+          <select class="select" style="flex:1;width:auto" id="add-athlete-${t.id}" aria-label="Athlete to add">
             ${free.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join("")}
           </select>
-          <button class="team-action add" type="submit">Add athlete</button>
+          <button class="btn btn-secondary" type="submit">Add</button>
         </form>`
-      : `<p class="hint">No athletes are waiting for a group.</p>`;
-    return `<article class="card group-card" id="group-${t.id}">
-      <strong>${esc(t.name)}</strong>
-      <div class="hint">${members.length} athlete${members.length === 1 ? "" : "s"} · one athlete, one group</div>
-      ${memberHtml}
-      ${addHtml}
-    </article>`;
+      : `<p class="ui-hint" style="margin-top:10px">Everyone is in a group.</p>`;
+    return `<section class="ui-card group-card" id="group-${t.id}">
+      <div class="ui-card-head"><div><h2 class="ui-card-title">${esc(t.name)} <span class="count">${members.length}</span></h2><p class="ui-card-sub">An athlete is in one group at a time.</p></div>${manage}</div>
+      <div class="ui-card-body">${memberHtml}${addHtml}</div>
+    </section>`;
   }).join("");
-  return `<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-top:16px">
-      <h2 style="margin:0">Your groups</h2>
-      <button class="ghost" type="button" onclick="goTool('users');state.userTab='groups';render()">Manage Groups &amp; Join Codes →</button>
-    </div>
-    <p class="lede">Assign unassigned athletes to a group you lead, or open <strong>Manage Groups &amp; Join Codes</strong> to create/rename groups and generate team join codes.</p>
-    <div class="grid-cards" id="group-cards">${cards || `<p class="hint">No groups yet. Click "Manage Groups &amp; Join Codes →" to create a group.</p>`}</div>`;
+}
+function openAthleteCalendar(serverId) {
+  const match = buildAthletes().find((a) => a.serverId === serverId);
+  if (!match) { toast("That athlete has no calendar yet"); return; }
+  state.athleteId = match.id;
+  state.view = "build";
+  render();
+  loadCalendarSchedule(match.id);
+  if (!state.serverExercises.length) loadExercises();
 }
 function workoutOptionLabel(w) {
   const exInfo = w.exercise_count
@@ -7301,36 +7499,60 @@ function squadView() {
     </optgroup>`;
   }
 
-  return `<section class="stage light-page role-home" id="coach-assign">
-    <div class="role-kicker">Coach</div>
-    <h1>Athletes on ${esc(teams)}</h1>
-    <p class="lede">You can assign workouts, read athlete notes, and organize athletes on teams you lead. Other coaches' athletes stay hidden.</p>
-    ${state.assignResult ? `<div class="banner-ok">${esc(state.assignResult)}</div>` : ""}
-    ${groupCards(led, athletes)}
-    <h2>Athletes</h2>
-    <table class="data" id="coach-athletes">
-      <tr><th>Athlete</th><th>Team</th><th>Email</th><th>Note to you</th><th>Group</th></tr>
-      ${athletes.map((a) => `<tr><td>${esc(a.name)}</td><td>${esc(a.team_name || "No team")}</td><td>${esc(a.email)}</td><td>${esc(a.latest_note || "—")}</td><td>${groupControl(a, led)}</td></tr>`).join("") || `<tr><td colspan="5">No athletes on your teams.</td></tr>`}
-    </table>
-    <h2>Quick-assign a saved workout</h2>
-    <p class="lede">Pick an athlete (or entire group) and assign one of their previous workouts, a saved gym workout, or a program template — or open the Calendar Builder to design a brand-new workout with custom exercises, sets, and reps.</p>
-    <form class="inline-form" onsubmit="assignWorkout(event); return false;" style="flex-wrap:wrap;gap:8px;align-items:center">
-      <select class="plain" id="assign-target" onchange="state.assignTarget=this.value;render()" required>
-        ${assignableAthletes.length ? `<optgroup label="Athletes">
-          ${assignableAthletes.map((a) => `<option value="user:${a.id}" ${selectedTarget === "user:" + a.id ? "selected" : ""}>${esc(a.name)}${a.team_name ? " (" + esc(a.team_name) + ")" : ""}</option>`).join("")}
-        </optgroup>` : ""}
-        ${led.length ? `<optgroup label="Entire Group">
-          ${led.map((t) => `<option value="group:${t.id}" ${selectedTarget === "group:" + t.id ? "selected" : ""}>Group: ${esc(t.name)}</option>`).join("")}
-        </optgroup>` : ""}
-      </select>
-      <select class="plain" id="assign-workout-id" onchange="state.assignWorkoutId=this.value" style="min-width:280px;max-width:460px" required>
-        ${workoutOptionsHtml || `<option value="">No saved workouts yet — build one in Calendar</option>`}
-      </select>
-      <input class="plain" id="assign-date" type="date" value="${esc(state.assignDate || APP_TODAY || "2026-10-16")}" onchange="state.assignDate=this.value" required>
-      <button class="req" type="submit" ${!workoutOptionsHtml ? "disabled" : ""}>Assign workout</button>
-      <button class="ghost" type="button" onclick="openAthleteInBuild()">Build New Workout in Calendar →</button>
-    </form>
-  </section>`;
+  const q = (state.athleteQ || "").trim().toLowerCase();
+  const shown = athletes.filter((a) => !q || [a.name, a.email, a.team_name].some((v) => String(v || "").toLowerCase().includes(q)));
+  const rows = shown.map((a) => `<tr>
+      <td><span class="ui-person">${uiAvatar(a.name)}<span class="who"><b>${esc(a.name)}</b><small>${esc(a.email || "")}</small></span></span></td>
+      <td>${groupBadge(a)}</td>
+      <td class="muted hide-sm">${a.latest_note ? esc(a.latest_note) : "—"}</td>
+      <td class="row-actions"><span class="ui-inline" style="justify-content:flex-end">${groupControl(a, led)}<button class="btn btn-secondary btn-sm" type="button" onclick="openAthleteCalendar(${a.id})">Calendar</button></span></td>
+    </tr>`).join("");
+  const emptyRow = athletes.length
+    ? `<tr><td colspan="4"><div class="ui-empty"><b>No matches</b>Nobody matches "${esc(state.athleteQ)}".</div></td></tr>`
+    : `<tr><td colspan="4"><div class="ui-empty"><b>No athletes yet</b>Share a team join code, or upload athletes in Manage Users.</div></td></tr>`;
+  const unassigned = athletes.filter((a) => !a.team_id).length;
+  return `<section class="stage ui-page" id="coach-assign"><div class="ui-wrap">
+    ${uiHead("Coach", "Athletes", `${athletes.length} athlete${athletes.length === 1 ? "" : "s"} on ${esc(teams)}${unassigned ? ` · ${unassigned} without a group` : ""}. Other coaches' athletes stay hidden.`,
+      `<button class="btn btn-secondary" type="button" onclick="goTool('users');state.userTab='groups';render()">Groups &amp; join codes</button>
+       <button class="btn btn-primary" type="button" onclick="openAthleteInBuild()">Build a workout</button>`)}
+    ${state.assignResult ? `<div class="ui-banner ok">${esc(state.assignResult)}</div>` : ""}
+    <div class="ui-grid side">
+      <section class="ui-card">
+        <div class="ui-card-head">
+          <h2 class="ui-card-title">Athletes <span class="count">${athletes.length}</span></h2>
+          <div class="ui-search" style="max-width:280px"><input class="input" placeholder="Search athletes" aria-label="Search athletes" data-focus="athlete-q" value="${esc(state.athleteQ || "")}" oninput="state.athleteQ=this.value;render()"></div>
+        </div>
+        <div class="ui-table-wrap"><table class="ui-table" id="coach-athletes">
+          <thead><tr><th>Athlete</th><th>Group</th><th class="hide-sm">Latest note to you</th><th></th></tr></thead>
+          <tbody>${rows || emptyRow}</tbody>
+        </table></div>
+      </section>
+      <div class="ui-stack">
+        <section class="ui-card">
+          <div class="ui-card-head"><div><h2 class="ui-card-title">Quick assign</h2><p class="ui-card-sub">Put a saved workout or template on a calendar.</p></div></div>
+          <form class="ui-card-body ui-form" onsubmit="assignWorkout(event); return false;">
+            <label class="ui-field"><span class="ui-label">Who</span>
+              <select class="select" id="assign-target" onchange="state.assignTarget=this.value;render()" required>
+                ${assignableAthletes.length ? `<optgroup label="Athletes">
+                  ${assignableAthletes.map((a) => `<option value="user:${a.id}" ${selectedTarget === "user:" + a.id ? "selected" : ""}>${esc(a.name)}${a.team_name ? " (" + esc(a.team_name) + ")" : ""}</option>`).join("")}
+                </optgroup>` : ""}
+                ${led.length ? `<optgroup label="Entire group">
+                  ${led.map((t) => `<option value="group:${t.id}" ${selectedTarget === "group:" + t.id ? "selected" : ""}>Group: ${esc(t.name)}</option>`).join("")}
+                </optgroup>` : ""}
+              </select></label>
+            <label class="ui-field"><span class="ui-label">Workout</span>
+              <select class="select" id="assign-workout-id" onchange="state.assignWorkoutId=this.value" required>
+                ${workoutOptionsHtml || `<option value="">No saved workouts yet. Build one in Calendar.</option>`}
+              </select></label>
+            <label class="ui-field"><span class="ui-label">Date</span>
+              <input class="input" id="assign-date" type="date" value="${esc(state.assignDate || APP_TODAY || "2026-10-16")}" onchange="state.assignDate=this.value" required></label>
+            <button class="btn btn-primary btn-block" type="submit" ${!workoutOptionsHtml ? "disabled" : ""}>Assign workout</button>
+          </form>
+        </section>
+        ${groupCards(led, athletes)}
+      </div>
+    </div>
+  </div></section>`;
 }
 function openAthleteInBuild() {
   const targetEl = document.getElementById("assign-target");
@@ -8042,6 +8264,8 @@ window.addAthleteToGroup = addAthleteToGroup;
 window.removeAthleteFromGroup = removeAthleteFromGroup;
 window.assignWorkout = assignWorkout;
 window.openAthleteInBuild = openAthleteInBuild;
+window.openAthleteCalendar = openAthleteCalendar;
+window.startGoal = startGoal;
 window.editServerGroup = editServerGroup;
 window.deleteServerGroup = deleteServerGroup;
 window.deleteServerJoinCode = deleteServerJoinCode;

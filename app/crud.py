@@ -2921,6 +2921,49 @@ def save_week_note(db: Session, viewer: User, user_id: Optional[int], group_id: 
     return {"week_start": week_start, "body": row.body}
 
 
+def personal_bests(db: Session, viewer: User, user_id: Optional[int] = None) -> List[dict]:
+    """Heaviest logged set per athlete and exercise. Ties go to the set with more reps."""
+    if user_id is not None:
+        target = get_user(db, user_id)
+        if not target or not access.can_see_user(db, viewer, target):
+            raise HTTPException(status_code=403, detail="You cannot see that athlete.")
+        people = [target]
+    else:
+        people = access.visible_users(db, viewer)
+    by_id = {p.id: p for p in people}
+    if not by_id:
+        return []
+    rows = (
+        db.query(SetLog, WorkoutSession, WorkoutExercise, Exercise, Workout)
+        .join(WorkoutSession, SetLog.session_id == WorkoutSession.id)
+        .join(WorkoutExercise, SetLog.workout_exercise_id == WorkoutExercise.id)
+        .join(Exercise, WorkoutExercise.exercise_id == Exercise.id)
+        .join(Workout, WorkoutSession.workout_id == Workout.id)
+        .filter(WorkoutSession.user_id.in_(list(by_id)), SetLog.weight > 0)
+        .all()
+    )
+    best = {}
+    for log, session, _we, exercise, workout in rows:
+        key = (session.user_id, exercise.id)
+        reps = log.reps or 0
+        current = best.get(key)
+        if current and (log.weight, reps) <= (current["weight"], current["reps"]):
+            continue
+        person = by_id[session.user_id]
+        logged = log.logged_at or session.start_time
+        best[key] = {
+            "user_id": person.id,
+            "user_name": person.name or person.email or "",
+            "exercise_id": exercise.id,
+            "exercise_name": exercise.name,
+            "weight": log.weight,
+            "reps": reps,
+            "date": workout.calendar_date or (logged.strftime("%Y-%m-%d") if logged else ""),
+            "load_unit": "lbs" if str(person.load_unit or "").lower() == "lbs" else "kg",
+        }
+    return sorted(best.values(), key=lambda row: (row["user_name"].lower(), row["exercise_name"].lower()))
+
+
 def list_gym_items(db: Session, user: User, kind: Optional[str] = None) -> List[dict]:
     access.require_gym(user)
     if kind and kind not in ITEM_KINDS:

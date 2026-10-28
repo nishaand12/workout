@@ -35,7 +35,7 @@ from app.schemas import (
     CoachAssignRequest, AthleteNoteRequest, ScheduleItem,
     BulkAthleteUploadRequest, BulkAthleteUploadResponse, CalendarScheduleEntry,
     ChainResponse, ChainWrite, ChainEditRequest, ChainEditResponse, ChainFoldRequest,
-    WeekNoteEntry, WeekNoteWrite,
+    WeekNoteEntry, WeekNoteWrite, PersonalBest,
 )
 from app import crud
 
@@ -1103,6 +1103,14 @@ def save_week_note(
     current_user: crud.User = Depends(require_auth),
 ):
     return crud.save_week_note(db, current_user, body.user_id, body.group_id, body.week_start, body.body)
+
+@app.get("/api/personal-bests", response_model=List[PersonalBest])
+def list_personal_bests(
+    user_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: crud.User = Depends(require_auth),
+):
+    return crud.personal_bests(db, current_user, user_id=user_id)
 
 @app.get("/api/gym/activity")
 def get_gym_activity(
