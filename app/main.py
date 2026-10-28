@@ -3,7 +3,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import List, Optional
 from pydantic import BaseModel
-from fastapi import FastAPI, Depends, HTTPException, Query, status
+from fastapi import FastAPI, Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
@@ -35,7 +35,7 @@ from app.schemas import (
     CoachAssignRequest, AthleteNoteRequest, ScheduleItem,
     BulkAthleteUploadRequest, BulkAthleteUploadResponse, CalendarScheduleEntry,
     ChainResponse, ChainWrite, ChainEditRequest, ChainEditResponse, ChainFoldRequest,
-    WeekNoteEntry, WeekNoteWrite, PersonalBest,
+    WeekNoteEntry, WeekNoteWrite, PersonalBest, SessionDurationWrite,
 )
 from app import crud
 
@@ -104,6 +104,8 @@ def ensure_schema_migrations():
         scols = {c["name"] for c in inspector.get_columns("workout_sessions")}
         if "athlete_note" not in scols:
             statements.append("ALTER TABLE workout_sessions ADD COLUMN athlete_note TEXT DEFAULT ''")
+        if "duration_minutes" not in scols:
+            statements.append("ALTER TABLE workout_sessions ADD COLUMN duration_minutes INTEGER")
 
     if "set_logs" in tables:
         lcols = {c["name"] for c in inspector.get_columns("set_logs")}
@@ -204,19 +206,57 @@ async def lifespan(app: FastAPI):
         logger.error(f"Error during startup database initialization: {exc}")
     yield
 
+security = HTTPBearer(auto_error=False)
+
+# Everything else under the API needs a signed-in user. The page shell and
+# /static stay public because they are the sign-in screen; all data comes
+# from the API.
+PUBLIC_ROUTES = {
+    ("GET", "/"),
+    ("HEAD", "/"),
+    ("GET", "/health"),
+    ("GET", "/api/auth/config"),
+    ("POST", "/api/auth/register"),
+    ("POST", "/api/auth/login"),
+    ("POST", "/api/auth/sync-supabase"),
+    ("POST", "/api/auth/reset-password-request"),
+    ("POST", "/api/auth/reset-password"),
+}
+
+async def require_sign_in(
+    request: Request,
+    cred: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    db: Session = Depends(get_db),
+) -> None:
+    route = request.scope.get("route")
+    if (request.method, getattr(route, "path", "")) in PUBLIC_ROUTES:
+        return
+    if not await get_current_user(request, cred, db):
+        raise HTTPException(status_code=401, detail="Authentication required")
+
 app = FastAPI(
     title=settings.PROJECT_NAME,
     description="wourkout coach calendar, workout entry, and team tools",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
+    dependencies=[Depends(require_sign_in)],
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
-security = HTTPBearer(auto_error=False)
-
 async def get_current_user(
+    request: Request,
     cred: Optional[HTTPAuthorizationCredentials] = Depends(security),
     db: Session = Depends(get_db)
 ) -> Optional[crud.User]:
+    # Resolved once per request: the sign-in gate and the route share it.
+    if hasattr(request.state, "auth_user"):
+        return request.state.auth_user
+    request.state.auth_user = await _resolve_user(cred, db)
+    return request.state.auth_user
+
+async def _resolve_user(cred: Optional[HTTPAuthorizationCredentials], db: Session) -> Optional[crud.User]:
     if not cred or not cred.credentials:
         return None
     token = cred.credentials
@@ -426,8 +466,14 @@ def delete_workout(workout_id: int, db: Session = Depends(get_db)):
 
 # Calendar & Week Planner Endpoints
 @app.post("/api/weeks/copy", response_model=List[WorkoutResponse], status_code=status.HTTP_201_CREATED)
-def copy_week(req: CopyWeekRequest, db: Session = Depends(get_db)):
-    new_workouts = crud.copy_week(db, req)
+def copy_week(
+    req: CopyWeekRequest,
+    db: Session = Depends(get_db),
+    current_user: crud.User = Depends(require_auth),
+):
+    if not _staff(current_user):
+        raise HTTPException(status_code=403, detail="Athlete accounts do not have coach tools.")
+    new_workouts = crud.copy_week(db, req, current_user)
     if not new_workouts:
         raise HTTPException(status_code=400, detail="Could not copy week. Ensure source program and week exist.")
     return new_workouts
@@ -453,15 +499,30 @@ def get_programs(db: Session = Depends(get_db)):
     return crud.get_programs_and_weeks(db)
 
 @app.post("/api/weeks/add-workout", response_model=WorkoutResponse, status_code=status.HTTP_201_CREATED)
-def add_workout_to_day(req: AddWorkoutToDayRequest, db: Session = Depends(get_db)):
-    w = crud.add_workout_to_day(db, req)
+def add_workout_to_day(
+    req: AddWorkoutToDayRequest,
+    db: Session = Depends(get_db),
+    current_user: crud.User = Depends(require_auth),
+):
+    if not _staff(current_user):
+        raise HTTPException(status_code=403, detail="Athlete accounts do not have coach tools.")
+    source = crud.get_workout(db, req.workout_id)
+    if source and not _workout_visible(db, current_user, source):
+        raise HTTPException(status_code=403, detail="That workout is not visible to you.")
+    w = crud.add_workout_to_day(db, req, current_user)
     if not w:
         raise HTTPException(status_code=404, detail="Source workout not found")
     return w
 
 @app.post("/api/weeks/save-as-program", response_model=List[WorkoutResponse], status_code=status.HTTP_201_CREATED)
-def save_program_template(req: SaveProgramTemplateRequest, db: Session = Depends(get_db)):
-    created = crud.save_program_template(db, req)
+def save_program_template(
+    req: SaveProgramTemplateRequest,
+    db: Session = Depends(get_db),
+    current_user: crud.User = Depends(require_auth),
+):
+    if not _staff(current_user):
+        raise HTTPException(status_code=403, detail="Athlete accounts do not have coach tools.")
+    created = crud.save_program_template(db, req, current_user)
     if not created:
         raise HTTPException(status_code=400, detail="No workouts found in source program to save as template")
     return created
@@ -504,8 +565,16 @@ def log_set(
     completed: bool = Query(False),
     rest_seconds: Optional[int] = Query(None),
     details: Optional[str] = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: crud.User = Depends(require_auth),
 ):
+    session = crud.session_for_writer(db, current_user, session_id)
+    in_workout = db.query(crud.WorkoutExercise).filter(
+        crud.WorkoutExercise.id == workout_exercise_id,
+        crud.WorkoutExercise.workout_id == session.workout_id,
+    ).first()
+    if not in_workout:
+        raise HTTPException(status_code=400, detail="That exercise is not in this session's workout.")
     return crud.log_or_update_set(
         db=db,
         session_id=session_id,
@@ -517,6 +586,15 @@ def log_set(
         rest_seconds=rest_seconds,
         details=details,
     )
+
+@app.put("/api/sessions/{session_id}/duration", response_model=WorkoutSessionResponse)
+def set_session_duration(
+    session_id: int,
+    body: SessionDurationWrite,
+    db: Session = Depends(get_db),
+    current_user: crud.User = Depends(require_auth),
+):
+    return crud.set_session_duration(db, current_user, session_id, body.minutes)
 
 @app.post("/api/sessions/{session_id}/complete", response_model=WorkoutSessionResponse)
 def finish_session(

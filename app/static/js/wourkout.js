@@ -338,7 +338,6 @@ const state = {
   boardAthlete: "",
   boardDate: "",
   compose: false,
-  startedAt: null,
   role: "coach",
   actingAthlete: null,
   serverUserId: null,
@@ -3691,7 +3690,6 @@ async function openAthleteDay(date) {
   state.entryDate = date;
   state.entryAthlete = ownAthleteId();
   state.view = "entry";
-  if (!state.startedAt) state.startedAt = Date.now();
   const first = (day.items || [])[0];
   state.entryItem = first ? (first.id || ("wx" + first.weId)) : null;
   render();
@@ -4694,7 +4692,7 @@ function entryPageHtml(o) {
             <div class="ui-stat"><div class="label">Sets done</div><div class="value">${summary.sets}</div></div>
             <div class="ui-stat"><div class="label">Total reps</div><div class="value">${summary.reps}</div></div>
             <div class="ui-stat"><div class="label">Tonnage (${esc(unit)})</div><div class="value">${Math.round(summary.tonnage)}</div></div>
-            <div class="ui-stat"><div class="label">Duration</div><div class="value">${summary.duration}</div></div>
+            <div class="ui-stat"><label class="label" for="session-minutes">Duration</label>${durationField(items)}</div>
           </div></div>
         </section>
         ${entryPrPanel(o.aid, items)}
@@ -4702,6 +4700,32 @@ function entryPageHtml(o) {
       </div>
     </div>
   </div></section>`;
+}
+// Optional minutes the athlete says the workout took. Saved on the session; blank clears it.
+function durationField(items) {
+  const session = state.openSession;
+  if (!session || !(items || []).length) return `<div class="value">—</div>`;
+  const value = session.duration_minutes == null ? "" : session.duration_minutes;
+  return `<div class="duration-field"><input id="session-minutes" type="number" min="1" max="600" step="1" inputmode="numeric" placeholder="—" aria-label="Workout duration in minutes" data-focus="session-minutes" value="${esc(value)}" onchange="saveSessionDuration(this.value)"><span>min</span></div>`;
+}
+async function saveSessionDuration(raw) {
+  const session = state.openSession;
+  if (!session) return;
+  const text = String(raw || "").trim();
+  const minutes = text === "" ? null : Math.round(Number(text));
+  if (minutes != null && !(minutes >= 1 && minutes <= 600)) {
+    toast("Enter minutes between 1 and 600, or leave it blank");
+    render();
+    return;
+  }
+  if (minutes === (session.duration_minutes == null ? null : session.duration_minutes)) return;
+  try {
+    const saved = await api("PUT", "/api/sessions/" + session.id + "/duration", { minutes });
+    session.duration_minutes = saved.duration_minutes;
+  } catch (err) {
+    toast(err.message || "Could not save the duration");
+  }
+  render();
 }
 function queueEntryBests(userId) {
   if (!userId || state.entryBestsFor === userId) return;
@@ -4791,7 +4815,6 @@ function pickAthlete(id) {
   state.entryAthlete = id;
   state.entryOpen = false;
   state.athleteId = id;
-  if (!state.startedAt) state.startedAt = Date.now();
   render();
   loadCalendarSchedule(id);
 }
@@ -5056,8 +5079,7 @@ function logCell(key, i, field, value, date, itemId, weId) {
     w: "weight", r: "reps", rest: "rest", tempo: "tempo", velocity: "velocity",
     power: "power", pct: "pct", restRep: "restRep", distance: "distance", intensity: "intensity"
   };
-  // Ticking Done keeps what the boxes show, so prefilled reps and weight are saved too.
-  const fill = {};
+  // Ticking Done keeps what the boxes show, so prefilled reps and weight count too.
   if (field === "done" && value && it) {
     entryColumns(it).forEach(([col]) => {
       if (Object.prototype.hasOwnProperty.call(log.cells[i].entered, col)) return;
@@ -5065,11 +5087,18 @@ function logCell(key, i, field, value, date, itemId, weId) {
       if (shown == null || String(shown).trim() === "") return;
       log.cells[i].entered[col] = shown;
       log.cells[i][col] = shown;
-      fill[map[col]] = shown;
     });
   }
   const ticked = field === "done" ? !!value : log.cells[i].done;
   log.cells[i].done = !!(it && cellDone(it, log.cells[i].entered, ticked));
+  // A done set is saved with every value its boxes show.
+  const fill = {};
+  if (log.cells[i].done && it) {
+    entryColumns(it).forEach(([col]) => {
+      const shown = log.cells[i].entered[col];
+      if (shown != null && String(shown).trim() !== "") fill[map[col]] = shown;
+    });
+  }
   if (weId && state.openSession && (state.role === "athlete" || state.coachSessionFor)) {
     const apiField = field === "done" ? "completed" : map[field];
     logAthleteSet(weId, i + 1, apiField || "", field === "done" ? log.cells[i].done : log.cells[i][field], {
@@ -5118,7 +5147,7 @@ async function markDone(key, name) {
 }
 // Pass the items the page shows; athletes' days come from savedDay, not the coach calendar.
 function summarize(aid, date, items) {
-  if (!aid) return { sets: 0, reps: 0, tonnage: 0, duration: "N/A", prs: "" };
+  if (!aid) return { sets: 0, reps: 0, tonnage: 0, prs: "" };
   const list = items || ensureDay(date, aid).items;
   let sets = 0, reps = 0, tonnage = 0;
   list.forEach((it) => {
@@ -5134,14 +5163,8 @@ function summarize(aid, date, items) {
       sets += 1; reps += r; tonnage += r * w;
     });
   });
-  const dur = state.startedAt ? fmtDur(Date.now() - state.startedAt) : "00:00";
-  return { sets, reps, tonnage, duration: dur, prs: "" };
+  return { sets, reps, tonnage, prs: "" };
 }
-function fmtDur(ms) {
-  const s = Math.floor(ms / 1000);
-  return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
-}
-
 const FEED = [];
 function feedTabs() {
   if (state.role === "athlete") return "";
@@ -5200,7 +5223,8 @@ function feedCard(c, i) {
   const badges = [
     s.completed ? `<span class="ui-badge green">Completed</span>` : (s.completed_sets ? `<span class="ui-badge blue">In progress</span>` : ""),
     s.completed_sets ? `<span class="ui-badge">${s.completed_sets} sets</span>` : "",
-    s.tonnage ? `<span class="ui-badge">${fmtLoad(s.tonnage)} kg moved</span>` : ""
+    s.tonnage ? `<span class="ui-badge">${fmtLoad(s.tonnage)} kg moved</span>` : "",
+    s.duration_minutes ? `<span class="ui-badge">${s.duration_minutes} min</span>` : ""
   ].join(" ");
   return `<article class="ui-feed-row">
     ${uiAvatar(c[0])}
@@ -8481,6 +8505,7 @@ window.removeAthleteFromGroup = removeAthleteFromGroup;
 window.assignWorkout = assignWorkout;
 window.openAthleteInBuild = openAthleteInBuild;
 window.openAthleteCalendar = openAthleteCalendar;
+window.saveSessionDuration = saveSessionDuration;
 window.toggleBuildPanel = toggleBuildPanel;
 window.addLibraryExercise = addLibraryExercise;
 window.startGoal = startGoal;

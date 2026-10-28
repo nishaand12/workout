@@ -268,6 +268,7 @@ class WorkoutSession(Base):
     completed = Column(Boolean, default=False)
     notes = Column(Text, default="")
     athlete_note = Column(Text, default="")
+    duration_minutes = Column(Integer, nullable=True)  # entered by the athlete, optional
 
     workout = relationship("Workout", back_populates="sessions")
     user = relationship("User", back_populates="sessions")

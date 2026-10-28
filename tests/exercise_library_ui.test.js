@@ -62,7 +62,7 @@ globalThis.__lib = {
   addExerciseRecord, closeEdit, saveEdit, setEditField, catalogType,
   addItem, setLetter, ensureDay, item, liftsView, dayItemType, setIntensityKind,
   libraryExercisePayload, editModalHtml, mapEditFields, entryColumns,
-  goalsView, prGoalRows, squadView, logCell
+  goalsView, prGoalRows, squadView, logCell, durationField, saveSessionDuration
 };
 globalThis.__setApi = (fn) => { api = fn; };
 `;
@@ -350,8 +350,40 @@ assert.equal(roundTrip.intensityKind, "rpe");
   assert.equal(params.get("weight"), "80");
   assert.equal(params.get("reps"), "5");
   assert.equal(params.get("completed"), "true");
+  // A typed value is sent with the tick too, even if the stored set says otherwise.
+  const key2 = "x:" + day + ":" + row.id;
+  lib.logCell(key2, 1, "w", "90", day, row.id, 4242);
+  state.openSession.set_logs = [{ workout_exercise_id: 4242, set_number: 2, weight: 0, reps: 0, completed: false, details: "" }];
+  lib.logCell(key2, 1, "done", true, day, row.id, 4242);
+  await new Promise((r) => setTimeout(r, 0));
+  const tick = new URLSearchParams(sent[sent.length - 1].split("?")[1]);
+  assert.equal(tick.get("weight"), "90");
+  assert.equal(tick.get("reps"), "5");
   state.openSession = null;
   state.coachSessionFor = null;
+}
+
+{
+  // Duration is an optional minutes box saved on the session; blank clears it.
+  assert.ok(lib.durationField([{ id: "x" }]).includes("—"));
+  state.openSession = { id: 88, set_logs: [], duration_minutes: null };
+  assert.ok(lib.durationField([]).includes("—"));
+  assert.ok(lib.durationField([{ id: "x" }]).includes('id="session-minutes"'));
+  const calls = [];
+  sandbox.__setApi(async (method, url, body) => { calls.push([method, url, body]); return { id: 88, duration_minutes: body.minutes }; });
+  await lib.saveSessionDuration("45");
+  assert.deepEqual(calls[0], ["PUT", "/api/sessions/88/duration", { minutes: 45 }]);
+  assert.equal(state.openSession.duration_minutes, 45);
+  assert.ok(lib.durationField([{ id: "x" }]).includes('value="45"'));
+  await lib.saveSessionDuration("45");
+  assert.equal(calls.length, 1);
+  await lib.saveSessionDuration("0");
+  await lib.saveSessionDuration("abc");
+  assert.equal(calls.length, 1);
+  await lib.saveSessionDuration("");
+  assert.deepEqual(calls[1][2], { minutes: null });
+  assert.equal(state.openSession.duration_minutes, null);
+  state.openSession = null;
 }
 
 {
