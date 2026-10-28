@@ -572,13 +572,13 @@ function render() {
   const selEnd = active && active.selectionEnd;
   document.querySelectorAll("body > .search-pop").forEach((el) => el.remove());
   if (!state.auth || !state.auth.isAuthenticated) {
-    root.className = "";
-    root.innerHTML = renderLoginGate() + (state.toast ? `<div class="toast">${esc(state.toast)}</div>` : "");
+    root.className = "light";
+    root.innerHTML = renderLoginGate() + (state.toast ? `<div class="toast">${esc(state.toast)}</div>` : "") + modalHtml();
     return;
   }
   if (state.auth.user && state.auth.user.needs_onboarding) {
-    root.className = "";
-    root.innerHTML = renderCodeGate() + (state.toast ? `<div class="toast">${esc(state.toast)}</div>` : "");
+    root.className = "light";
+    root.innerHTML = renderCodeGate() + (state.toast ? `<div class="toast">${esc(state.toast)}</div>` : "") + modalHtml();
     return;
   }
   const light = state.view !== "build" && state.view !== "mine";
@@ -7388,16 +7388,15 @@ function modalHtml() {
   }
   if (m.type === "google_options") {
     return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render();}"><div class="modal" style="max-width:440px">
-      <h3>Google Sign-In Options</h3>
-      <p style="font-size:13px;color:#aaa;line-height:1.4">Live Google OAuth connects through your Supabase project. Choose how you would like to proceed:</p>
-      <button class="full primary" style="background:#4285F4;color:#fff;margin-top:10px" onclick="handleGoogleDemoLogin()">Continue with Google Account (1-Click)</button>
-      <div class="auth-divider" style="margin:16px 0">or connect live project</div>
-      <div style="text-align:left;margin-bottom:8px">
-        <label style="font-size:12px;color:#aaa">Supabase Project Anon Key (Public Key)</label>
-        <input class="field" id="modal-anon-key" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6..." style="margin-top:4px">
+      <h3>Google sign-in</h3>
+      <p class="modal-sub">Live Google sign-in runs through your Supabase project.</p>
+      <div class="modal-body ui-form">
+        <button class="btn btn-primary btn-block" type="button" onclick="handleGoogleDemoLogin()">Continue with Google (1-click)</button>
+        <div class="auth-divider" style="margin:4px 0">or connect a live project</div>
+        ${uiField("Supabase project anon key (public)", `<input class="field" id="modal-anon-key" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6...">`)}
+        <button class="btn btn-secondary btn-block" type="button" onclick="saveSupabaseAnonKey()">Save key and open Google sign-in</button>
       </div>
-      <button class="full ghost" style="margin-top:4px" onclick="saveSupabaseAnonKey()">Save Key & Launch Google OAuth</button>
-      <button class="full" style="margin-top:8px" onclick="state.modal=null;render()">Cancel</button>
+      <div class="modal-foot"><button class="full" type="button" onclick="state.modal=null;render()">Cancel</button></div>
     </div></div>`;
   }
   return "";
@@ -7809,7 +7808,7 @@ function renderCodeGate() {
         <label>Gym name</label>
         <input class="auth-input" id="gym-name" placeholder="Northside Athletics" required autocomplete="organization">
       </div>
-      <button class="auth-submit-btn" id="create-gym-btn" type="submit">Create gym</button>
+      <button class="auth-submit-btn secondary" id="create-gym-btn" type="submit">Create gym</button>
     </form>` : "";
   const blurb = noGym
     ? "You are signed in and not in a gym yet. A gym code makes you a coach. A team code puts you on that team as an athlete. Or create a gym and become its admin."
@@ -7818,7 +7817,7 @@ function renderCodeGate() {
     <div class="auth-card">
       <div class="auth-logo">w<span>ourkout</span></div>
       <div class="auth-sub">${noGym ? "Join or create a gym" : "Enter your code"}</div>
-      <p style="font-size:13px;color:#aaa;line-height:1.45;margin:0 0 16px">${blurb}</p>
+      <p class="auth-copy">${blurb}</p>
       ${err}
       <form class="auth-form" onsubmit="redeemCode(event); return false;">
         <div class="auth-input-group">
@@ -8095,7 +8094,7 @@ function renderLoginGate() {
   } else if (mode === "forgot") {
     content = `
       <form class="auth-form" onsubmit="handleForgotPassword(event); return false;">
-        <p style="font-size:13px;color:#aaa;margin-bottom:12px;line-height:1.4">
+        <p class="auth-copy">
           Enter your account email. We will send you a password reset link powered by Supabase Auth.
         </p>
         <div class="auth-input-group">
@@ -8113,7 +8112,7 @@ function renderLoginGate() {
   } else if (mode === "reset") {
     content = `
       <form class="auth-form" onsubmit="handleResetPassword(event); return false;">
-        <p style="font-size:13px;color:#aaa;margin-bottom:12px;line-height:1.4">
+        <p class="auth-copy">
           Enter your new password below to reset your credentials.
         </p>
         <div class="auth-input-group">
