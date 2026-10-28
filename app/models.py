@@ -313,6 +313,19 @@ class GymItem(Base):
     body = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
 
+class WeekNote(Base):
+    """A coach-only note on one week of one athlete's or one team's calendar. Athletes never see it."""
+    __tablename__ = "week_notes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    gym_id = Column(Integer, ForeignKey("gyms.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    group_id = Column(Integer, ForeignKey("groups.id", ondelete="CASCADE"), nullable=True, index=True)
+    week_start = Column(String(10), nullable=False, index=True)  # YYYY-MM-DD, a Sunday
+    body = Column(Text, default="")
+    updated_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 class GymHiddenExercise(Base):
     """A lift hidden on this gym's exercise list. The catalog itself stays shared."""
     __tablename__ = "gym_hidden_exercises"

@@ -577,6 +577,16 @@ class CalendarScheduleEntry(BaseModel):
     is_group_assignment: bool = False
     workout: WorkoutDetailResponse
 
+class WeekNoteEntry(BaseModel):
+    week_start: str
+    body: str = ""
+
+class WeekNoteWrite(BaseModel):
+    user_id: Optional[int] = None
+    group_id: Optional[int] = None
+    week_start: str
+    body: str = ""
+
 class MoveTeamRequest(BaseModel):
     coach_id: int
 

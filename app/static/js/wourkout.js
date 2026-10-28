@@ -286,6 +286,8 @@ const state = {
   buildJumpWeek: "",
   playingVideo: "",
   chainLetterFor: "",
+  weekNotes: {},
+  weekNotesFolded: readFoldedWeeks(),
   undo: [],
   history: [],
   toast: "",
@@ -575,12 +577,13 @@ function render() {
     return;
   }
   const light = state.view !== "build" && state.view !== "mine";
-  root.className = light ? "light" : "";
+  root.className = light ? "light" : state.view === "build" ? "fit" : "";
   const toastHtml = state.toast ? `<div class="toast">${esc(state.toast)}</div>` : "";
   const pending = state.pendingFocus;
   if (pending) state.pendingFocus = "";
   root.innerHTML = nav() + '<div class="shell">' + body() + rightRail() + "</div>" + toastHtml + modalHtml() + fabHtml();
   placeSearchPop();
+  placeEditorPop();
   const focusKey = pending || focusId;
   if (focusKey) {
     const el = document.querySelector(`[data-focus="${focusKey}"]`);
@@ -630,6 +633,34 @@ function placeSearchPop() {
   if (left < margin) left = margin;
   pop.style.top = Math.round(top) + "px";
   pop.style.left = Math.round(left) + "px";
+  pop.classList.add("is-placed");
+}
+
+function placeEditorPop() {
+  const pop = document.querySelector(".editor.build-editor");
+  if (!pop || !state.editor) return;
+  const day = document.querySelector('.day[data-day="' + state.editor.day + '"]');
+  const row = day && day.querySelector('.ex[data-id="' + state.editor.id + '"]');
+  const anchor = row || day;
+  if (!anchor) return;
+  const margin = 8;
+  const gap = 6;
+  const header = document.querySelector(".topnav");
+  const minTop = (header ? header.getBoundingClientRect().bottom : 0) + margin;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const pw = pop.offsetWidth;
+  const ph = pop.offsetHeight;
+  const column = (day || anchor).getBoundingClientRect();
+  const rect = anchor.getBoundingClientRect();
+  let left = column.right + gap;
+  if (left + pw > vw - margin) left = column.left - gap - pw;
+  if (left < margin) left = Math.max(margin, Math.min(vw - margin - pw, rect.left));
+  let top = rect.top - 8;
+  if (top + ph > vh - margin) top = vh - margin - ph;
+  if (top < minTop) top = minTop;
+  pop.style.left = Math.round(left) + "px";
+  pop.style.top = Math.round(top) + "px";
   pop.classList.add("is-placed");
 }
 
@@ -1072,6 +1103,7 @@ async function loadCalendarSchedule(targetId) {
   } else {
     return;
   }
+  loadWeekNotes(targetId, query);
   const gen = (loadCalendarSchedule.gen[targetId] = (loadCalendarSchedule.gen[targetId] || 0) + 1);
   const started = Date.now();
   state.calendarLoading[targetId] = true;
@@ -1117,6 +1149,87 @@ async function loadCalendarSchedule(targetId) {
   }
 }
 loadCalendarSchedule.gen = {};
+
+const WEEK_NOTE_SAVE_MS = 600;
+const weekNoteTimers = {};
+function weekNoteTarget(targetId) {
+  const person = buildAthletes().find((a) => a.id === targetId);
+  if (!person) return null;
+  if (person.isGroup && person.groupId) return { group_id: person.groupId };
+  if (person.serverId) return { user_id: person.serverId };
+  return null;
+}
+async function loadWeekNotes(targetId, query) {
+  try {
+    const rows = await api("GET", "/api/calendar/week-notes" + query);
+    const notes = state.weekNotes[targetId] || (state.weekNotes[targetId] = {});
+    (rows || []).forEach((row) => {
+      if (!weekNoteTimers[targetId + "|" + row.week_start]) notes[row.week_start] = row.body || "";
+    });
+    if (state.view === "build" && state.athleteId === targetId) render();
+  } catch (err) {
+    console.error("Failed to load week notes:", err);
+  }
+}
+function weekNote(week, targetId = state.athleteId) {
+  return ((state.weekNotes[targetId] || {})[week]) || "";
+}
+function readFoldedWeeks() {
+  try {
+    return JSON.parse(localStorage.getItem("wourkout_week_notes_folded") || "{}") || {};
+  } catch (err) {
+    return {};
+  }
+}
+function weekNoteOpen(week, targetId = state.athleteId) {
+  const key = targetId + "|" + week;
+  if (key in state.weekNotesFolded) return !state.weekNotesFolded[key];
+  return !!weekNote(week, targetId).trim();
+}
+function toggleWeekNote(week, ev) {
+  if (ev) ev.stopPropagation();
+  const key = state.athleteId + "|" + week;
+  const open = weekNoteOpen(week);
+  state.weekNotesFolded[key] = open;
+  try { localStorage.setItem("wourkout_week_notes_folded", JSON.stringify(state.weekNotesFolded)); } catch (err) { /* per-viewer only */ }
+  if (!open) state.pendingFocus = "week-note-" + week;
+  render();
+}
+function setWeekNote(week, value) {
+  const targetId = state.athleteId;
+  const notes = state.weekNotes[targetId] || (state.weekNotes[targetId] = {});
+  notes[week] = value;
+  const key = targetId + "|" + week;
+  clearTimeout(weekNoteTimers[key]);
+  weekNoteTimers[key] = setTimeout(() => saveWeekNote(targetId, week), WEEK_NOTE_SAVE_MS);
+}
+function flushWeekNote(week) {
+  const key = state.athleteId + "|" + week;
+  if (!weekNoteTimers[key]) return;
+  clearTimeout(weekNoteTimers[key]);
+  saveWeekNote(state.athleteId, week);
+}
+async function saveWeekNote(targetId, week) {
+  const key = targetId + "|" + week;
+  delete weekNoteTimers[key];
+  const target = weekNoteTarget(targetId);
+  if (!target) return;
+  try {
+    await api("PUT", "/api/calendar/week-notes", Object.assign({ week_start: week, body: weekNote(week, targetId) }, target));
+  } catch (err) {
+    console.error("Failed to save week note:", err);
+    toast("Week note did not save");
+  }
+}
+function weekNoteHtml(week) {
+  const text = weekNote(week);
+  const open = weekNoteOpen(week);
+  const preview = text.trim().split("\n")[0];
+  const toggle = `<button type="button" class="week-note-toggle" aria-expanded="${open ? "true" : "false"}" onclick="toggleWeekNote('${week}', event)">${open ? "▾ Notes" : text.trim() ? "▸ Notes" : "+ Notes"}</button>`;
+  if (!open) return `${toggle}${preview ? `<span class="week-note-preview">${esc(preview)}</span>` : ""}`;
+  return `${toggle}<span class="week-note-private">Coaches only</span>
+    <textarea class="week-note" data-focus="week-note-${week}" rows="${Math.min(8, Math.max(2, text.split("\n").length))}" placeholder="Programming notes for this week. Athletes never see these." oninput="setWeekNote('${week}', this.value)" onblur="flushWeekNote('${week}')" onclick="event.stopPropagation()">${esc(text)}</textarea>`;
+}
 
 function syncFromGymContext() {
   const ctx = state.gymContext;
@@ -1409,10 +1522,7 @@ function closeNav() {
 }
 function go(view, ev) {
   if (ev) ev.stopPropagation();
-  if (state.editor && state.view === "build" && view !== state.view) {
-    askCloseEditor();
-    return;
-  }
+  if (state.editor && state.view === "build" && view !== state.view && !closeEditor()) return;
   state.navOpen = false;
   if (view === "workout" || view === "coach") {
     if (state.role === "athlete") {
@@ -1444,10 +1554,7 @@ function go(view, ev) {
   if (view === "maxes") loadGoals();
 }
 function goTool(view) {
-  if (state.editor && state.view === "build" && view !== "build") {
-    askCloseEditor();
-    return;
-  }
+  if (state.editor && state.view === "build" && view !== "build" && !closeEditor()) return;
   state.navMenu = null;
   state.navOpen = false;
   if (state.role === "athlete") {
@@ -1536,22 +1643,29 @@ function body() {
   }
 }
 
+const BUILD_LEAD_WEEKS = 4;
+const BUILD_MAX_WEEKS = 160;
 function ensureBuildWindow() {
   const todayWeek = sundayOf(APP_TODAY);
   const first = !state.buildOrigin;
   if (first) {
-    if (state.weekStart < todayWeek) state.weekStart = todayWeek;
-    state.buildOrigin = todayWeek;
-    state.buildWeekCount = 8;
-    if (state.weekStart !== todayWeek) state.buildJumpWeek = state.weekStart;
+    const anchor = state.weekStart < todayWeek ? state.weekStart : todayWeek;
+    state.buildOrigin = addDays(anchor, -BUILD_LEAD_WEEKS * 7);
+    state.buildWeekCount = BUILD_LEAD_WEEKS + 8;
+    state.buildJumpWeek = state.weekStart;
   }
   const fitted = extendBuildWindow(state.buildOrigin, state.buildWeekCount, state.weekStart);
   state.buildOrigin = fitted.origin;
   state.buildWeekCount = fitted.count;
 }
 function extendBuildWindow(origin, count, weekStart) {
-  const start = origin;
+  let start = origin;
   let total = count || 1;
+  if (weekStart < start) {
+    const back = Math.round((new Date(start + "T12:00:00") - new Date(weekStart + "T12:00:00")) / (7 * 86400000));
+    start = addDays(start, -back * 7);
+    total += back;
+  }
   const end = addDays(start, (total - 1) * 7);
   if (weekStart > end) {
     const extra = Math.max(1, Math.round((new Date(weekStart + "T12:00:00") - new Date(end + "T12:00:00")) / (7 * 86400000)));
@@ -1561,7 +1675,7 @@ function extendBuildWindow(origin, count, weekStart) {
 }
 function loadEarlierWeeks() {
   ensureBuildWindow();
-  if (state.buildWeekCount > 80) return;
+  if (state.buildWeekCount > BUILD_MAX_WEEKS) return;
   const el = document.querySelector(".build-cal");
   if (el) state.buildPrepend = { prevHeight: el.scrollHeight, prevTop: el.scrollTop };
   state.buildOrigin = addDays(state.buildOrigin, -28);
@@ -1591,12 +1705,16 @@ function onBuildScroll(el) {
     state.weekStart = week;
     writeBuildQuery();
   }
-  if (state.buildWeekCount > 80) return;
+  if (state.buildWeekCount > BUILD_MAX_WEEKS) return;
+  const nearTop = el.scrollTop < 280;
   const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 280;
-  if (!nearBottom) return;
+  if (!nearTop && !nearBottom) return;
   onBuildScroll.locking = true;
-  state.buildWeekCount += 4;
-  render();
+  if (nearTop) loadEarlierWeeks();
+  else {
+    state.buildWeekCount += 4;
+    render();
+  }
   setTimeout(() => { onBuildScroll.locking = false; }, 80);
 }
 function restoreBuildScroll() {
@@ -1635,8 +1753,7 @@ function applyBuildParams(search, role) {
   const query = readBuildParams(search);
   const next = {};
   if (/^\d{4}-\d{2}-\d{2}$/.test(query.week)) {
-    const week = sundayOf(query.week);
-    if (week >= sundayOf(APP_TODAY)) next.weekStart = week;
+    next.weekStart = sundayOf(query.week);
   }
   if (query.cal === "week" || query.cal === "month") next.viewMode = query.cal;
   if (query.athlete && buildAthletes().some((a) => a.id === query.athlete)) next.athleteId = query.athlete;
@@ -1682,7 +1799,7 @@ function buildView() {
     let cols = "";
     for (let i = 0; i < 7; i++) cols += dayCol(addDays(start, i));
     const banner = start === todayWeek ? "This week" : weekName(start);
-    weeksHtml += `<div class="week${current}" data-week="${start}"><div class="week-banner">${esc(banner)}</div>${cols}</div>`;
+    weeksHtml += `<div class="week${current}" data-week="${start}"><div class="week-banner"><span class="week-name">${esc(banner)}</span>${weekNoteHtml(start)}</div>${cols}</div>`;
   }
   writeBuildQuery();
   const currentTarget = athlete();
@@ -1714,7 +1831,7 @@ function buildView() {
           </select>
         </div>
       </div>
-      <div class="cal-scroll build-cal ${state.viewMode === "week" ? "mode-week" : "mode-month"}" onscroll="onBuildScroll(this)"><button type="button" class="load-earlier" onclick="loadEarlierWeeks()">Load Earlier</button>${weeksHtml}</div>
+      <div class="cal-scroll build-cal ${state.viewMode === "week" ? "mode-week" : "mode-month"}" onscroll="onBuildScroll(this)">${weeksHtml}</div>
       ${floatingEditor}
     </section>`;
 }
@@ -1850,7 +1967,6 @@ function switchAthlete(id) {
 function shiftWeek(n) {
   const next = addDays(state.weekStart, n * 7);
   const build = state.view === "build" && state.role !== "athlete";
-  if (build && state.buildOrigin && next < state.buildOrigin) return;
   state.weekStart = next;
   if (build) {
     ensureBuildWindow();
@@ -1956,6 +2072,7 @@ function chainBlockHtml(date, day, group) {
       <span class="tag">${esc(head.chainKind || "")}</span>
       <button type="button" draggable="false" onclick="openChainFromDay('${date}','${instance}');event.stopPropagation()">Edit chain</button>
       <button type="button" draggable="false" onclick="breakChain('${date}','${instance}');event.stopPropagation()">Break apart</button>
+      <button type="button" class="chain-trash" draggable="false" title="Delete chain" aria-label="Delete chain" onclick="askDeleteChain('${date}','${instance}');event.stopPropagation()">🗑</button>
     </div>
     ${menu}
     ${open ? group.map((it) => exRow(date, day, it, { inChain: true })).join("") : ""}
@@ -1967,15 +2084,19 @@ function exRow(date, day, it, opts) {
   const letter = inChain ? "" : (it.letter ? `<span class="letter" style="background:${color}">${esc(it.letter)}</span>` : `<span class="letter" style="background:#444;color:#fff">–</span>`);
   const dragAttr = inChain ? "" : ` draggable="true" ondragstart="dragStart(event,'${date}','${it.id}')"`;
   const hot = clipHotMatches(date, { level: "exercise", id: it.id }) ? " clip-hot" : "";
-  return `<div class="ex ${it.selected ? "selected" : ""}${hot}" data-id="${esc(it.id)}"${dragAttr} onclick="selectExercise('${date}','${it.id}', event)">
-    <input class="check" type="checkbox" ${it.selected ? "checked" : ""} onclick="toggleItem('${date}','${it.id}', this.checked);event.stopPropagation()">
+  const editing = state.editor && state.editor.day === date && state.editor.id === it.id ? " editing" : "";
+  const sub = scriptLine(it);
+  return `<div class="ex ${it.selected ? "selected" : ""}${hot}${editing}" data-id="${esc(it.id)}"${dragAttr} onclick="selectExercise('${date}','${it.id}', event)">
     ${letter}
-    <button class="ex-main" style="background:transparent;border:0;color:inherit;text-align:left;padding:0" onclick="openEditor('${date}','${it.id}', event)">
+    <button class="ex-main" title="${esc(it.name + (sub ? "\n" + sub : ""))}" onclick="openEditor('${date}','${it.id}', event)">
       <div class="ex-name">${esc(it.name)}</div>
-      <div class="ex-sub">${esc(scriptLine(it))}</div>
+      <div class="ex-sub">${esc(sub)}</div>
     </button>
-    <button class="handle" title="Drag">⋮⋮</button>
-    <button class="trash" title="Delete" onclick="askDelete('${date}','${it.id}')">🗑</button>
+    <span class="ex-tools">
+      <input class="check" type="checkbox" title="Select" ${it.selected ? "checked" : ""} onclick="toggleItem('${date}','${it.id}', this.checked);event.stopPropagation()">
+      <button class="handle" title="Drag">⋮⋮</button>
+      <button class="trash" title="Delete" onclick="askDelete('${date}','${it.id}')">🗑</button>
+    </span>
   </div>`;
 }
 
@@ -2231,6 +2352,8 @@ function openEditor(date, id, ev) {
   if (ev) ev.stopPropagation();
   const it = findItem(date, id);
   if (!it) return;
+  const switching = state.editor && (state.editor.day !== date || state.editor.id !== id);
+  if (switching && !closeEditor()) return;
   state.focusDay = date;
   state.searchDay = null;
   state.modal = null;
@@ -2244,11 +2367,11 @@ function openEditor(date, id, ev) {
   selectExercise(date, id, null, { silent: true });
   render();
 }
-function askCloseEditor() {
-  if (!state.editor) return;
-  if (state.modal && (state.modal.type === "editor-close" || state.modal.type === "editor-name")) return;
-  state.modal = { type: "editor-close" };
-  render();
+function closeEditor() {
+  if (!state.editor) return true;
+  if (state.modal && state.modal.type === "editor-name") return false;
+  saveEditor();
+  return !state.editor;
 }
 function saveEditor() {
   const ed = state.editor;
@@ -2318,7 +2441,7 @@ function editorHead(date, it, day) {
       <input class="name-input" aria-label="Exercise name" data-focus="exname-${it.id}" value="${esc(it.name)}" oninput="setField('${date}','${it.id}','name', this.value)" onchange="renderSoon()">
       ${letterBtn}
       <button type="button" class="iconbtn" title="Delete" onclick="askDelete('${date}','${it.id}')">🗑</button>
-      <button type="button" class="iconbtn" title="Close" onclick="askCloseEditor();event.stopPropagation()">✕</button>
+      <button type="button" class="iconbtn" title="Close" onclick="closeEditor();event.stopPropagation()">✕</button>
     </div>
     ${letterPop}
     <button type="button" class="linkish" onclick="openInfo('${date}','${it.id}')">+ Add Additional Info (Shift + I)</button>
@@ -2373,9 +2496,9 @@ function setVolume(it) {
   return total;
 }
 function editorFrameWidth(it) {
-  if (!it || it.type === "questionnaire" || it.type === "note" || it.type === "break" || it.type === "video" || it.type === "rest") return 680;
+  if (!it || it.type === "questionnaire" || it.type === "note" || it.type === "break" || it.type === "video" || it.type === "rest") return 400;
   const sets = Math.max(1, it.sets || 1);
-  return Math.min(980, Math.max(680, 188 + sets * 84));
+  return Math.min(560, Math.max(400, 120 + sets * 72));
 }
 function editorPop(date) {
   const it = findItem(date, state.editor.id);
@@ -2412,7 +2535,7 @@ function editorPop(date) {
   }
   return `<div class="editor build-editor" ${frame} onclick="event.stopPropagation()">${head}
     <div class="sets-line">${setRow(date, it, "Sets")}${addPropButton(date, it)}</div>
-    ${workTable(date, it)}
+    <div class="prop-scroll">${workTable(date, it)}</div>
     ${editorActions(date, it)}
   </div>`;
 }
@@ -3760,6 +3883,12 @@ function askDelete(date, id) {
   const ids = id ? [id] : ensureDay(date).items.filter((it) => it.selected).map((it) => it.id);
   if (!ids.length) return;
   state.modal = { type: "delete", date, ids };
+  render();
+}
+function askDeleteChain(date, instance) {
+  const members = ensureDay(date).items.filter((it) => it.chainInstance === instance);
+  if (!members.length) return;
+  state.modal = { type: "delete", date, ids: members.map((it) => it.id), chainName: members[0].chainName || "Chain" };
   render();
 }
 function confirmDelete() {
@@ -6736,14 +6865,11 @@ function modalHtml() {
   if (m.type === "edit") return editModalHtml(m);
   if (m.type === "chain") return chainEditorHtml(m);
   if (m.type === "chain-scope") return chainScopeHtml(m);
-  if (m.type === "editor-close") {
-    return `<div class="modal-back"><div class="modal" onclick="event.stopPropagation()"><h3>Save this exercise?</h3><p class="sub">Save keeps the edits from this open. Discard puts the exercise back to where it was when the editor opened.</p><button class="full save" type="button" onclick="saveEditor()">Save</button><button class="full" type="button" onclick="discardEditor()">Discard</button></div></div>`;
-  }
   if (m.type === "editor-name") {
     return `<div class="modal-back"><div class="modal" onclick="event.stopPropagation()"><h3>Name this exercise</h3><input class="field" data-focus="editor-name" aria-label="Exercise name" value="${esc(m.name || "")}" oninput="state.modal.name=this.value"><button class="full save" type="button" onclick="acceptEditorName()">Save</button><button class="full" type="button" onclick="dismissEditorName()">Cancel</button></div></div>`;
   }
   if (m.type === "delete") {
-    return `<div class="modal-back" onclick="state.modal=null;render()"><div class="modal" onclick="event.stopPropagation()"><h3>You are about to delete (${m.ids.length}) workout item${m.ids.length > 1 ? "s" : ""}</h3><button class="full red" onclick="confirmDelete()">DELETE</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
+    return `<div class="modal-back" onclick="state.modal=null;render()"><div class="modal" onclick="event.stopPropagation()"><h3>${m.chainName ? `Delete the chain "${esc(m.chainName)}" and its ${m.ids.length} exercise${m.ids.length > 1 ? "s" : ""}?` : `You are about to delete (${m.ids.length}) workout item${m.ids.length > 1 ? "s" : ""}`}</h3><button class="full red" onclick="confirmDelete()">DELETE</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
   }
   if (m.type === "copy") {
     return `<div class="modal-back"><div class="modal" onclick="event.stopPropagation()"><div class="split"><h3>${m.mode === "move" ? "Move" : "Copy"}</h3><button class="iconbtn" onclick="state.modal=null;render()">✕</button></div>
@@ -6839,11 +6965,11 @@ function onFab() {
   if (state.view === "maxes") { addGoalRecord(); return; }
 }
 
-window.addEventListener("resize", () => { if (state.searchDay) placeSearchPop(); });
-document.addEventListener("scroll", () => { if (state.searchDay) placeSearchPop(); }, true);
+window.addEventListener("resize", () => { if (state.searchDay) placeSearchPop(); if (state.editor) placeEditorPop(); });
+document.addEventListener("scroll", () => { if (state.searchDay) placeSearchPop(); if (state.editor) placeEditorPop(); }, true);
 document.addEventListener("click", (ev) => {
   if (state.editor && state.view === "build" && !ev.target.closest(".build-editor, .modal, .modal-back, .menu, .pop")) {
-    askCloseEditor();
+    closeEditor();
     return;
   }
   if (ev.target.closest(".menu, .pop, .modal, .modal-back, .nav-anchor, .group-pop")) return;
@@ -6859,6 +6985,11 @@ document.addEventListener("click", (ev) => {
   if (changed) render();
 });
 document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && state.editor && state.view === "build" && !state.modal) {
+    ev.preventDefault();
+    discardEditor();
+    return;
+  }
   const tag = (ev.target.tagName || "").toLowerCase();
   const typing = tag === "input" || tag === "textarea" || tag === "select" || (ev.target.isContentEditable);
   if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "z") {
@@ -6943,6 +7074,11 @@ window.confirmClear = confirmClear;
 window.toggleAll = toggleAll;
 window.toggleItem = toggleItem;
 window.askDelete = askDelete;
+window.askDeleteChain = askDeleteChain;
+window.closeEditor = closeEditor;
+window.toggleWeekNote = toggleWeekNote;
+window.setWeekNote = setWeekNote;
+window.flushWeekNote = flushWeekNote;
 window.doDelete = doDelete;
 window.openCopy = openCopy;
 window.applyCopy = applyCopy;

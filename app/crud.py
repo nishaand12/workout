@@ -14,7 +14,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, desc, asc
 
-from app.models import Exercise, ExerciseChain, ExerciseChainMember, Workout, WorkoutExercise, WorkoutSession, SetLog, PersonalRecord, User, Group, WorkoutAssignment, Gym, JoinCode, GymItem, GymHiddenExercise
+from app.models import Exercise, ExerciseChain, ExerciseChainMember, Workout, WorkoutExercise, WorkoutSession, SetLog, PersonalRecord, User, Group, WorkoutAssignment, Gym, JoinCode, GymItem, GymHiddenExercise, WeekNote
 from app import access
 from app.schemas import (
     ExerciseCreate, ExerciseUpdate, WorkoutCreate, WorkoutUpdate, PersonalRecordCreate,
@@ -2859,6 +2859,62 @@ def _item_payload(row: GymItem) -> dict:
 
 def _staff_user(user: User) -> bool:
     return access.is_admin(user) or access.is_coach(user)
+
+
+def _week_note_target(db: Session, viewer: User, user_id: Optional[int], group_id: Optional[int]) -> Tuple[Optional[int], Optional[int]]:
+    """Check a coach may write notes on this calendar. Returns (user_id, group_id) with exactly one set."""
+    access.require_gym(viewer)
+    if not _staff_user(viewer):
+        raise HTTPException(status_code=403, detail="Week notes are for coaches.")
+    if bool(user_id) == bool(group_id):
+        raise HTTPException(status_code=400, detail="Pick one athlete or one team.")
+    if group_id:
+        team = get_group(db, group_id)
+        if not team:
+            raise HTTPException(status_code=404, detail="Group not found")
+        if team.gym_id != viewer.gym_id:
+            raise HTTPException(status_code=403, detail="That group is in another gym.")
+        return None, team.id
+    target = get_user(db, user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not access.can_see_user(db, viewer, target):
+        raise HTTPException(status_code=403, detail="You cannot view that athlete's calendar.")
+    return target.id, None
+
+
+def _week_note_query(db: Session, viewer: User, user_id: Optional[int], group_id: Optional[int]):
+    uid, gid = _week_note_target(db, viewer, user_id, group_id)
+    query = db.query(WeekNote).filter(WeekNote.gym_id == viewer.gym_id)
+    if gid:
+        return query.filter(WeekNote.group_id == gid, WeekNote.user_id.is_(None)), uid, gid
+    return query.filter(WeekNote.user_id == uid, WeekNote.group_id.is_(None)), uid, gid
+
+
+def list_week_notes(db: Session, viewer: User, user_id: Optional[int] = None, group_id: Optional[int] = None) -> List[dict]:
+    query, _, _ = _week_note_query(db, viewer, user_id, group_id)
+    rows = query.order_by(WeekNote.week_start.asc()).all()
+    return [{"week_start": r.week_start, "body": r.body or ""} for r in rows if (r.body or "").strip()]
+
+
+def save_week_note(db: Session, viewer: User, user_id: Optional[int], group_id: Optional[int], week_start: str, body: str) -> dict:
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", week_start or ""):
+        raise HTTPException(status_code=400, detail="week_start must be YYYY-MM-DD.")
+    query, uid, gid = _week_note_query(db, viewer, user_id, group_id)
+    row = query.filter(WeekNote.week_start == week_start).first()
+    text_body = body or ""
+    if not text_body.strip():
+        if row:
+            db.delete(row)
+            db.commit()
+        return {"week_start": week_start, "body": ""}
+    if not row:
+        row = WeekNote(gym_id=viewer.gym_id, user_id=uid, group_id=gid, week_start=week_start)
+        db.add(row)
+    row.body = text_body
+    row.updated_by = viewer.id
+    db.commit()
+    return {"week_start": week_start, "body": row.body}
 
 
 def list_gym_items(db: Session, user: User, kind: Optional[str] = None) -> List[dict]:

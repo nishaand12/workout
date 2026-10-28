@@ -60,7 +60,8 @@ globalThis.__lib = {
   clipHotMatches, openCopy, openEditor, discardEditor, saveEditor, dismissEditorName,
   snapshot, entryColumns, setIsComplete, logCell, logCircuitField, entryItem,
   playAthleteVideo, mediaKind, athletePlayerHtml, applyBuildParams, writeBuildQuery,
-  ensureBuildWindow, extendBuildWindow, loadEarlierWeeks, onBuildScroll, sundayOf, addDays, APP_TODAY, shiftWeek, buildView
+  ensureBuildWindow, extendBuildWindow, loadEarlierWeeks, onBuildScroll, sundayOf, addDays, APP_TODAY, shiftWeek, buildView,
+  closeEditor, askDeleteChain, confirmDelete, weekNoteHtml, setWeekNote, toggleWeekNote, modalHtml
 };
 `,
   sandbox,
@@ -69,7 +70,7 @@ globalThis.__lib = {
 
 const lib = sandbox.__lib;
 const state = lib.state;
-["addChainToDay", "ensureDay", "dayExerciseHtml", "chainEntryHtml", "dayCol", "item", "toggleItem", "selectExercise", "selectChain", "selectDay", "copySelection", "pasteOn", "undo", "clipHotMatches", "openCopy", "openEditor", "discardEditor", "saveEditor", "dismissEditorName", "snapshot", "entryColumns", "setIsComplete", "logCell", "logCircuitField", "entryItem", "playAthleteVideo", "mediaKind", "athletePlayerHtml", "applyBuildParams", "writeBuildQuery", "ensureBuildWindow", "extendBuildWindow", "loadEarlierWeeks", "onBuildScroll", "sundayOf", "addDays", "APP_TODAY", "shiftWeek", "buildView"].forEach((name) => {
+["addChainToDay", "ensureDay", "dayExerciseHtml", "chainEntryHtml", "dayCol", "item", "toggleItem", "selectExercise", "selectChain", "selectDay", "copySelection", "pasteOn", "undo", "clipHotMatches", "openCopy", "openEditor", "discardEditor", "saveEditor", "dismissEditorName", "snapshot", "entryColumns", "setIsComplete", "logCell", "logCircuitField", "entryItem", "playAthleteVideo", "mediaKind", "athletePlayerHtml", "applyBuildParams", "writeBuildQuery", "ensureBuildWindow", "extendBuildWindow", "loadEarlierWeeks", "onBuildScroll", "sundayOf", "addDays", "APP_TODAY", "shiftWeek", "buildView", "closeEditor", "askDeleteChain", "confirmDelete", "weekNoteHtml", "setWeekNote", "toggleWeekNote", "modalHtml"].forEach((name) => {
   sandbox[name] = lib[name];
 });
 state.athleteId = "ath";
@@ -220,6 +221,23 @@ assert.ok(state.editor && state.editor.id === editedId);
 sandbox.ensureDay(date).items.find((it) => it.id === editedId).name = "Press";
 state.editor = null;
 
+sandbox.openEditor(date, editedId);
+sandbox.ensureDay(date).items.find((it) => it.id === editedId).name = "Press Kept";
+assert.equal(sandbox.closeEditor(), true);
+assert.equal(state.editor, null);
+assert.equal(state.modal, null);
+assert.equal(sandbox.ensureDay(date).items.find((it) => it.id === editedId).name, "Press Kept");
+const otherRow = sandbox.ensureDay(date).items.find((it) => it.id !== editedId && !it.chainInstance);
+if (otherRow) {
+  sandbox.openEditor(date, editedId);
+  sandbox.ensureDay(date).items.find((it) => it.id === editedId).name = "Press Switched";
+  sandbox.openEditor(date, otherRow.id);
+  assert.equal(state.editor.id, otherRow.id);
+  assert.equal(sandbox.ensureDay(date).items.find((it) => it.id === editedId).name, "Press Switched");
+  state.editor = null;
+}
+sandbox.ensureDay(date).items.find((it) => it.id === editedId).name = "Press";
+
 sandbox.snapshot();
 sandbox.ensureDay(date).items.find((it) => it.id === editedId).name = "Changed";
 const stacked = state.undo.length;
@@ -346,14 +364,14 @@ const todayWeek = sandbox.sundayOf(sandbox.APP_TODAY);
 const earlierWeek = sandbox.addDays(todayWeek, -7);
 const laterWeek = sandbox.addDays(todayWeek, 7);
 const pastQuery = sandbox.applyBuildParams("?week=" + earlierWeek + "&athlete=u7&cal=week", "coach");
-assert.equal(pastQuery.next.weekStart, undefined);
+assert.equal(pastQuery.next.weekStart, earlierWeek);
 assert.equal(pastQuery.next.athleteId, "u7");
 assert.equal(pastQuery.next.viewMode, "week");
 const futureQuery = sandbox.applyBuildParams("?week=" + laterWeek + "&cal=month", "coach");
 assert.equal(futureQuery.next.weekStart, laterWeek);
-const stayed = sandbox.extendBuildWindow(todayWeek, 8, earlierWeek);
-assert.equal(stayed.origin, todayWeek);
-assert.equal(stayed.count, 8);
+const backed = sandbox.extendBuildWindow(todayWeek, 8, sandbox.addDays(todayWeek, -21));
+assert.equal(backed.origin, sandbox.addDays(todayWeek, -21));
+assert.equal(backed.count, 11);
 const grew = sandbox.extendBuildWindow(todayWeek, 8, sandbox.addDays(todayWeek, 70));
 assert.equal(grew.origin, todayWeek);
 assert.ok(grew.count > 8);
@@ -365,59 +383,86 @@ state.buildOrigin = null;
 state.buildWeekCount = 0;
 state.buildJumpWeek = "";
 sandbox.ensureBuildWindow();
-assert.equal(state.buildOrigin, todayWeek);
-assert.equal(state.buildWeekCount, 8);
-assert.equal(state.buildJumpWeek, "");
-state.weekStart = laterWeek;
+assert.equal(state.buildOrigin, sandbox.addDays(todayWeek, -28));
+assert.equal(state.buildWeekCount, 12);
+assert.equal(state.buildJumpWeek, todayWeek);
+const html = sandbox.buildView();
+assert.ok(!html.includes("Load Earlier"));
+assert.ok(html.includes('data-week="' + todayWeek + '"'));
+assert.ok(html.includes('data-week="' + earlierWeek + '"'));
+assert.ok(html.includes("Month"));
+
+state.weekStart = sandbox.addDays(todayWeek, -70);
 state.buildOrigin = null;
 state.buildWeekCount = 0;
 sandbox.ensureBuildWindow();
-assert.equal(state.buildOrigin, todayWeek);
-assert.ok(sandbox.addDays(state.buildOrigin, (state.buildWeekCount - 1) * 7) >= laterWeek);
-const html = sandbox.buildView();
-assert.ok(html.includes("Load Earlier"));
-assert.ok(html.includes('data-week="' + todayWeek + '"'));
-assert.ok(!html.includes('data-week="' + earlierWeek + '"'));
-assert.ok(html.includes(">Month<") || html.includes("Month"));
-assert.ok(html.includes("Week"));
+assert.equal(state.buildOrigin, sandbox.addDays(todayWeek, -98));
+assert.equal(state.buildJumpWeek, state.weekStart);
+state.weekStart = todayWeek;
+state.buildOrigin = null;
+state.buildWeekCount = 0;
+sandbox.ensureBuildWindow();
 
 const originBeforeScroll = state.buildOrigin;
 const countBeforeScroll = state.buildWeekCount;
-sandbox.onBuildScroll({
-  scrollTop: 0,
+const scroller = (top) => ({
+  scrollTop: top,
   scrollHeight: 5000,
   clientHeight: 600,
   getBoundingClientRect() { return { top: 0 }; },
   querySelectorAll() { return []; }
 });
+sandbox.onBuildScroll(scroller(2000));
 assert.equal(state.buildOrigin, originBeforeScroll);
 assert.equal(state.buildWeekCount, countBeforeScroll);
-sandbox.onBuildScroll({
-  scrollTop: 4200,
-  scrollHeight: 5000,
-  clientHeight: 600,
-  getBoundingClientRect() { return { top: 0 }; },
-  querySelectorAll() { return []; }
-});
+sandbox.onBuildScroll(scroller(4200));
 assert.equal(state.buildOrigin, originBeforeScroll);
 assert.equal(state.buildWeekCount, countBeforeScroll + 4);
+sandbox.onBuildScroll.locking = false;
+sandbox.onBuildScroll(scroller(0));
+assert.equal(state.buildOrigin, sandbox.addDays(originBeforeScroll, -28));
+assert.equal(state.buildWeekCount, countBeforeScroll + 8);
 
 state.weekStart = todayWeek;
 sandbox.shiftWeek(-1);
-assert.equal(state.weekStart, todayWeek);
-sandbox.loadEarlierWeeks();
-assert.equal(state.buildOrigin, sandbox.addDays(todayWeek, -28));
-assert.equal(state.buildWeekCount, countBeforeScroll + 8);
-sandbox.loadEarlierWeeks();
-assert.equal(state.buildOrigin, sandbox.addDays(todayWeek, -56));
-assert.equal(state.buildWeekCount, countBeforeScroll + 12);
-assert.equal(state.weekStart, todayWeek);
-sandbox.shiftWeek(-1);
 assert.equal(state.weekStart, earlierWeek);
-state.role = "athlete";
-state.view = "mine";
-state.weekStart = todayWeek;
+state.weekStart = state.buildOrigin;
 sandbox.shiftWeek(-1);
-assert.equal(state.weekStart, earlierWeek);
+assert.ok(state.buildOrigin <= state.weekStart);
+
+// chains delete as one block
+state.modal = null;
+const chainDate = "2026-11-03";
+sandbox.addChainToDay(chainDate, 9);
+const chainDay = sandbox.ensureDay(chainDate);
+const chainInst = chainDay.items[0].chainInstance;
+assert.ok(sandbox.dayExerciseHtml(chainDate, chainDay).includes("askDeleteChain"));
+chainDay.items.push(sandbox.item({ name: "Keeper", letter: "B", type: "lift" }));
+sandbox.askDeleteChain(chainDate, chainInst);
+assert.equal(state.modal.type, "delete");
+assert.equal(state.modal.ids.length, 2);
+assert.ok(sandbox.modalHtml().includes("Ramp"));
+sandbox.confirmDelete();
+assert.equal(sandbox.ensureDay(chainDate).items.length, 1);
+assert.equal(sandbox.ensureDay(chainDate).items[0].name, "Keeper");
+
+// week notes: coach-only banner text, collapsible
+const noteWeek = todayWeek;
+let notesHtml = sandbox.weekNoteHtml(noteWeek);
+assert.ok(notesHtml.includes("+ Notes"));
+assert.ok(!notesHtml.includes("<textarea"));
+sandbox.toggleWeekNote(noteWeek);
+notesHtml = sandbox.weekNoteHtml(noteWeek);
+assert.ok(notesHtml.includes("<textarea"));
+assert.ok(notesHtml.includes("Coaches only"));
+sandbox.setWeekNote(noteWeek, "Deload <week>\nsecond line");
+assert.ok(sandbox.weekNoteHtml(noteWeek).includes("Deload &lt;week&gt;"));
+sandbox.toggleWeekNote(noteWeek);
+notesHtml = sandbox.weekNoteHtml(noteWeek);
+assert.ok(!notesHtml.includes("<textarea"));
+assert.ok(notesHtml.includes("▸ Notes"));
+assert.ok(notesHtml.includes("week-note-preview"));
+assert.ok(!notesHtml.includes("second line"));
+assert.ok(sandbox.buildView().includes("week-note"));
 
 console.log("round 3 ui tests passed");

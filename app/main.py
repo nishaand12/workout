@@ -35,6 +35,7 @@ from app.schemas import (
     CoachAssignRequest, AthleteNoteRequest, ScheduleItem,
     BulkAthleteUploadRequest, BulkAthleteUploadResponse, CalendarScheduleEntry,
     ChainResponse, ChainWrite, ChainEditRequest, ChainEditResponse, ChainFoldRequest,
+    WeekNoteEntry, WeekNoteWrite,
 )
 from app import crud
 
@@ -1084,6 +1085,23 @@ def get_calendar_schedule(
     viewer: Optional[crud.User] = Depends(get_current_user),
 ):
     return crud.get_calendar_schedule(db, viewer, user_id=user_id, group_id=group_id)
+
+@app.get("/api/calendar/week-notes", response_model=List[WeekNoteEntry])
+def list_week_notes(
+    user_id: Optional[int] = Query(None),
+    group_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: crud.User = Depends(require_auth),
+):
+    return crud.list_week_notes(db, current_user, user_id=user_id, group_id=group_id)
+
+@app.put("/api/calendar/week-notes", response_model=WeekNoteEntry)
+def save_week_note(
+    body: WeekNoteWrite,
+    db: Session = Depends(get_db),
+    current_user: crud.User = Depends(require_auth),
+):
+    return crud.save_week_note(db, current_user, body.user_id, body.group_id, body.week_start, body.body)
 
 @app.get("/api/gym/activity")
 def get_gym_activity(
