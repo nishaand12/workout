@@ -44,7 +44,7 @@
 
 /* ---------- Page ---------- */
 .ui-page { flex: 1; overflow: auto; font-size: 14px; line-height: 1.45; color: var(--ui-text); }
-.ui-wrap { max-width: 1200px; margin: 0 auto; padding: 28px 32px 56px; display: flex; flex-direction: column; gap: 24px; }
+.ui-wrap { width: 100%; max-width: 1200px; margin: 0 auto; padding: 28px 32px 56px; display: flex; flex-direction: column; gap: 24px; }
 .ui-wrap.narrow { max-width: 880px; }
 .ui-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .ui-head > div:first-child { min-width: 0; }
@@ -302,10 +302,71 @@
 .ui-page .chain-block .entry-ex { border-color: var(--ui-border); }
 .ui-page .note-box { margin: 0; padding: 0; }
 
+/* ---------- Shared page patterns ---------- */
+.ui-form-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.ui-form-row > .ui-field { flex: 1 1 180px; }
+.ui-form-row > .btn { flex-shrink: 0; }
+.ui-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; align-items: start; }
+.ui-prose { color: var(--ui-text-2); white-space: pre-wrap; margin: 8px 0 0; }
+.ui-tile-btn { display: flex; align-items: center; gap: 14px; padding: 16px 18px; text-align: left; font: inherit; color: var(--ui-text); cursor: pointer; transition: border-color .12s, box-shadow .12s; }
+.ui-tile-btn:hover { border-color: var(--ui-border-strong); box-shadow: var(--ui-shadow-pop); }
+.ui-tile-btn .who b { display: block; font-weight: 600; }
+.ui-tile-btn .who small { display: block; color: var(--ui-muted); font-size: 13px; margin-top: 2px; }
+
+/* Activity feed */
+.ui-feed { display: flex; flex-direction: column; }
+.ui-feed-row { display: flex; gap: 14px; padding: 16px 20px; border-top: 1px solid #f0f1f3; }
+.ui-feed-row:first-child { border-top: 0; }
+.ui-feed-main { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.ui-feed-top { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; width: 100%; }
+.ui-feed-top b { font-weight: 600; }
+.ui-feed-top .muted { color: var(--ui-muted); }
+.ui-feed-date { margin-left: auto; color: var(--ui-subtle); font-size: 13px; }
+.ui-quote { margin: 8px 0 4px; padding: 8px 12px; border-left: 3px solid var(--ui-border-strong); color: var(--ui-text-2); background: var(--ui-sunken); border-radius: 0 6px 6px 0; white-space: pre-wrap; }
+.ui-reply { font-size: 13px; color: var(--ui-text-2); margin: 4px 0; }
+.ui-reply span { display: block; font-size: 12px; color: var(--ui-muted); }
+.ui-feed-row .btn { margin-left: -10px; margin-top: 2px; }
+.ui-tv { padding: 48px 32px; text-align: center; font-size: 32px; font-weight: 600; line-height: 1.3; }
+
+/* Settings layout with a section list */
+.ui-settings { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 32px; align-items: start; }
+.ui-subnav { position: sticky; top: 0; display: flex; flex-direction: column; gap: 2px; }
+.ui-subnav-title { font-size: 16px; font-weight: 700; padding: 4px 10px 12px; }
+.ui-subnav-sec { font-size: 12px; font-weight: 500; color: var(--ui-muted); padding: 12px 10px 4px; }
+.ui-subnav button { text-align: left; border: 0; background: transparent; font: inherit; font-size: 14px; color: var(--ui-text-2); padding: 8px 10px; border-radius: var(--ui-r-control); cursor: pointer; }
+.ui-subnav button:hover { background: var(--ui-hover); }
+.ui-subnav button.on { background: var(--ui-surface); color: var(--ui-text); font-weight: 500; box-shadow: var(--ui-shadow); border: 1px solid var(--ui-border); }
+
+/* Join codes */
+.ui-codes { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; padding-top: 14px; border-top: 1px solid #f0f1f3; }
+.ui-codes .ui-label { width: 100%; }
+.ui-code { display: inline-flex; align-items: center; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-r-control); overflow: hidden; font-size: 13px; }
+.ui-code code { padding: 5px 10px; font-weight: 700; letter-spacing: .06em; background: var(--ui-sunken); }
+.ui-code button { border: 0; border-left: 1px solid var(--ui-border); background: var(--ui-surface); padding: 5px 9px; font: inherit; font-size: 12px; color: var(--ui-muted); cursor: pointer; }
+.ui-code button:hover { background: var(--ui-hover); color: var(--ui-text); }
+.ui-page .join-code { align-self: flex-start; }
+
+/* Whiteboard: large type for a screen across the room */
+.ui-board { padding: 8px 0; }
+.ui-board-row { display: flex; align-items: baseline; gap: 16px; padding: 16px 24px; border-top: 1px solid #f0f1f3; font-size: 22px; }
+.ui-board-row:first-child { border-top: 0; }
+.ui-board-row .letter { width: 32px; height: 32px; border-radius: 8px; font-size: 16px; align-self: center; margin: 0; }
+.ui-board-row b { font-weight: 600; }
+.ui-board-row span:last-child { color: var(--ui-muted); font-size: 18px; }
+
+/* Leaderboard podium */
+.ui-rank { display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; font-weight: 700; font-size: 13px; }
+.ui-rank.r1 { background: #fef3c7; color: #92400e; }
+.ui-rank.r2 { background: #e5e7eb; color: #374151; }
+.ui-rank.r3 { background: #fde7d9; color: #9a3412; }
+
 /* ---------- Responsive ---------- */
 @media (max-width: 1000px) {
   .ui-grid.side { grid-template-columns: 1fr; }
   .ui-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ui-settings { grid-template-columns: 1fr; gap: 16px; }
+  .ui-subnav { position: static; flex-direction: row; flex-wrap: wrap; }
+  .ui-subnav-title, .ui-subnav-sec { display: none; }
 }
 @media (max-width: 640px) {
   .ui-wrap { padding: 20px 16px 48px; gap: 18px; }
@@ -314,6 +375,8 @@
   .ui-card-head, .ui-card-body { padding-left: 16px; padding-right: 16px; }
   .ui-table th, .ui-table td { padding-left: 12px; padding-right: 12px; }
   .ui-table .hide-sm { display: none; }
+  .ui-board-row { font-size: 18px; padding: 12px 16px; flex-wrap: wrap; gap: 8px 12px; }
+  .ui-feed-row { padding: 14px 16px; }
   .entry-week { padding: 8px 4px; gap: 2px; }
   .entry-days { gap: 2px; }
   .entry-day { padding: 6px 0 9px; }

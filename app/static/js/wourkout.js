@@ -586,7 +586,7 @@ function render() {
   const toastHtml = state.toast ? `<div class="toast">${esc(state.toast)}</div>` : "";
   const pending = state.pendingFocus;
   if (pending) state.pendingFocus = "";
-  root.innerHTML = nav() + '<div class="shell">' + body() + "</div>" + toastHtml + modalHtml() + fabHtml();
+  root.innerHTML = nav() + '<div class="shell">' + body() + "</div>" + toastHtml + modalHtml();
   placeSearchPop();
   placeEditorPop();
   const focusKey = pending || focusId;
@@ -5143,46 +5143,74 @@ function fmtDur(ms) {
 }
 
 const FEED = [];
+function feedTabs() {
+  if (state.role === "athlete") return "";
+  const mode = state.feedMode || "athletes";
+  const tab = (id, label) => `<button type="button" class="${mode === id ? "on" : ""}" onclick="setFeedMode('${id}')">${label}</button>`;
+  return `<div class="ui-seg" role="tablist">${tab("athletes", "Athlete activity")}${tab("team", "Team feed")}${tab("journal", "My journal")}</div>`;
+}
+function inFeedWindow(date) {
+  if (!state.feedTime || state.feedTime === "all") return true;
+  if (!/^\d{4}-\d{2}-\d{2}/.test(String(date || ""))) return true;
+  const from = state.feedTime === "week" ? sundayOf(APP_TODAY) : APP_TODAY.slice(0, 8) + "01";
+  return String(date).slice(0, 10) >= from;
+}
 function feedView() {
   if (state.feedMode === "journal") return journalView();
   if (state.feedMode === "team") return teamView();
   const sessions = (state.gymActivity && state.gymActivity.sessions) || [];
   const rawFeed = sessions.length
     ? sessions.map((s) => [
-        s.athlete_name || "Athlete",
+        s.user_name || s.athlete_name || "Athlete",
         s.workout_title || "Workout",
         s.date || "",
-        s.athlete_note || s.notes || (s.tonnage ? `Completed session · ${s.tonnage} kg tonnage` : `Status: ${s.status || "logged"}`)
+        s.athlete_note || s.coach_note || "",
+        s
       ])
     : FEED;
-  const cards = rawFeed.filter((row) => {
+  const q = (state.feedQ || "").toLowerCase();
+  const cards = rawFeed.map((row, i) => ({ row, i })).filter(({ row }) => {
     if (state.feedWho !== "all" && row[0] !== state.feedWho) return false;
-    if (state.feedQ && !row.join(" ").toLowerCase().includes(state.feedQ.toLowerCase())) return false;
-    return true;
+    if (q && row.slice(0, 4).join(" ").toLowerCase().indexOf(q) < 0) return false;
+    return inFeedWindow(row[2]);
   });
-  return `<section class="stage light-page">
-    <div class="feed-top">
-      <div>
-        <h1><select class="plain" onchange="setFeedMode(this.value)"><option value="athletes">All Athletes</option><option value="journal">My Journal</option><option value="team">Team Feed</option></select></h1>
-        <div class="filters"><select class="plain" onchange="state.feedTime=this.value;render()"><option value="all">ALL TIME</option><option>THIS WEEK</option><option>THIS MONTH</option></select></div>
+  const time = state.feedTime || "all";
+  return uiPage(`
+    ${uiHead("Coach", "Activity", "Logged sessions and the notes athletes leave you.", feedTabs())}
+    <section class="ui-card">
+      <div class="ui-card-body ui-inline">
+        ${uiSearch("Search activity", "feed-q", state.feedQ, "state.feedQ=this.value;render()")}
+        <select class="select auto" aria-label="Athlete" onchange="state.feedWho=this.value;render()"><option value="all">All athletes</option>${ATHLETES.map((a) => `<option ${state.feedWho === a.name ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select>
+        <select class="select auto" aria-label="Time range" onchange="state.feedTime=this.value;render()">
+          <option value="all" ${time === "all" ? "selected" : ""}>All time</option>
+          <option value="week" ${time === "week" ? "selected" : ""}>This week</option>
+          <option value="month" ${time === "month" ? "selected" : ""}>This month</option>
+        </select>
       </div>
-      <div>
-        <select class="plain" onchange="state.feedWho=this.value;render()"><option value="all">ATHLETES</option>${ATHLETES.map((a) => `<option ${state.feedWho === a.name ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select>
-        <input class="plain" placeholder="Search Athletes" data-focus="feed-q" value="${esc(state.feedQ)}" oninput="state.feedQ=this.value;render()">
-      </div>
-    </div>
-    ${cards.length ? `<div class="grid-cards">${cards.map((c, i) => feedCard(c, i)).join("")}</div>` : `<div class="empty"><div><div class="book">✎</div><div>No athlete workout activity or notes logged yet.</div></div></div>`}
-  </section>`;
+    </section>
+    <section class="ui-card">
+      ${uiCardHead("Sessions", cards.length)}
+      <div class="ui-feed">${cards.map(({ row, i }) => feedCard(row, i)).join("") || uiEmpty("No activity yet", "Sessions show up here once athletes log a workout.")}</div>
+    </section>`, "feed");
 }
+
 function setFeedMode(v) { state.feedMode = v; render(); }
 function feedCard(c, i) {
-  const extra = state.comments[i] ? `<div class="hint">Coach: ${esc(state.comments[i])}</div>` : "";
-  return `<article class="card">
-    <div class="who"><span class="dotav">${esc((c[0] || "A")[0])}</span><div><strong>${esc(c[0])}</strong><div class="hint">${esc(c[2])}</div></div></div>
-    <div class="exname">${esc(c[1])}</div>
-    <div class="quote">${esc(c[3] || "")}</div>
-    ${extra}
-    <button class="comment" onclick="commentOn(${i})">▢ Add a Comment</button>
+  const s = c[4] || {};
+  const badges = [
+    s.completed ? `<span class="ui-badge green">Completed</span>` : (s.completed_sets ? `<span class="ui-badge blue">In progress</span>` : ""),
+    s.completed_sets ? `<span class="ui-badge">${s.completed_sets} sets</span>` : "",
+    s.tonnage ? `<span class="ui-badge">${fmtLoad(s.tonnage)} kg moved</span>` : ""
+  ].join(" ");
+  return `<article class="ui-feed-row">
+    ${uiAvatar(c[0])}
+    <div class="ui-feed-main">
+      <div class="ui-feed-top"><b>${esc(c[0])}</b><span class="muted">${esc(c[1])}</span><span class="ui-feed-date">${c[2] ? esc(fmtShortDate(c[2])) : ""}</span></div>
+      ${badges.trim() ? `<div class="ui-inline" style="margin-top:6px">${badges}</div>` : ""}
+      ${c[3] ? `<blockquote class="ui-quote">${esc(c[3])}</blockquote>` : ""}
+      ${state.comments[i] ? `<div class="ui-reply"><span>Your comment</span>${esc(state.comments[i])}</div>` : ""}
+      <button class="btn btn-ghost btn-sm" type="button" onclick="commentOn(${i})">${state.comments[i] ? "Edit comment" : "Add a comment"}</button>
+    </div>
   </article>`;
 }
 function commentOn(i) {
@@ -5197,12 +5225,12 @@ function commentOn(i) {
   });
 }
 function journalView() {
-  return `<section class="stage light-page" id="journal">
-    <div class="feed-top"><div><h1>My Journal</h1><div class="filters">${esc(state.role === "athlete" ? signedInName() : "Your notes")}</div></div>
-      <button class="req" type="button" onclick="state.modal={type:'journal'};render()">New entry</button>
-    </div>
-    ${state.journal.length ? `<div class="grid-cards">${state.journal.map((j) => `<article class="card"><strong>${esc(j.title)}</strong><p>${esc(j.body)}</p><div class="hint">${esc(j.date)}</div></article>`).join("")}</div>` : `<div class="empty"><div><div class="book">📓</div><div>No entries yet</div></div></div>`}
-  </section>`;
+  const sub = state.role === "athlete" ? "Private notes for yourself. Your coach does not see these." : "Private notes. Athletes do not see these.";
+  return uiPage(`
+    ${uiHead(state.role === "athlete" ? "" : "Coach", "Journal", sub, `${feedTabs()}<button class="btn btn-primary" type="button" onclick="state.modal={type:'journal'};render()">New entry</button>`)}
+    ${state.journal.length
+      ? `<div class="ui-tiles">${state.journal.map((j) => `<article class="ui-card ui-card-body"><div class="ui-card-sub">${esc(j.date)}</div><h3 class="ui-card-title" style="margin-top:4px">${esc(j.title)}</h3><p class="ui-prose">${esc(j.body)}</p></article>`).join("")}</div>`
+      : `<section class="ui-card">${uiEmpty("No entries yet", "Write down how training is going.", `<button class="btn btn-primary" type="button" onclick="state.modal={type:'journal'};render()">New entry</button>`)}</section>`}`, "journal", true);
 }
 async function saveJournalEntry() {
   const title = (state.modal && state.modal.title) || "Note";
@@ -5220,23 +5248,29 @@ async function saveJournalEntry() {
 }
 function teamView() {
   const posts = state.posts.filter((p) => !state.teamGroup || p.group === state.teamGroup);
-  return `<section class="stage light-page">
-    <div class="feed-top">
-      <div>
-        <h1>Team Feed</h1>
-        <div class="filters"><select class="plain"><option>ALL POSTS</option><option>MINE</option></select></div>
-        <div style="position:relative;margin-top:8px">
-          <button class="plain" onclick="state.teamFilter=!state.teamFilter;event.stopPropagation();render()">GROUP FILTERS ${state.teamGroup ? "· " + esc(state.teamGroup) : ""}</button>
-          ${state.teamFilter ? `<div class="group-pop">${state.groups.map((g) => `<button onclick="state.teamGroup='${esc(g)}';state.teamFilter=false;render()">${esc(g)}</button>`).join("")}<button onclick="state.teamGroup='';state.teamFilter=false;render()">All groups</button></div>` : ""}
-        </div>
+  const groupOpts = state.groups.map((g) => `<option ${state.teamGroup === g ? "selected" : ""}>${esc(g)}</option>`).join("");
+  const tv = state.teamMode === "tv";
+  const compose = state.compose ? `<section class="ui-card">
+      ${uiCardHead("New post", null, state.teamGroup ? "Posting to " + esc(state.teamGroup) : "Posting to all groups")}
+      <div class="ui-card-body ui-form">
+        ${uiField("Title", `<input class="input" placeholder="Title" data-focus="post-title" value="${esc(state.draftTitle || "")}" oninput="state.draftTitle=this.value">`)}
+        ${uiField("Post", `<textarea class="textarea" placeholder="Write a post" data-focus="post-body" oninput="state.draftBody=this.value">${esc(state.draftBody || "")}</textarea>`)}
+        <div class="ui-inline" style="justify-content:flex-end"><button class="btn btn-secondary" type="button" onclick="state.compose=false;render()">Cancel</button><button class="btn btn-primary" type="button" onclick="publishPost()">Post</button></div>
       </div>
-      <div class="mode"><button class="${state.teamMode === "feed" ? "on" : ""}" onclick="state.teamMode='feed';render()">FEED</button><button class="${state.teamMode === "tv" ? "on" : ""}" onclick="state.teamMode='tv';render()">TV MODE</button></div>
-      <div class="popular"><h3>POPULAR POSTS THIS WEEK</h3><p>${posts[0] ? esc(posts[0].text) : "No Posts Available"}</p></div>
-    </div>
-    ${state.compose ? `<div class="compose panel" style="margin-top:12px"><input class="plain" placeholder="Title" data-focus="post-title" value="${esc(state.draftTitle || "")}" oninput="state.draftTitle=this.value"><textarea class="plain" placeholder="Write a post" data-focus="post-body" oninput="state.draftBody=this.value">${esc(state.draftBody || "")}</textarea><button class="req" onclick="publishPost()">Post</button></div>` : ""}
-    <div class="grid-cards">${posts.map((p) => `<article class="card"><strong>${esc(p.title || "Post")}</strong><div class="hint">${esc(p.group || "All groups")}</div><p>${esc(p.text)}</p></article>`).join("") || '<div class="empty"><div><div class="book">▦</div><div>No Posts Available</div></div></div>'}</div>
-    ${state.teamMode === "tv" ? `<div class="panel" style="margin-top:12px;font-size:28px;text-align:center">${posts[0] ? esc(posts[0].text) : "TV mode · waiting for a post"}</div>` : ""}
-  </section>`;
+    </section>` : "";
+  return uiPage(`
+    ${uiHead("Coach", "Team feed", "Posts for your groups. TV mode shows the latest post full screen in the weight room.",
+      `${feedTabs()}<button class="btn btn-primary" type="button" onclick="state.compose=true;render()">New post</button>`)}
+    <section class="ui-card"><div class="ui-card-body ui-inline">
+      <select class="select auto" aria-label="Group" onchange="state.teamGroup=this.value;render()"><option value="">All groups</option>${groupOpts}</select>
+      <div class="ui-seg"><button type="button" class="${tv ? "" : "on"}" onclick="state.teamMode='feed';render()">Feed</button><button type="button" class="${tv ? "on" : ""}" onclick="state.teamMode='tv';render()">TV mode</button></div>
+    </div></section>
+    ${compose}
+    ${tv ? `<section class="ui-card ui-tv">${posts[0] ? `<div class="ui-card-sub">${esc(posts[0].title || "Post")}</div><div>${esc(posts[0].text)}</div>` : "Waiting for a post"}</section>` : ""}
+    <section class="ui-card">
+      ${uiCardHead("Posts", posts.length)}
+      <div class="ui-feed">${posts.map((p) => `<article class="ui-feed-row"><div class="ui-feed-main"><div class="ui-feed-top"><b>${esc(p.title || "Post")}</b><span class="ui-badge">${esc(p.group || "All groups")}</span></div><p class="ui-prose">${esc(p.text)}</p></div></article>`).join("") || uiEmpty("No posts yet", "Share an update with your athletes.")}</div>
+    </section>`, "team-feed");
 }
 function publishPost() {
   if (!state.draftBody) return;
@@ -5246,120 +5280,112 @@ function publishPost() {
   render();
 }
 
+function groupCardHtml(name, members, codesHtml, addCode, edit, remove) {
+  return `<section class="ui-card">
+    ${uiCardHead(name, members.length, null, `<span class="ui-inline"><button class="btn btn-ghost btn-sm" type="button" onclick="${edit}">Rename</button><button class="btn btn-ghost btn-sm btn-danger" type="button" onclick="${remove}">Delete</button></span>`)}
+    <div class="ui-card-body">
+      ${members.map((m) => `<div class="ui-list-row"><span class="ui-person">${uiAvatar(m.name)}<span class="who"><b>${esc(m.name)}</b>${m.email ? `<small>${esc(m.email)}</small>` : ""}</span></span></div>`).join("") || `<p class="ui-hint">No athletes yet.</p>`}
+      <div class="ui-codes"><span class="ui-label">Athlete join codes</span>${codesHtml}<button class="btn btn-secondary btn-sm" type="button" onclick="${addCode}">New code</button></div>
+    </div>
+  </section>`;
+}
+function codeChip(code, copy, remove) {
+  return `<span class="ui-code"><code>${esc(code)}</code><button type="button" title="Copy" aria-label="Copy ${esc(code)}" onclick="${copy}">Copy</button><button type="button" title="Delete code" aria-label="Delete ${esc(code)}" onclick="${remove}">✕</button></span>`;
+}
 function usersView() {
+  if (state.userTab === "codes") state.userTab = "groups";
   const rows = state.userTab === "coaches" ? state.coaches : state.userTab === "athletes" ? state.athletes : [];
   const q = state.userQ.toLowerCase();
-  const filtered = rows.filter((r) => (r.first + r.last + r.email).toLowerCase().includes(q));
-  const tab = (id, label) => `<button class="${state.userTab === id ? "on" : ""}" onclick="state.userTab='${id}';render()">${label}</button>`;
+  const filtered = rows.filter((r) => (r.first + " " + r.last + " " + r.email).toLowerCase().includes(q));
   const ctx = state.gymContext;
   const teams = ctx && Array.isArray(ctx.teams) ? ledTeams(ctx) : [];
+  const tab = (id, label) => `<button type="button" class="${state.userTab === id ? "on" : ""}" onclick="state.userTab='${id}';render()">${label}</button>`;
+  const groupForm = `<section class="ui-card"><form class="ui-card-body ui-form-row" onsubmit="addGroupRecord(); return false;">
+      ${uiField("New group", `<input class="input" placeholder="e.g. Varsity" data-focus="group-name" value="${esc(state.toolForm.group || "")}" oninput="state.toolForm.group=this.value">`)}
+      <button class="btn btn-primary" type="submit">Add group</button>
+    </form></section>`;
   let main = "";
-  if (state.userTab === "codes") state.userTab = "groups";
   if (state.userTab === "groups") {
+    let cards = "";
     if (ctx && Array.isArray(ctx.teams)) {
       const allCodes = (ctx.codes || []).filter((c) => c.kind === "team");
       const allAthletes = ctx.athletes || [];
-      const cards = teams.map((t) => {
-        const codes = allCodes.filter((c) => c.team_id === t.id);
-        const codeHtml = codes.length
-          ? codes.map((c) => `<div class="code-line"><code>${esc(c.code)}</code><button class="icon-a" type="button" onclick="copyText('${esc(c.code)}')">Copy</button><button class="icon-a" type="button" onclick="deleteServerJoinCode(${c.id})">✕</button></div>`).join("")
-          : `<div class="hint">No athlete codes yet</div>`;
-        const members = allAthletes.filter((a) => a.team_id === t.id);
-        const who = members.map((a) => esc(a.name) + (a.email ? " · " + esc(a.email) : "")).join("<br>");
-        return `<article class="card"><strong>${esc(t.name)}</strong><div class="hint" style="margin-top:8px">${who || "No athletes"}</div><div class="group-codes"><div class="hint">Athlete join codes</div>${codeHtml}<button class="req" type="button" onclick="createJoinCode('team', ${t.id})">+ Code</button></div><div style="margin-top:8px"><button class="comment" type="button" onclick="editServerGroup(${t.id}, '${esc(t.name)}')">Edit</button> <button class="comment" type="button" onclick="deleteServerGroup(${t.id})">Remove</button></div></article>`;
-      }).join("");
-      main = `<div class="light-page"><h1>Groups</h1>
-        <p class="hint">Create and manage your athlete groups and team join codes here. Athletes who redeem a group's join code are automatically placed into that group.</p>
-        <form class="toolbar" onsubmit="addGroupRecord(); return false;">
-          <input class="plain" placeholder="Group name" data-focus="group-name" value="${esc(state.toolForm.group || "")}" oninput="state.toolForm.group=this.value">
-          <button class="req" type="submit">Add group</button>
-        </form>
-        <div class="grid-cards">${cards || `<p class="hint">Add a group above to get started and generate athlete join codes.</p>`}</div></div>`;
+      cards = teams.map((t) => groupCardHtml(t.name,
+        allAthletes.filter((a) => a.team_id === t.id),
+        allCodes.filter((c) => c.team_id === t.id).map((c) => codeChip(c.code, `copyText('${esc(c.code)}')`, `deleteServerJoinCode(${c.id})`)).join("") || `<span class="ui-hint">None yet</span>`,
+        `createJoinCode('team', ${t.id})`, `editServerGroup(${t.id}, '${esc(t.name)}')`, `deleteServerGroup(${t.id})`)).join("");
     } else {
-      const cards = state.groups.map((g, i) => {
-        const codes = state.joinCodes.map((c, idx) => ({ c, idx })).filter((row) => row.c.group === g);
-        const codeHtml = codes.length
-          ? codes.map(({ c, idx }) => `<div class="code-line"><code>${esc(c.code)}</code><button class="icon-a" type="button" onclick="copyJoinCode(${idx})">Copy</button><button class="icon-a" type="button" onclick="removeJoinCode(${idx})">✕</button></div>`).join("")
-          : `<div class="hint">No athlete codes yet</div>`;
-        const members = state.athletes.filter((a) => assignedGroups(a.groups).includes(g));
-        const who = members.map((a) => {
-          const name = (a.first + " " + a.last).trim();
-          return esc(name) + (a.email ? " · " + esc(a.email) : "");
-        }).join("<br>");
-        return `<article class="card"><strong>${esc(g)}</strong><div class="hint" style="margin-top:8px">${who || "No athletes"}</div><div class="group-codes"><div class="hint">Athlete codes</div>${codeHtml}<button class="req" type="button" onclick="addJoinCode(${i})">+ Code</button></div><div style="margin-top:8px"><button class="comment" type="button" onclick="editGroup(${i})">Edit</button> <button class="comment" type="button" onclick="removeGroup(${i})">Remove</button></div></article>`;
-      }).join("");
-      main = `<div class="light-page"><h1>Groups</h1>
-        <p class="hint">Athlete join codes live on each group. Create a code from that group's card.</p>
-        <form class="toolbar" onsubmit="addGroupRecord(); return false;">
-          <input class="plain" placeholder="Group name" data-focus="group-name" value="${esc(state.toolForm.group || "")}" oninput="state.toolForm.group=this.value">
-          <button class="req" type="submit">Add group</button>
-        </form>
-        <div class="grid-cards">${cards || `<p class="hint">Add a group before creating an athlete code.</p>`}</div></div>`;
+      cards = state.groups.map((g, i) => groupCardHtml(g,
+        state.athletes.filter((a) => assignedGroups(a.groups).includes(g)).map((a) => ({ name: (a.first + " " + a.last).trim(), email: a.email })),
+        state.joinCodes.map((c, idx) => ({ c, idx })).filter((row) => row.c.group === g).map(({ c, idx }) => codeChip(c.code, `copyJoinCode(${idx})`, `removeJoinCode(${idx})`)).join("") || `<span class="ui-hint">None yet</span>`,
+        `addJoinCode(${i})`, `editGroup(${i})`, `removeGroup(${i})`)).join("");
     }
+    main = `${uiHead("", "Groups", "An athlete who redeems a group's join code is placed in that group.", "")}
+      ${groupForm}
+      ${cards ? `<div class="ui-tiles">${cards}</div>` : `<section class="ui-card">${uiEmpty("No groups yet", "Add a group above, then create a join code for it.")}</section>`}`;
   } else if (state.userTab === "upload") {
-    if (teams.length) {
-      const chosenId = teams.some((t) => String(t.id) === String(state.toolForm.uploadTeamId))
-        ? String(state.toolForm.uploadTeamId)
-        : String(teams[0].id);
-      main = `<div class="light-page"><h1>Upload Users</h1>
-        <p>Paste one athlete per line (e.g. <code>Sam Lee</code> or <code>Jo Kim, jo@gym.com</code>). Athletes are created in the database and assigned directly to the selected group.</p>
-        <div class="toolbar">
-          <label>Group <select id="uploadGroup" class="plain" onchange="state.toolForm.uploadTeamId=this.value">
-            ${teams.map((t) => `<option value="${t.id}" ${String(t.id) === chosenId ? "selected" : ""}>${esc(t.name)}</option>`).join("")}
-          </select></label>
-        </div>
-        <textarea id="uploadBox" class="plain" style="width:100%;min-height:140px" placeholder="Sam Lee&#10;Jo Kim, jo@gym.com"></textarea>
-        <button class="req" style="margin-top:10px" onclick="importUsers()">Import Athletes</button>
-      </div>`;
-    } else if (state.groups.length) {
-      const chosen = state.groups.includes(state.toolForm.uploadGroup) ? state.toolForm.uploadGroup : (state.groups[0] || "");
-      main = `<div class="light-page"><h1>Upload Users</h1>
-        <p>Paste one person per line. If a line includes an email, that email is kept.</p>
-        <div class="toolbar">
-          <label>Group <select id="uploadGroup" class="plain" onchange="state.toolForm.uploadGroup=this.value">
-            ${state.groups.map((g) => `<option value="${esc(g)}" ${g === chosen ? "selected" : ""}>${esc(g)}</option>`).join("")}
-          </select></label>
-        </div>
-        <textarea id="uploadBox" class="plain" style="width:100%;min-height:140px" placeholder="Sam Lee&#10;Jo Kim, jo@gym.com"></textarea>
-        <button class="req" style="margin-top:10px" onclick="importUsers()">Import</button>
-      </div>`;
-    } else {
-      main = `<div class="light-page"><h1>Upload Users</h1>
-        <p class="hint">Create a group first so uploaded athletes can be placed into your group.</p>
-        <button class="req" type="button" onclick="state.userTab='groups';render()">Go to Groups →</button>
-      </div>`;
-    }
+    const byTeam = teams.length > 0;
+    const options = byTeam
+      ? teams.map((t) => `<option value="${t.id}" ${String(t.id) === String(state.toolForm.uploadTeamId || teams[0].id) ? "selected" : ""}>${esc(t.name)}</option>`).join("")
+      : state.groups.map((g) => `<option value="${esc(g)}" ${g === (state.toolForm.uploadGroup || state.groups[0]) ? "selected" : ""}>${esc(g)}</option>`).join("");
+    main = `${uiHead("", "Upload athletes", "Paste one athlete per line, like <code>Sam Lee</code> or <code>Jo Kim, jo@gym.com</code>. Each gets an account in the group you choose.", "")}
+      ${options ? `<section class="ui-card"><div class="ui-card-body ui-form">
+        ${uiField("Group", `<select id="uploadGroup" class="select" onchange="state.toolForm.${byTeam ? "uploadTeamId" : "uploadGroup"}=this.value">${options}</select>`)}
+        ${uiField("Athletes", `<textarea id="uploadBox" class="textarea" style="min-height:180px" placeholder="Sam Lee&#10;Jo Kim, jo@gym.com"></textarea>`)}
+        <div><button class="btn btn-primary" type="button" onclick="importUsers()">Import athletes</button></div>
+      </div></section>` : `<section class="ui-card">${uiEmpty("Create a group first", "Uploaded athletes are placed in a group.", `<button class="btn btn-primary" type="button" onclick="state.userTab='groups';render()">Go to groups</button>`)}</section>`}`;
   } else if (state.userTab === "export") {
-    main = `<div class="light-page"><h1>Export Data</h1><p>Download calendars and roster as JSON.</p><button class="req" onclick="exportData()">Download</button></div>`;
+    main = `${uiHead("", "Export data", "Download calendars and the roster as a JSON file.", "")}
+      <section class="ui-card"><div class="ui-card-body ui-inline" style="justify-content:space-between"><span>Everything on this gym's calendars, plus every athlete and coach.</span><button class="btn btn-primary" type="button" onclick="exportData()">Download</button></div></section>`;
   } else {
-    const selectedRole = state.toolForm.role || (state.userTab === "coaches" ? "coach" : "student");
+    const coaches = state.userTab === "coaches";
+    const selectedRole = state.toolForm.role || (coaches ? "coach" : "student");
     const chosenTeamId = teams.some((t) => String(t.id) === String(state.toolForm.userTeamId))
       ? String(state.toolForm.userTeamId)
       : (teams[0] ? String(teams[0].id) : "");
-    main = `<form class="toolbar" onsubmit="addUserRecord(event); return false;" style="padding:10px 12px 0;flex-wrap:wrap">
-      <input class="plain" placeholder="First" data-focus="user-first" value="${esc(state.toolForm.first || "")}" oninput="state.toolForm.first=this.value">
-      <input class="plain" placeholder="Last" data-focus="user-last" value="${esc(state.toolForm.last || "")}" oninput="state.toolForm.last=this.value">
-      <input class="plain" placeholder="Email" data-focus="user-email" value="${esc(state.toolForm.email || "")}" oninput="state.toolForm.email=this.value">
-      <select class="plain" onchange="state.toolForm.role=this.value;render()"><option value="student" ${selectedRole !== "coach" ? "selected" : ""}>Athlete</option><option value="coach" ${selectedRole === "coach" ? "selected" : ""}>Coach</option></select>
-      ${selectedRole !== "coach" && teams.length ? `<select class="plain" id="user-team-id" onchange="state.toolForm.userTeamId=this.value">${teams.map((t) => `<option value="${t.id}" ${String(t.id) === chosenTeamId ? "selected" : ""}>Group: ${esc(t.name)}</option>`).join("")}</select>` : ""}
-      <button class="req" type="submit">Add user</button>
-    </form>
-    <div class="redbar"><span>${state.userTab === "coaches" ? "Coaches" : "Athletes"}</span>
-      <span><select class="plain" onchange="state.userSort=this.value;render()"><option value="last">Last Name</option><option value="first">First Name</option></select>
-      <input class="plain" placeholder="Search for User" data-focus="user-q" value="${esc(state.userQ)}" oninput="state.userQ=this.value;render()"></span></div>
-      <div class="tablewrap"><table class="data"><tr><th></th><th>FIRST</th><th>LAST</th><th>EMAIL</th><th>ASSIGNED GROUPS</th><th>ASSIGNED CALS</th><th>LAST ACTIVITY</th><th></th></tr>
-      ${filtered.sort((a, b) => (a[state.userSort] || "").localeCompare(b[state.userSort] || "")).map((r) => `<tr><td><span class="dotav">${esc((r.first || "U")[0])}</span></td><td>${esc(r.first)}</td><td>${esc(r.last)}</td><td>${esc(r.email)}</td><td>${esc(r.groups)}</td><td>${esc(r.cals)}</td><td style="color:${r.activity === "N/A" ? "#c90" : "#1a7f37"}">${esc(r.activity)}</td><td><button class="icon-a" onclick="editUser('${r.id}')">✎</button> <button class="icon-a" onclick="removeUser('${r.id}')">🗑</button></td></tr>`).join("") || `<tr><td colspan="8" style="text-align:center;color:#777;padding:18px">No ${state.userTab === "coaches" ? "coaches" : "athletes"} found. Use "Upload Users" or the form above to add people.</td></tr>`}
-      </table></div>`;
+    const sorted = filtered.slice().sort((a, b) => (a[state.userSort] || "").localeCompare(b[state.userSort] || ""));
+    const body = sorted.map((r) => {
+      const name = ((r.first || "") + " " + (r.last || "")).trim();
+      const active = r.activity && r.activity !== "N/A";
+      return `<tr>
+        <td><span class="ui-person">${uiAvatar(name)}<span class="who"><b>${esc(name)}</b><small>${esc(r.email || "")}</small></span></span></td>
+        <td>${assignedGroups(r.groups).map((g) => `<span class="ui-badge blue">${esc(g)}</span>`).join(" ") || `<span class="muted">—</span>`}</td>
+        <td class="num hide-sm">${esc(r.cals || "0")}</td>
+        <td class="hide-sm">${active ? `<span class="ui-badge green">${esc(r.activity)}</span>` : `<span class="ui-badge amber">No activity</span>`}</td>
+        <td class="row-actions"><button class="btn btn-ghost btn-sm" type="button" onclick="editUser('${r.id}')">Edit</button><button class="btn btn-ghost btn-sm btn-danger" type="button" onclick="removeUser('${r.id}')">Remove</button></td>
+      </tr>`;
+    }).join("");
+    main = `${uiHead("", coaches ? "Coaches" : "Athletes", coaches ? "Coaches in this gym." : "Athletes on teams you lead, plus anyone without a group.", "")}
+      <section class="ui-card">
+        ${uiCardHead("Add " + (selectedRole === "coach" ? "a coach" : "an athlete"))}
+        <form class="ui-card-body ui-form-row" onsubmit="addUserRecord(event); return false;">
+          ${uiField("First name", `<input class="input" data-focus="user-first" value="${esc(state.toolForm.first || "")}" oninput="state.toolForm.first=this.value">`)}
+          ${uiField("Last name", `<input class="input" data-focus="user-last" value="${esc(state.toolForm.last || "")}" oninput="state.toolForm.last=this.value">`)}
+          ${uiField("Email", `<input class="input" type="email" data-focus="user-email" value="${esc(state.toolForm.email || "")}" oninput="state.toolForm.email=this.value">`)}
+          ${uiField("Role", `<select class="select" onchange="state.toolForm.role=this.value;render()"><option value="student" ${selectedRole !== "coach" ? "selected" : ""}>Athlete</option><option value="coach" ${selectedRole === "coach" ? "selected" : ""}>Coach</option></select>`)}
+          ${selectedRole !== "coach" && teams.length ? uiField("Group", `<select class="select" id="user-team-id" onchange="state.toolForm.userTeamId=this.value">${teams.map((t) => `<option value="${t.id}" ${String(t.id) === chosenTeamId ? "selected" : ""}>${esc(t.name)}</option>`).join("")}</select>`) : ""}
+          <button class="btn btn-primary" type="submit">Add</button>
+        </form>
+      </section>
+      <section class="ui-card">
+        ${uiCardHead(coaches ? "Coaches" : "Athletes", filtered.length, null, `<span class="ui-inline">
+          <select class="select auto" aria-label="Sort by" onchange="state.userSort=this.value;render()"><option value="last" ${state.userSort !== "first" ? "selected" : ""}>Last name</option><option value="first" ${state.userSort === "first" ? "selected" : ""}>First name</option></select>
+          ${uiSearch("Search people", "user-q", state.userQ, "state.userQ=this.value;render()", "max-width:240px")}</span>`)}
+        <div class="ui-table-wrap"><table class="ui-table">
+          <thead><tr><th>Name</th><th>Groups</th><th class="num hide-sm">Calendars</th><th class="hide-sm">Last activity</th><th></th></tr></thead>
+          <tbody>${body || `<tr><td colspan="5">${uiEmpty(rows.length ? "No matches" : "Nobody here yet", rows.length ? "Try a different search." : "Add someone above, or use Upload athletes.")}</td></tr>`}</tbody>
+        </table></div>
+      </section>`;
   }
-  return `<section class="stage" style="display:flex;flex-direction:column;min-height:calc(100vh - 48px)"><div class="users" style="flex:1">
-    <nav>
-      <div class="sec" style="color:#fff;font-size:15px;letter-spacing:0;padding:16px 14px 8px">Manage Users</div>
-      <div class="sec">MANAGEMENT</div>
-      ${tab("athletes", "Athletes")}${tab("coaches", "Coaches")}${tab("groups", "Groups")}
-      <div class="sec">TOOLS</div>
-      ${tab("upload", "Upload Users")}${tab("export", "Export Data")}
+  return `<section class="stage ui-page" id="users"><div class="ui-wrap ui-settings">
+    <nav class="ui-subnav" aria-label="Manage users">
+      <div class="ui-subnav-title">Manage users</div>
+      <div class="ui-subnav-sec">People</div>
+      ${tab("athletes", "Athletes")}${tab("coaches", "Coaches")}${tab("groups", "Groups &amp; join codes")}
+      <div class="ui-subnav-sec">Tools</div>
+      ${tab("upload", "Upload athletes")}${tab("export", "Export data")}
     </nav>
-    <div style="display:flex;flex-direction:column;min-width:0;background:#eee">${main}</div>
+    <div class="ui-stack" style="gap:20px">${main}</div>
   </div></section>`;
 }
 function assignedGroups(value) {
@@ -5629,15 +5655,6 @@ async function loadRoster() {
   } catch (err) {
     console.error(err);
   }
-}
-async function addUserFromModal() {
-  const m = state.modal || {};
-  state.toolForm.first = m.first || "";
-  state.toolForm.last = m.last || "";
-  state.toolForm.email = m.email || "";
-  state.toolForm.role = "student";
-  state.modal = null;
-  await addUserRecord();
 }
 async function addUserRecord(ev) {
   if (ev) ev.preventDefault();
@@ -6345,65 +6362,67 @@ async function hideExercise(id) {
 
 function dailyView() {
   const date = APP_TODAY;
-  const cards = ATHLETES.map((a) => {
+  const rows = ATHLETES.map((a) => {
     const day = (state.calendars[a.id] || {})[date];
-    return `<article class="card"><div class="who"><span class="dotav">${esc((a.name || "A")[0])}</span><strong>${esc(a.name)}</strong></div><div class="exname">${day ? esc(day.title || "Workout") : "No session"}</div><p>${day ? day.items.length + " exercises" : "Rest / unassigned"}</p><button class="comment" onclick="state.entryAthlete='${a.id}';state.entryDate='${date}';goTool('entry')">Open entry</button></article>`;
+    const count = day ? (day.items || []).length : 0;
+    return `<tr>
+      <td><span class="ui-person">${uiAvatar(a.name)}<span class="who"><b>${esc(a.name)}</b><small>${esc(a.team_name || "")}</small></span></span></td>
+      <td>${count ? `<span class="strong">${esc(day.title || "Workout")}</span>` : `<span class="muted">Rest or not programmed</span>`}</td>
+      <td class="num">${count || "—"}</td>
+      <td class="row-actions"><button class="btn btn-secondary btn-sm" type="button" onclick="state.entryAthlete='${a.id}';state.entryDate='${date}';goTool('entry')">Open entry</button></td>
+    </tr>`;
   }).join("");
-  return `<section class="stage light-page"><h1>Daily Brief</h1><p class="hint">${fmtLong(date)}</p><div class="grid-cards">${cards || `<p class="hint">No athletes enrolled yet.</p>`}</div></section>`;
+  return uiPage(`
+    ${uiHead("Workout tools", "Daily brief", esc(fmtLong(date)) + ". What each athlete has on today.", "")}
+    <section class="ui-card">${uiCardHead("Today", ATHLETES.length)}
+      <div class="ui-table-wrap"><table class="ui-table"><thead><tr><th>Athlete</th><th>Workout</th><th class="num">Exercises</th><th></th></tr></thead>
+      <tbody>${rows || `<tr><td colspan="4">${uiEmpty("No athletes yet", "Add athletes in Manage Users.")}</td></tr>`}</tbody></table></div>
+    </section>`, "daily");
 }
 function weightroomView() {
-  const cards = ATHLETES.map((a) => `<article class="card"><strong>${esc(a.name)}</strong><div class="hint">${esc(a.team_name || "Athlete")} · ${esc(weekName(APP_TODAY))}</div><button class="comment" onclick="state.entryAthlete='${a.id}';goTool('entry')">Open</button></article>`).join("");
-  return `<section class="stage light-page"><h1>Weightroom</h1><p class="hint">Who is on the floor today</p><div class="grid-cards">${cards || `<p class="hint">No athletes enrolled yet. Add athletes in Manage Users → Upload Users.</p>`}</div></section>`;
+  const date = APP_TODAY;
+  const tiles = ATHLETES.map((a) => {
+    const day = (state.calendars[a.id] || {})[date];
+    const count = day ? (day.items || []).length : 0;
+    return `<button type="button" class="ui-card ui-tile-btn" onclick="state.entryAthlete='${a.id}';state.entryDate='${date}';goTool('entry')">
+      ${uiAvatar(a.name, "lg")}
+      <span class="who"><b>${esc(a.name)}</b><small>${count ? esc(day.title || "Workout") + " · " + count + " exercises" : "Nothing programmed today"}</small></span>
+    </button>`;
+  }).join("");
+  return uiPage(`
+    ${uiHead("Workout tools", "Weightroom", "Tap an athlete to open today's workout and log sets.", "")}
+    ${tiles ? `<div class="ui-tiles">${tiles}</div>` : `<section class="ui-card">${uiEmpty("No athletes yet", "Add athletes in Manage Users.")}</section>`}`, "weightroom");
 }
 function boardView() {
   if (!state.boardDate) state.boardDate = state.entryDate || APP_TODAY;
+  let name = "";
+  let items = [];
+  let picker = "";
   if (state.role === "athlete") {
-    const name = viewedAthleteName();
+    name = viewedAthleteName();
     const day = savedDay(state.boardDate);
-    const items = day && day.items ? day.items : [];
-    return `<section class="stage light-page" id="whiteboard">
-      <h1>Whiteboard</h1>
-      <div class="toolbar">
-        <input class="plain" type="date" aria-label="Day" value="${esc(state.boardDate)}" onchange="if(this.value){state.boardDate=this.value;render()}">
-      </div>
-      <p>${fmtLong(state.boardDate)} · ${esc(name)}</p>
-      <div class="panel" style="font-size:22px">${items.map((it) => `<div>${esc(it.letter || "")} ${esc(it.name)} <span class="hint">${esc(scriptLine(it))}</span></div>`).join("") || "Nothing programmed"}</div>
-    </section>`;
-  }
-  const targets = buildAthletes().filter((t) => t.id !== "none");
-  if (!state.boardAthlete || !targets.some((a) => a.id === state.boardAthlete)) {
-    state.boardAthlete = targets.some((a) => a.id === state.athleteId) ? state.athleteId : (targets[0] ? targets[0].id : "");
-    if (state.boardAthlete) loadCalendarSchedule(state.boardAthlete);
-  }
-  const person = targets.find((a) => a.id === state.boardAthlete) || { id: "", name: "Athlete" };
-  const day = (state.calendars[person.id] || {})[state.boardDate];
-  const items = day && day.items ? day.items : [];
-  return `<section class="stage light-page" id="whiteboard">
-    <h1>Whiteboard</h1>
-    <div class="toolbar">
-      <select class="plain" aria-label="Athlete" onchange="state.boardAthlete=this.value;loadCalendarSchedule(this.value);render()">
+    items = day && day.items ? day.items : [];
+  } else {
+    const targets = buildAthletes().filter((t) => t.id !== "none");
+    if (!state.boardAthlete || !targets.some((a) => a.id === state.boardAthlete)) {
+      state.boardAthlete = targets.some((a) => a.id === state.athleteId) ? state.athleteId : (targets[0] ? targets[0].id : "");
+      if (state.boardAthlete) loadCalendarSchedule(state.boardAthlete);
+    }
+    const person = targets.find((a) => a.id === state.boardAthlete) || { id: "", name: "Athlete" };
+    name = person.name;
+    const day = (state.calendars[person.id] || {})[state.boardDate];
+    items = day && day.items ? day.items : [];
+    picker = `<select class="select auto" aria-label="Athlete" onchange="state.boardAthlete=this.value;loadCalendarSchedule(this.value);render()">
         ${targets.map((a) => `<option value="${esc(a.id)}" ${a.id === person.id ? "selected" : ""}>${esc(a.name)}</option>`).join("") || `<option value="">No athletes or groups</option>`}
-      </select>
-      <input class="plain" type="date" aria-label="Day" value="${esc(state.boardDate)}" onchange="if(this.value){state.boardDate=this.value;render()}">
-    </div>
-    <p>${fmtLong(state.boardDate)} · ${esc(person.name)}</p>
-    <div class="panel" style="font-size:22px">${items.map((it) => `<div>${esc(it.letter || "")} ${esc(it.name)} <span class="hint">${esc(scriptLine(it))}</span></div>`).join("") || "Nothing programmed"}</div>
-  </section>`;
+      </select>`;
+  }
+  const rows = items.map((it) => `<div class="ui-board-row"><span class="letter" style="background:${LETTER_COLOR[it.letter] || "#d1d5db"}">${esc(it.letter || "")}</span><b>${esc(it.name)}</b><span>${esc(scriptLine(it))}</span></div>`).join("");
+  return uiPage(`
+    ${uiHead("", "Whiteboard", esc(fmtLong(state.boardDate)) + " · " + esc(name), `${picker}<input class="input auto" type="date" aria-label="Day" value="${esc(state.boardDate)}" onchange="if(this.value){state.boardDate=this.value;render()}">`)}
+    <section class="ui-card ui-board">${rows || uiEmpty("Nothing programmed", "Pick another day or athlete.")}</section>`, "whiteboard");
 }
 function maxesKey() {
   return state.role === "athlete" ? ("own:" + ownAthleteId()) : state.athleteId;
-}
-function maxesView() {
-  const rows = state.serverRecords || [];
-  const name = state.role === "athlete" ? viewedAthleteName() : (athlete() && athlete().name) || "Gym";
-  return `<section class="stage light-page" id="maxes"><h1>Maxes / PRs · ${esc(name)}</h1>
-    <form class="toolbar" onsubmit="addGoalRecord(); return false;">
-      <input class="plain" placeholder="Lift (e.g. Back Squat)" data-focus="pr-name" value="${esc(state.toolForm.goalName || "")}" oninput="state.toolForm.goalName=this.value">
-      <input class="plain" placeholder="Kg (e.g. 180)" data-focus="pr-kg" value="${esc(state.toolForm.goalWeight || "")}" oninput="state.toolForm.goalWeight=this.value">
-      <button class="req" type="submit">+ PR</button>
-    </form>
-    <table class="data"><tr><th>Lift</th><th>Kg</th><th>Athlete</th><th></th></tr>${rows.map((r) => `<tr><td>${esc((r.exercise && r.exercise.name) || "Lift")}</td><td>${esc(r.weight)}</td><td>${esc((r.user && r.user.name) || signedInName())}</td><td><button class="comment" onclick="editGoal(${r.id})">Edit</button> <button class="comment" onclick="deleteGoalRecord(${r.id})">Delete</button></td></tr>`).join("") || `<tr><td colspan="4">No personal records yet.</td></tr>`}</table>
-  </section>`;
 }
 function addPr() {
   openEdit({
@@ -6428,33 +6447,58 @@ function editPr(index) {
 }
 function boardLeader() {
   const dbRows = (state.gymActivity && state.gymActivity.leaderboard) || [];
-  const scoreMap = new Map();
-  dbRows.forEach((r) => {
-    scoreMap.set(r.name, (scoreMap.get(r.name) || 0) + (r.tonnage || 0));
-  });
-  ATHLETES.forEach((a) => {
-    let t = 0;
-    Object.entries(state.logs).forEach(([k, log]) => {
-      if (!k.startsWith(a.id + ":")) return;
-      Object.values(log.cells || {}).forEach((c) => { if (c.done) t += (+c.r || 0) * (+c.w || 0); });
+  let rows = dbRows.map((r) => ({ name: r.name, team: r.team_name || "", tonnage: r.tonnage || 0, sessions: r.completed_sessions || 0, sets: r.completed_sets || 0, prs: r.pr_count || 0 }));
+  if (!rows.length) {
+    // Offline fallback: count what was logged in this browser.
+    rows = ATHLETES.map((a) => {
+      let t = 0;
+      Object.entries(state.logs).forEach(([k, log]) => {
+        if (!k.startsWith(a.id + ":")) return;
+        Object.values(log.cells || {}).forEach((c) => { if (c.done) t += (+c.r || 0) * (+c.w || 0); });
+      });
+      return { name: a.name, team: a.team_name || "", tonnage: t, sessions: 0, sets: 0, prs: 0 };
     });
-    scoreMap.set(a.name, (scoreMap.get(a.name) || 0) + t);
-  });
-  const scores = Array.from(scoreMap.entries()).sort((a, b) => b[1] - a[1]);
-  return `<section class="stage light-page"><h1>Leaderboard</h1><table class="data"><tr><th>#</th><th>Athlete</th><th>Tonnage (kg)</th></tr>${scores.map((s, i) => `<tr><td>${i + 1}</td><td>${esc(s[0])}</td><td>${Math.round(s[1])}</td></tr>`).join("") || `<tr><td colspan="3">No athletes or logged sessions yet.</td></tr>`}</table></section>`;
+  }
+  rows.sort((a, b) => b.tonnage - a.tonnage);
+  const body = rows.map((r, i) => `<tr>
+      <td class="num" style="width:48px">${i < 3 && r.tonnage ? `<span class="ui-rank r${i + 1}">${i + 1}</span>` : i + 1}</td>
+      <td><span class="ui-person">${uiAvatar(r.name)}<span class="who"><b>${esc(r.name)}</b><small>${esc(r.team)}</small></span></span></td>
+      <td class="num strong">${Math.round(r.tonnage).toLocaleString()}</td>
+      <td class="num hide-sm">${r.sessions}</td>
+      <td class="num hide-sm">${r.sets}</td>
+      <td class="num hide-sm">${r.prs}</td>
+    </tr>`).join("");
+  return uiPage(`
+    ${uiHead("Workout tools", "Leaderboard", "Total weight moved (weight × reps) across logged sets.", "")}
+    <section class="ui-card">${uiCardHead("Athletes", rows.length)}
+      <div class="ui-table-wrap"><table class="ui-table"><thead><tr><th class="num">#</th><th>Athlete</th><th class="num">Tonnage (kg)</th><th class="num hide-sm">Sessions</th><th class="num hide-sm">Sets</th><th class="num hide-sm">Goals</th></tr></thead>
+      <tbody>${body || `<tr><td colspan="6">${uiEmpty("No logged sessions yet", "Tonnage adds up as athletes log sets.")}</td></tr>`}</tbody></table></div>
+    </section>`, "leaderboard");
 }
 function evalView() {
-  return `<section class="stage light-page"><h1>Evaluations</h1>${state.evals.map((e) => `<article class="card">${esc(e.text || e)}</article>`).join("") || '<div class="empty">No evaluations yet</div>'}<button class="req" onclick="addEvaluation()">+ Evaluation</button></section>`;
+  const add = `<button class="btn btn-primary" type="button" onclick="addEvaluation()">New evaluation</button>`;
+  return uiPage(`
+    ${uiHead("Coach tools", "Evaluations", "Notes from testing days and athlete reviews.", add)}
+    ${state.evals.length
+      ? `<div class="ui-tiles">${state.evals.map((e) => `<article class="ui-card ui-card-body"><p class="ui-prose" style="margin:0">${esc(e.text || e)}</p></article>`).join("")}</div>`
+      : `<section class="ui-card">${uiEmpty("No evaluations yet", "Record test results or a review.", add)}</section>`}`, "evaluations", true);
 }
 function addEvaluation() {
-  const note = prompt("Evaluation note");
-  if (!note) return;
-  createSaved("evaluation", { text: note }).then((row) => {
-    state.evals.push({ id: row.id, text: note });
-    render();
-  }).catch((err) => {
-    toast(err.message || "Could not save that evaluation");
-    render();
+  openEdit({
+    title: "New evaluation",
+    fields: [{ key: "text", label: "Evaluation", value: "", multiline: true }],
+    onSave: async (values) => {
+      const note = (values.text || "").trim();
+      if (!note) { toast("Write the evaluation"); return; }
+      try {
+        const row = await createSaved("evaluation", { text: note });
+        state.evals.push({ id: row.id, text: note });
+        state.modal = null;
+        render();
+      } catch (err) {
+        toast(err.message || "Could not save that evaluation");
+      }
+    }
   });
 }
 function programmedDayCount(target) {
@@ -6470,18 +6514,23 @@ function calendarsView() {
   targets.forEach((target) => {
     if (!state.calendarLoaded[target.id] && !state.calendarLoading[target.id]) loadCalendarSchedule(target.id);
   });
-  return `<section class="stage light-page"><h1>Manage Calendars</h1>
-    <form class="toolbar" onsubmit="addCalendar(); return false;">
-      <input class="plain" placeholder="Athlete name" data-focus="cal-name" value="${esc(state.toolForm.calName || "")}" oninput="state.toolForm.calName=this.value">
-      <input class="plain" placeholder="Email (optional)" data-focus="cal-email" value="${esc(state.toolForm.calEmail || "")}" oninput="state.toolForm.calEmail=this.value">
-      <button class="req" type="submit">Add athlete calendar</button>
-    </form>
-    <div class="grid-cards">${targets.map((a) => `<article class="card">
-      <strong>${esc(a.name)}</strong>
-      <div class="hint">${programmedDayCount(a)} programmed days${a.email ? " · " + esc(a.email) : ""}</div>
-      ${!a.isGroup ? `<button class="comment" onclick="editCalendar('${a.id}')">Edit</button>` : ""}
-      <button class="comment" onclick="switchAthlete('${esc(a.id)}');state.view='build';render()">Open calendar</button>
-    </article>`).join("") || `<p class="hint">No calendars yet. Create a group or upload athletes in Manage Users.</p>`}</div></section>`;
+  const body = targets.map((a) => `<tr>
+      <td><span class="ui-person">${uiAvatar(a.name)}<span class="who"><b>${esc(a.name)}</b>${a.email ? `<small>${esc(a.email)}</small>` : ""}</span></span></td>
+      <td>${a.isGroup ? `<span class="ui-badge blue">Group</span>` : `<span class="ui-badge">Athlete</span>`}</td>
+      <td class="num">${programmedDayCount(a)}</td>
+      <td class="row-actions">${!a.isGroup ? `<button class="btn btn-ghost btn-sm" type="button" onclick="editCalendar('${a.id}')">Rename</button>` : ""}<button class="btn btn-secondary btn-sm" type="button" onclick="switchAthlete('${esc(a.id)}');state.view='build';render()">Open calendar</button></td>
+    </tr>`).join("");
+  return uiPage(`
+    ${uiHead("Coach tools", "Calendars", "Every athlete and group calendar you program.", "")}
+    <section class="ui-card"><form class="ui-card-body ui-form-row" onsubmit="addCalendar(); return false;">
+      ${uiField("Athlete name", `<input class="input" placeholder="e.g. Sam Lee" data-focus="cal-name" value="${esc(state.toolForm.calName || "")}" oninput="state.toolForm.calName=this.value">`)}
+      ${uiField("Email (optional)", `<input class="input" type="email" data-focus="cal-email" value="${esc(state.toolForm.calEmail || "")}" oninput="state.toolForm.calEmail=this.value">`)}
+      <button class="btn btn-primary" type="submit">Add athlete calendar</button>
+    </form></section>
+    <section class="ui-card">${uiCardHead("Calendars", targets.length)}
+      <div class="ui-table-wrap"><table class="ui-table"><thead><tr><th>Name</th><th>Type</th><th class="num">Programmed days</th><th></th></tr></thead>
+      <tbody>${body || `<tr><td colspan="4">${uiEmpty("No calendars yet", "Create a group or upload athletes in Manage Users.")}</td></tr>`}</tbody></table></div>
+    </section>`, "calendars");
 }
 async function addCalendar() {
   const name = (state.toolForm.calName || "").trim();
@@ -6783,17 +6832,22 @@ async function deleteGoalRecord(id) {
   }
 }
 function docsView() {
-  return `<section class="stage light-page"><h1>Documents & Links</h1>
-    <form class="toolbar" onsubmit="addDoc(); return false;">
-      <input class="plain" placeholder="Name" data-focus="doc-name" value="${esc(state.toolForm.docName || "")}" oninput="state.toolForm.docName=this.value">
-      <input class="plain" placeholder="URL" data-focus="doc-url" value="${esc(state.toolForm.docUrl || "")}" oninput="state.toolForm.docUrl=this.value">
-      <button class="req" type="submit">Add link</button>
-    </form>
-    <div class="grid-cards">${state.docs.map((d, i) => `<article class="card">
-      <strong>${esc(d.name)}</strong>
-      <div class="hint">${esc(d.url)}</div>
-      <div style="margin-top:8px"><a href="${esc(d.url)}" target="_blank">Open</a> <button class="comment" onclick="editDoc(${i})">Edit</button> <button class="comment" onclick="removeSaved('docs', ${i})">Remove</button></div>
-    </article>`).join("") || `<p class="hint">No documents or links added yet.</p>`}</div></section>`;
+  const body = state.docs.map((d, i) => `<tr>
+      <td class="strong">${esc(d.name)}</td>
+      <td class="muted hide-sm" style="max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(d.url)}</td>
+      <td class="row-actions"><a class="btn btn-secondary btn-sm" href="${esc(d.url)}" target="_blank" rel="noopener">Open</a><button class="btn btn-ghost btn-sm" type="button" onclick="editDoc(${i})">Edit</button><button class="btn btn-ghost btn-sm btn-danger" type="button" onclick="removeSaved('docs', ${i})">Remove</button></td>
+    </tr>`).join("");
+  return uiPage(`
+    ${uiHead("Coach tools", "Documents & links", "Programs, forms and videos your gym shares.", "")}
+    <section class="ui-card"><form class="ui-card-body ui-form-row" onsubmit="addDoc(); return false;">
+      ${uiField("Name", `<input class="input" placeholder="e.g. Warm-up guide" data-focus="doc-name" value="${esc(state.toolForm.docName || "")}" oninput="state.toolForm.docName=this.value">`)}
+      ${uiField("URL", `<input class="input" type="url" placeholder="https://" data-focus="doc-url" value="${esc(state.toolForm.docUrl || "")}" oninput="state.toolForm.docUrl=this.value">`)}
+      <button class="btn btn-primary" type="submit">Add link</button>
+    </form></section>
+    <section class="ui-card">${uiCardHead("Links", state.docs.length)}
+      <div class="ui-table-wrap"><table class="ui-table"><thead><tr><th>Name</th><th class="hide-sm">URL</th><th></th></tr></thead>
+      <tbody>${body || `<tr><td colspan="3">${uiEmpty("No links yet", "Add one above.")}</td></tr>`}</tbody></table></div>
+    </section>`, "documents");
 }
 function editDoc(index) {
   const doc = state.docs[index];
@@ -6836,12 +6890,20 @@ async function addDoc() {
   render();
 }
 function packetsView() {
-  return `<section class="stage light-page"><h1>Packets & Sheets</h1>
-    <form class="toolbar" onsubmit="addPacket(); return false;">
-      <input class="plain" placeholder="Packet name" data-focus="packet-name" value="${esc(state.toolForm.packet || "")}" oninput="state.toolForm.packet=this.value">
-      <button class="req" type="submit">Add packet</button>
-    </form>
-    <div class="grid-cards">${state.packets.map((p, i) => `<article class="card"><strong>${esc(p.name || p)}</strong><div style="margin-top:8px"><button class="comment" onclick="editPacket(${i})">Edit</button> <button class="comment" onclick="removeSaved('packets', ${i})">Remove</button></div></article>`).join("") || `<p class="hint">No packets added yet.</p>`}</div></section>`;
+  const body = state.packets.map((p, i) => `<tr>
+      <td class="strong">${esc(p.name || p)}</td>
+      <td class="row-actions"><button class="btn btn-ghost btn-sm" type="button" onclick="editPacket(${i})">Rename</button><button class="btn btn-ghost btn-sm btn-danger" type="button" onclick="removeSaved('packets', ${i})">Remove</button></td>
+    </tr>`).join("");
+  return uiPage(`
+    ${uiHead("Coach tools", "Packets & sheets", "Printable packets you hand out.", "")}
+    <section class="ui-card"><form class="ui-card-body ui-form-row" onsubmit="addPacket(); return false;">
+      ${uiField("Packet name", `<input class="input" placeholder="e.g. Summer off-season" data-focus="packet-name" value="${esc(state.toolForm.packet || "")}" oninput="state.toolForm.packet=this.value">`)}
+      <button class="btn btn-primary" type="submit">Add packet</button>
+    </form></section>
+    <section class="ui-card">${uiCardHead("Packets", state.packets.length)}
+      <div class="ui-table-wrap"><table class="ui-table"><thead><tr><th>Name</th><th></th></tr></thead>
+      <tbody>${body || `<tr><td colspan="2">${uiEmpty("No packets yet", "Add one above.")}</td></tr>`}</tbody></table></div>
+    </section>`, "packets", true);
 }
 function editPacket(index) {
   openEdit({
@@ -6875,28 +6937,48 @@ async function addPacket() {
   }
   render();
 }
+function markAllPresent() {
+  ATHLETES.forEach((a) => { state.attendance[state.entryDate + ":" + a.id] = true; });
+  toast("Marked everyone present");
+  render();
+}
 function attendanceView() {
   const date = state.entryDate;
   const comp = state.compliance && state.compliance.date === date ? state.compliance : null;
   const compItems = (comp && comp.items) || [];
-  return `<section class="stage light-page"><h1>Attendance</h1>
-    <input class="plain" type="date" value="${date}" onchange="state.entryDate=this.value;loadCompliance()">
-    <p class="hint">${comp ? comp.completed_count + " completed · " + comp.not_started_count + " not started" : "Mark who is here. The workout on that day is listed under each name."}</p>
-    <div class="grid-cards">${ATHLETES.map((a) => {
-      const key = date + ":" + a.id;
-      const cItem = compItems.find((ci) => ci.user && ci.user.id === a.serverId);
-      const day = (state.calendars[a.id] || {})[date];
-      const title = cItem && cItem.workout_title
-        ? `${cItem.workout_title} · ${cItem.status}`
-        : (day && ((day.title || "").trim() || (day.items || []).length) ? (day.title || "Workout") + " · " + (day.items || []).length + " exercises" : "No workout this day");
-      const checked = state.attendance[key] != null ? state.attendance[key] : (cItem && cItem.status === "completed");
-      return `<article class="card">
-        <label class="chk"><input type="checkbox" ${checked ? "checked" : ""} onchange="toggleAttendance('${date}', '${a.id}', ${a.serverId || 0}, ${cItem && cItem.workout_id ? cItem.workout_id : 0}, this.checked)"> ${esc(a.name)}</label>
-        <div class="hint">${esc(title)}</div>
-        <div class="hint">${esc(state.attendance[key + ":note"] || "No note")}</div>
-        <button class="comment" onclick="editAttendance('${a.id}')">Edit note</button>
-      </article>`;
-    }).join("") || `<p class="hint">No athletes enrolled yet.</p>`}</div></section>`;
+  let present = 0;
+  const body = ATHLETES.map((a) => {
+    const key = date + ":" + a.id;
+    const cItem = compItems.find((ci) => ci.user && ci.user.id === a.serverId);
+    const day = (state.calendars[a.id] || {})[date];
+    const title = cItem && cItem.workout_title
+      ? cItem.workout_title
+      : (day && ((day.title || "").trim() || (day.items || []).length) ? (day.title || "Workout") + " · " + (day.items || []).length + " exercises" : "");
+    const status = cItem && cItem.status;
+    const checked = state.attendance[key] != null ? state.attendance[key] : (cItem && cItem.status === "completed");
+    if (checked) present += 1;
+    const note = state.attendance[key + ":note"];
+    return `<tr>
+      <td style="width:44px"><span class="ui-check"><input type="checkbox" aria-label="${esc(a.name)} present" ${checked ? "checked" : ""} onchange="toggleAttendance('${date}', '${a.id}', ${a.serverId || 0}, ${cItem && cItem.workout_id ? cItem.workout_id : 0}, this.checked)"></span></td>
+      <td><span class="ui-person">${uiAvatar(a.name)}<span class="who"><b>${esc(a.name)}</b>${note ? `<small>${esc(note)}</small>` : ""}</span></span></td>
+      <td class="hide-sm">${title ? esc(title) : `<span class="muted">No workout</span>`}</td>
+      <td>${status === "completed" ? `<span class="ui-badge green">Completed</span>` : status ? `<span class="ui-badge amber">${esc(status.replace(/_/g, " "))}</span>` : ""}</td>
+      <td class="row-actions"><button class="btn btn-ghost btn-sm" type="button" onclick="editAttendance('${a.id}')">${note ? "Edit note" : "Add note"}</button></td>
+    </tr>`;
+  }).join("");
+  return uiPage(`
+    ${uiHead("Coach tools", "Attendance", "Mark who is here. Each athlete's workout for the day is listed beside them.",
+      `<input class="input auto" type="date" aria-label="Day" value="${date}" onchange="state.entryDate=this.value;loadCompliance()"><button class="btn btn-secondary" type="button" onclick="markAllPresent()">Mark everyone present</button>`)}
+    <div class="ui-stats">
+      <div class="ui-stat"><div class="label">Present</div><div class="value">${present}</div><div class="note">of ${ATHLETES.length} athletes</div></div>
+      <div class="ui-stat"><div class="label">Completed workout</div><div class="value">${comp ? comp.completed_count : "—"}</div></div>
+      <div class="ui-stat"><div class="label">Not started</div><div class="value">${comp ? comp.not_started_count : "—"}</div></div>
+      <div class="ui-stat"><div class="label">Day</div><div class="value" style="font-size:20px">${esc(fmtShortDate(date))}</div></div>
+    </div>
+    <section class="ui-card">${uiCardHead("Athletes", ATHLETES.length)}
+      <div class="ui-table-wrap"><table class="ui-table"><thead><tr><th>Here</th><th>Athlete</th><th class="hide-sm">Workout</th><th>Status</th><th></th></tr></thead>
+      <tbody>${body || `<tr><td colspan="5">${uiEmpty("No athletes yet", "Add athletes in Manage Users.")}</td></tr>`}</tbody></table></div>
+    </section>`, "attendance");
 }
 async function toggleAttendance(date, localId, serverId, workoutId, isPresent) {
   const key = date + ":" + localId;
@@ -6964,16 +7046,36 @@ function reportingView() {
   const progDays = kpis.programmed_days != null ? Math.max(kpis.programmed_days, rows.length) : rows.length;
   const exCount = kpis.total_exercises != null ? Math.max(kpis.total_exercises, rows.reduce((n, r) => n + r.count, 0)) : rows.reduce((n, r) => n + r.count, 0);
   const athCount = kpis.total_athletes != null ? kpis.total_athletes : state.athletes.length;
-  return `<section class="stage light-page"><h1>Reporting</h1>
-    <div class="kpis"><div class="kpi"><b>${progDays}</b><span>Programmed days</span></div><div class="kpi"><b>${exCount}</b><span>Exercises</span></div><div class="kpi"><b>${athCount}</b><span>Athletes</span></div><div class="kpi"><b>${state.reports.length}</b><span>Notes</span></div></div>
-    <form class="toolbar" onsubmit="addReport(); return false;">
-      <input class="plain" placeholder="Report note" data-focus="report-note" value="${esc(state.toolForm.report || "")}" oninput="state.toolForm.report=this.value">
-      <button class="req" type="submit">Add note</button>
-    </form>
-    ${state.reports.map((r, i) => `<article class="card"><p>${esc(r.text)}</p><button class="comment" onclick="editReport(${i})">Edit</button> <button class="comment" onclick="removeSaved('reports', ${i})">Remove</button></article>`).join("")}
-    <table class="data" style="margin-top:12px"><tr><th>Date</th><th>Target</th><th>Workout</th><th>Exercises</th><th></th></tr>
-      ${rows.slice(0, 40).map((r) => `<tr><td>${esc(r.date)}</td><td>${esc(r.athlete)}</td><td>${esc(r.title)}</td><td>${r.count}</td><td><button class="comment" onclick="openReportDay('${esc(r.athleteId)}','${esc(r.date)}')">Open</button></td></tr>`).join("") || `<tr><td colspan="5">No programmed workouts yet.</td></tr>`}
-    </table></section>`;
+  const done = kpis.completed_sessions != null ? kpis.completed_sessions : "—";
+  const body = rows.slice(0, 40).map((r) => `<tr>
+      <td class="muted">${esc(fmtShortDate(r.date))}</td>
+      <td class="strong">${esc(r.athlete)}</td>
+      <td>${esc(r.title)}</td>
+      <td class="num">${r.count}</td>
+      <td class="row-actions"><button class="btn btn-ghost btn-sm" type="button" onclick="openReportDay('${esc(r.athleteId)}','${esc(r.date)}')">Open</button></td>
+    </tr>`).join("");
+  const notes = state.reports.map((r, i) => `<div class="ui-list-row"><span class="ui-prose" style="margin:0">${esc(r.text)}</span><span class="ui-inline" style="flex-wrap:nowrap"><button class="btn btn-ghost btn-sm" type="button" onclick="editReport(${i})">Edit</button><button class="btn btn-ghost btn-sm btn-danger" type="button" onclick="removeSaved('reports', ${i})">Remove</button></span></div>`).join("");
+  return uiPage(`
+    ${uiHead("Coach tools", "Reporting", "What has been programmed and logged across your athletes.", "")}
+    <div class="ui-stats">
+      <div class="ui-stat"><div class="label">Programmed days</div><div class="value">${progDays}</div></div>
+      <div class="ui-stat"><div class="label">Exercises programmed</div><div class="value">${exCount}</div></div>
+      <div class="ui-stat"><div class="label">Athletes</div><div class="value">${athCount}</div></div>
+      <div class="ui-stat"><div class="label">Sessions logged</div><div class="value">${done}</div></div>
+    </div>
+    <div class="ui-grid side">
+      <section class="ui-card">${uiCardHead("Programmed workouts", rows.length, rows.length > 40 ? "Showing the latest 40." : "")}
+        <div class="ui-table-wrap"><table class="ui-table"><thead><tr><th>Date</th><th>Calendar</th><th>Workout</th><th class="num">Exercises</th><th></th></tr></thead>
+        <tbody>${body || `<tr><td colspan="5">${uiEmpty("Nothing programmed yet", "Build a workout on a calendar.")}</td></tr>`}</tbody></table></div>
+      </section>
+      <section class="ui-card">${uiCardHead("Notes", state.reports.length)}
+        <form class="ui-card-body ui-form" onsubmit="addReport(); return false;">
+          ${uiField("New note", `<textarea class="textarea" style="min-height:72px" placeholder="What stood out this week?" data-focus="report-note" oninput="state.toolForm.report=this.value">${esc(state.toolForm.report || "")}</textarea>`)}
+          <div><button class="btn btn-primary" type="submit">Add note</button></div>
+          ${notes ? `<div>${notes}</div>` : ""}
+        </form>
+      </section>
+    </div>`, "reporting");
 }
 function editReport(index) {
   const report = state.reports[index];
@@ -7016,19 +7118,24 @@ function openReportDay(id, date) {
   render();
 }
 function paymentsView() {
-  return `<section class="stage light-page"><h1>Payments</h1>
-    <form class="toolbar" onsubmit="addInvoice(); return false;">
-      <select class="plain" onchange="state.toolForm.payWho=this.value">${ATHLETES.map((a) => `<option ${state.toolForm.payWho === a.name ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select>
-      <input class="plain" placeholder="Amount" data-focus="pay-amount" value="${esc(state.toolForm.payAmount || "")}" oninput="state.toolForm.payAmount=this.value">
-      <input class="plain" placeholder="Note" data-focus="pay-note" value="${esc(state.toolForm.payNote || "")}" oninput="state.toolForm.payNote=this.value">
-      <button class="req" type="submit">Add invoice</button>
-    </form>
-    ${state.invoices.length ? state.invoices.map((inv, i) => `<article class="card">
-      <strong>${esc(inv.who || "Athlete")}</strong>
-      <div>${esc(inv.amount || "")}</div>
-      <div class="hint">${esc(inv.note || "")}</div>
-      <div style="margin-top:8px"><button class="comment" onclick="editInvoice(${i})">Edit</button> <button class="comment" onclick="removeSaved('invoices', ${i})">Remove</button></div>
-    </article>`).join("") : "<p>No invoices</p>"}</section>`;
+  const body = state.invoices.map((inv, i) => `<tr>
+      <td><span class="ui-person">${uiAvatar(inv.who || "Athlete")}<span class="who"><b>${esc(inv.who || "Athlete")}</b></span></span></td>
+      <td class="num strong">${esc(inv.amount || "")}</td>
+      <td class="muted">${esc(inv.note || "")}</td>
+      <td class="row-actions"><button class="btn btn-ghost btn-sm" type="button" onclick="editInvoice(${i})">Edit</button><button class="btn btn-ghost btn-sm btn-danger" type="button" onclick="removeSaved('invoices', ${i})">Remove</button></td>
+    </tr>`).join("");
+  return uiPage(`
+    ${uiHead("Coach tools", "Payments", "Invoices you have recorded for athletes.", "")}
+    <section class="ui-card"><form class="ui-card-body ui-form-row" onsubmit="addInvoice(); return false;">
+      ${uiField("Athlete", `<select class="select" onchange="state.toolForm.payWho=this.value">${ATHLETES.map((a) => `<option ${state.toolForm.payWho === a.name ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select>`)}
+      ${uiField("Amount", `<input class="input" inputmode="decimal" placeholder="e.g. 120" data-focus="pay-amount" value="${esc(state.toolForm.payAmount || "")}" oninput="state.toolForm.payAmount=this.value">`)}
+      ${uiField("Note", `<input class="input" placeholder="e.g. October training" data-focus="pay-note" value="${esc(state.toolForm.payNote || "")}" oninput="state.toolForm.payNote=this.value">`)}
+      <button class="btn btn-primary" type="submit">Add invoice</button>
+    </form></section>
+    <section class="ui-card">${uiCardHead("Invoices", state.invoices.length)}
+      <div class="ui-table-wrap"><table class="ui-table"><thead><tr><th>Athlete</th><th class="num">Amount</th><th>Note</th><th></th></tr></thead>
+      <tbody>${body || `<tr><td colspan="4">${uiEmpty("No invoices yet", "Add one above.")}</td></tr>`}</tbody></table></div>
+    </section>`, "payments");
 }
 function editInvoice(index) {
   const inv = state.invoices[index];
@@ -7277,10 +7384,7 @@ function modalHtml() {
     return `<div class="modal-back"><div class="modal"><h3>Create New Exercise</h3><input class="field" data-focus="new-ex" placeholder="Exercise name" oninput="state.modal.name=this.value"><button class="full primary" onclick="openNewLibraryExercise(state.modal.date, (state.modal.name||'').trim())">CREATE</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
   }
   if (m.type === "journal") {
-    return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render();}"><div class="modal"><h3>Journal entry</h3><input class="field" placeholder="Title" data-focus="jtitle" oninput="state.modal.title=this.value"><textarea data-focus="jbody" oninput="state.modal.body=this.value"></textarea><button class="full primary" onclick="saveJournalEntry()">SAVE</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
-  }
-  if (m.type === "adduser") {
-    return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render();}"><div class="modal"><h3>Add user</h3><input class="field" placeholder="First" oninput="state.modal.first=this.value"><input class="field" placeholder="Last" oninput="state.modal.last=this.value" style="margin-top:6px"><input class="field" placeholder="Email" oninput="state.modal.email=this.value" style="margin-top:6px"><button class="full primary" onclick="addUserFromModal()">ADD</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
+    return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render();}"><div class="modal"><h3>Journal entry</h3><div class="modal-body ui-form">${uiField("Title", `<input class="field" data-focus="jtitle" value="${esc(m.title || "")}" oninput="state.modal.title=this.value">`)}${uiField("Entry", `<textarea data-focus="jbody" oninput="state.modal.body=this.value">${esc(m.body || "")}</textarea>`)}</div><div class="modal-foot"><button class="full" onclick="state.modal=null;render()">Cancel</button><button class="full primary" onclick="saveJournalEntry()">Save</button></div></div></div>`;
   }
   if (m.type === "google_options") {
     return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render();}"><div class="modal" style="max-width:440px">
@@ -7311,36 +7415,6 @@ function saveInfo() {
   state.modal = null;
   render();
 }
-function fabSuppressed() {
-  return state.view === "weightroom" || state.view === "whiteboard" || state.view === "leaderboard" || state.view === "entry";
-}
-function fabHtml() {
-  if (state.view === "build" || state.view === "admin" || state.view === "squad" || state.view === "mine" || state.role === "athlete" || state.role === "admin" || fabSuppressed()) return "";
-  return `<button class="fab" onclick="onFab()">+</button>`;
-}
-function onFab() {
-  if (state.view === "feed" && state.feedMode === "journal") { state.modal = { type: "journal" }; render(); return; }
-  if (state.view === "feed" && state.feedMode === "team") { state.compose = true; render(); return; }
-  if (state.view === "feed") { state.feedMode = "team"; state.compose = true; render(); return; }
-  if (state.view === "users") { state.modal = { type: "adduser" }; render(); return; }
-  if (state.view === "exercises") { addExerciseRecord(); return; }
-  if (state.view === "goals") { addGoalRecord(); return; }
-  if (state.view === "documents") { addDoc(); return; }
-  if (state.view === "packets") { addPacket(); return; }
-  if (state.view === "payments") { addInvoice(); return; }
-  if (state.view === "calendars") { addCalendar(); return; }
-  if (state.view === "reporting") { addReport(); return; }
-  if (state.view === "attendance") {
-    ATHLETES.forEach((a) => { state.attendance[state.entryDate + ":" + a.id] = true; });
-    toast("Marked everyone present");
-    render();
-    return;
-  }
-  if (state.view === "journal") { state.modal = { type: "journal" }; render(); return; }
-  if (state.view === "evaluations") { addEvaluation(); return; }
-  if (state.view === "maxes") { addGoalRecord(); return; }
-}
-
 window.addEventListener("resize", () => { if (state.searchDay) placeSearchPop(); if (state.editor) placeEditorPop(); });
 document.addEventListener("scroll", () => { if (state.searchDay) placeSearchPop(); if (state.editor) placeEditorPop(); }, true);
 document.addEventListener("click", (ev) => {
@@ -7482,37 +7556,53 @@ function adminView() {
   const ctx = state.gymContext || { coaches: [], codes: [], teams: [], gym_name: "wourkout" };
   const coaches = ctx.coaches || [];
   const codes = (ctx.codes || []).filter((c) => c.kind === "gym");
-  return `<section class="stage light-page role-home" id="admin-coaches">
-    <div class="role-kicker">Admin</div>
-    <h1>Coaches in ${esc(ctx.gym_name || "this gym")}</h1>
-    <p class="lede">Add and remove coaches for this gym. Removing a coach is blocked while they still lead a team or have an athlete.</p>
-    ${state.roleError ? `<div class="banner-warn">${esc(state.roleError)}</div>` : ""}
-    <form class="inline-form" onsubmit="addCoach(event); return false;">
-      <input class="plain" id="coach-name" placeholder="Coach name" required>
-      <input class="plain" id="coach-email" type="email" placeholder="Email" required>
-      <button class="req" type="submit">Add coach</button>
-    </form>
-    <table class="data">
-      <tr><th>Coach</th><th>Email</th><th>Teams they lead</th><th></th></tr>
-      ${coaches.map((c) => `<tr>
-        <td>${esc(c.name)}</td>
-        <td>${esc(c.email)}</td>
-        <td>${esc((c.led_teams || []).join(", ") || "No team")}</td>
-        <td><button class="comment" type="button" onclick="removeCoach(${c.id})">Remove</button></td>
-      </tr>`).join("") || `<tr><td colspan="4">No coaches yet.</td></tr>`}
-    </table>
-    <h2>Gym code</h2>
-    <p class="lede">A gym code makes a new signup a coach in this gym. There is no other kind of gym code.</p>
-    <div class="code-row">
-      ${codes.map((c) => `<code class="join-code">${esc(c.code)}</code>`).join("") || "<span class='hint'>No gym code yet.</span>"}
-      <button class="req" type="button" onclick="createJoinCode('gym')">New gym code</button>
+  const body = coaches.map((c) => `<tr>
+      <td><span class="ui-person">${uiAvatar(c.name)}<span class="who"><b>${esc(c.name)}</b><small>${esc(c.email)}</small></span></span></td>
+      <td>${(c.led_teams || []).map((t) => `<span class="ui-badge blue">${esc(t)}</span>`).join(" ") || `<span class="muted">No team</span>`}</td>
+      <td class="row-actions"><button class="btn btn-ghost btn-sm btn-danger" type="button" onclick="removeCoach(${c.id})">Remove</button></td>
+    </tr>`).join("");
+  return `<section class="stage ui-page" id="admin-coaches"><div class="ui-wrap">
+    ${uiHead("Admin", "Coaches in " + esc(ctx.gym_name || "this gym"), "Add and remove coaches. A coach who still leads a team or has an athlete cannot be removed.", "")}
+    ${state.roleError ? `<div class="ui-banner warn">${esc(state.roleError)}</div>` : ""}
+    <div class="ui-grid side">
+      <div class="ui-stack">
+        <section class="ui-card"><form class="ui-card-body ui-form-row" onsubmit="addCoach(event); return false;">
+          ${uiField("Coach name", `<input class="input" id="coach-name" required>`)}
+          ${uiField("Email", `<input class="input" id="coach-email" type="email" required>`)}
+          <button class="btn btn-primary" type="submit">Add coach</button>
+        </form></section>
+        <section class="ui-card">${uiCardHead("Coaches", coaches.length)}
+          <div class="ui-table-wrap"><table class="ui-table"><thead><tr><th>Coach</th><th>Teams they lead</th><th></th></tr></thead>
+          <tbody>${body || `<tr><td colspan="3">${uiEmpty("No coaches yet", "Add one above, or share the gym code.")}</td></tr>`}</tbody></table></div>
+        </section>
+      </div>
+      <section class="ui-card">${uiCardHead("Gym code", null, "A new signup who enters this code joins as a coach.")}
+        <div class="ui-card-body ui-stack" style="gap:12px">
+          ${codes.map((c) => `<code class="join-code">${esc(c.code)}</code>`).join("") || `<p class="ui-hint">No gym code yet.</p>`}
+          <button class="btn btn-secondary" type="button" onclick="createJoinCode('gym')">New gym code</button>
+        </div>
+      </section>
     </div>
-  </section>`;
+  </div></section>`;
 }
-
 function ledTeams(ctx) {
   const id = state.auth && state.auth.user && state.auth.user.id;
   return ((ctx && ctx.teams) || []).filter((t) => t.coach_id === id);
+}
+function uiPage(inner, id, narrow) {
+  return `<section class="stage ui-page"${id ? ` id="${id}"` : ""}><div class="ui-wrap${narrow ? " narrow" : ""}">${inner}</div></section>`;
+}
+function uiField(label, control, cls) {
+  return `<label class="ui-field${cls ? " " + cls : ""}"><span class="ui-label">${esc(label)}</span>${control}</label>`;
+}
+function uiEmpty(title, text, action) {
+  return `<div class="ui-empty"><b>${esc(title)}</b>${text ? esc(text) : ""}${action ? `<div>${action}</div>` : ""}</div>`;
+}
+function uiCardHead(title, count, sub, right) {
+  return `<div class="ui-card-head"><div><h2 class="ui-card-title">${esc(title)}${count != null ? ` <span class="count">${count}</span>` : ""}</h2>${sub ? `<p class="ui-card-sub">${sub}</p>` : ""}</div>${right || ""}</div>`;
+}
+function uiSearch(placeholder, key, value, oninput, style) {
+  return `<div class="ui-search"${style ? ` style="${style}"` : ""}><input class="input" placeholder="${esc(placeholder)}" aria-label="${esc(placeholder)}" data-focus="${key}" value="${esc(value || "")}" oninput="${oninput}"></div>`;
 }
 function uiHead(kicker, title, sub, actions) {
   return `<header class="ui-head"><div>
@@ -8367,7 +8457,6 @@ async function initAuth() {
 }
 
 window.saveInfo = saveInfo;
-window.onFab = onFab;
 window.addItem = addItem;
 window.snapshot = snapshot;
 window.toast = toast;
