@@ -9,6 +9,7 @@ os.environ["DATABASE_URL"] = f"sqlite:///{_db.name}"
 os.environ["SEED_DATA_PATH"] = "/tmp/wourkout-no-seed.json"
 
 from fastapi.testclient import TestClient  # noqa: E402
+from tests.auth_helpers import SIGNED_OUT, adopt, signed_in_client  # noqa: E402
 
 from app.database import Base, engine  # noqa: E402
 from app.main import app  # noqa: E402
@@ -18,13 +19,13 @@ class TrainerFlowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         Base.metadata.create_all(bind=engine)
-        cls.client = TestClient(app)
+        cls.client = signed_in_client(app)
 
     def setUp(self):
         # Isolate each test with fresh rows by using unique names.
         self.stamp = f"{id(self)}-{self._testMethodName}"
 
-    def _user(self, name, role="student"):
+    def _user(self, name, role="student", team=True):
         res = self.client.post("/api/users", json={
             "name": name,
             "email": f"{name.replace(' ', '.').lower()}.{self.stamp}@example.com",
@@ -32,19 +33,20 @@ class TrainerFlowTests(unittest.TestCase):
             "title": "Trainer" if role == "coach" else "Client",
         })
         self.assertEqual(res.status_code, 201, res.text)
+        adopt(self.client, res.json()["id"], role, team)
         return res.json()
 
-    def _exercise(self):
+    def _exercise(self, headers=None):
         self._ex_n = getattr(self, "_ex_n", 0) + 1
         res = self.client.post("/api/exercises", json={
             "name": f"Squat {self.stamp} {self._ex_n}",
             "category": "Strength",
-        })
+        }, headers=headers)
         self.assertEqual(res.status_code, 201, res.text)
         return res.json()
 
-    def _workout(self, title, program, day):
-        exercise = self._exercise()
+    def _workout(self, title, program, day, headers=None):
+        exercise = self._exercise(headers)
         res = self.client.post("/api/workouts", json={
             "title": title,
             "program_name": program,
@@ -58,7 +60,7 @@ class TrainerFlowTests(unittest.TestCase):
                 "target_reps": "5",
                 "target_weight": "100",
             }],
-        })
+        }, headers=headers)
         self.assertEqual(res.status_code, 201, res.text)
         return res.json()
 
@@ -109,9 +111,9 @@ class TrainerFlowTests(unittest.TestCase):
 
     def test_group_clients_and_bulk_apply_program(self):
         coach = self._user(f"Coach team {self.stamp}", role="coach")
-        a = self._user(f"A {self.stamp}")
-        b = self._user(f"B {self.stamp}")
-        outsider = self._user(f"Out {self.stamp}")
+        a = self._user(f"A {self.stamp}", team=False)
+        b = self._user(f"B {self.stamp}", team=False)
+        outsider = self._user(f"Out {self.stamp}", team=False)
         program = f"Fall {self.stamp}"
         first = self._workout(f"Day 1 {self.stamp}", program, "2026-11-02")
         second = self._workout(f"Day 2 {self.stamp}", program, "2026-11-04")
@@ -168,7 +170,7 @@ class TrainerFlowTests(unittest.TestCase):
 
     def test_push_team_workout_removes_client_from_that_day(self):
         coach = self._user(f"Coach push {self.stamp}", role="coach")
-        client = self._user(f"Push {self.stamp}")
+        client = self._user(f"Push {self.stamp}", team=False)
         workout = self._workout(f"Push day {self.stamp}", f"Push {self.stamp}", "2026-12-01")
         group = self.client.post("/api/groups", json={"name": f"Push team {self.stamp}", "coach_id": coach["id"]})
         group_id = group.json()["id"]
@@ -870,7 +872,7 @@ class TrainerFlowTests(unittest.TestCase):
         auth = self._auth(token)
         athlete = next(p for p in self.client.get("/api/gym/context", headers=auth).json()["athletes"]
                        if p["email"] == "athlete@wourkout.app")
-        workout = self._workout(f"PR day {self.stamp}", "wourkout", "2026-10-20")
+        workout = self._workout(f"PR day {self.stamp}", "wourkout", "2026-10-20", headers=auth)
         self.client.post("/api/assignments", json={
             "workout_id": workout["id"], "user_id": athlete["id"], "scheduled_date": "2026-10-20",
         }, headers=auth)
@@ -898,7 +900,7 @@ class TrainerFlowTests(unittest.TestCase):
         auth = self._auth(token)
         athlete = next(p for p in self.client.get("/api/gym/context", headers=auth).json()["athletes"]
                        if p["email"] == "athlete@wourkout.app")
-        workout = self._workout(f"Timed {self.stamp}", "wourkout", "2026-10-22")
+        workout = self._workout(f"Timed {self.stamp}", "wourkout", "2026-10-22", headers=auth)
         self.client.post("/api/assignments", json={
             "workout_id": workout["id"], "user_id": athlete["id"], "scheduled_date": "2026-10-22",
         }, headers=auth)
@@ -921,14 +923,14 @@ class TrainerFlowTests(unittest.TestCase):
 
         outsider = self._gym_coach("Timer")
         self.assertEqual(self.client.put(url, json={"minutes": 30}, headers=outsider).status_code, 403)
-        self.assertEqual(self.client.put(url, json={"minutes": 30}).status_code, 401)
+        self.assertEqual(self.client.put(url, json={"minutes": 30}, headers=SIGNED_OUT).status_code, 401)
 
     def test_logging_sets_needs_the_athlete_or_their_coach(self):
         token, coach = self._login("coach@wourkout.app", "CoachPassword123!")
         auth = self._auth(token)
         athlete = next(p for p in self.client.get("/api/gym/context", headers=auth).json()["athletes"]
                        if p["email"] == "athlete@wourkout.app")
-        workout = self._workout(f"Locked {self.stamp}", "wourkout", "2026-10-23")
+        workout = self._workout(f"Locked {self.stamp}", "wourkout", "2026-10-23", headers=auth)
         self.client.post("/api/assignments", json={
             "workout_id": workout["id"], "user_id": athlete["id"], "scheduled_date": "2026-10-23",
         }, headers=auth)
@@ -936,10 +938,10 @@ class TrainerFlowTests(unittest.TestCase):
         url = f"/api/sessions/{session['id']}/sets"
         params = {"workout_exercise_id": workout["exercises"][0]["id"], "set_number": 1, "weight": 60, "reps": 5, "completed": True}
 
-        self.assertEqual(self.client.post(url, params=params).status_code, 401)
+        self.assertEqual(self.client.post(url, params=params, headers=SIGNED_OUT).status_code, 401)
         self.assertEqual(self.client.post(url, params=params, headers=self._gym_coach("Snoop")).status_code, 403)
         self.assertEqual(self.client.post(f"/api/sessions/999999/sets", params=params, headers=auth).status_code, 404)
-        other = self._workout(f"Other {self.stamp}", "wourkout", "2026-10-24")
+        other = self._workout(f"Other {self.stamp}", "wourkout", "2026-10-24", headers=auth)
         stray = dict(params, workout_exercise_id=other["exercises"][0]["id"])
         self.assertEqual(self.client.post(url, params=stray, headers=auth).status_code, 400)
 
@@ -1050,7 +1052,7 @@ class TrainerFlowTests(unittest.TestCase):
         self.assertIn(exercise["id"], again.json()["hidden_exercise_ids"])
 
         athlete = next(person for person in again.json()["athletes"] if person["email"] == "athlete@wourkout.app")
-        workout = self._workout(f"Logged {self.stamp}", "wourkout", "2026-10-18")
+        workout = self._workout(f"Logged {self.stamp}", "wourkout", "2026-10-18", headers=auth)
         assigned = self.client.post("/api/assignments", json={
             "workout_id": workout["id"],
             "assigned_by_coach_id": coach["id"],
@@ -1092,8 +1094,8 @@ class TrainerFlowTests(unittest.TestCase):
 
     def test_group_day_overwrites_members_and_load_unit_stays_on_athlete(self):
         coach = self._user(f"Coach copy {self.stamp}", role="coach")
-        occupied = self._user(f"Nishaan {self.stamp}")
-        open_member = self._user(f"Open {self.stamp}")
+        occupied = self._user(f"Nishaan {self.stamp}", team=False)
+        open_member = self._user(f"Open {self.stamp}", team=False)
         outsider = self._user(f"Outsider {self.stamp}")
         group = self.client.post("/api/groups", json={"name": f"Nish athletes {self.stamp}", "coach_id": coach["id"]})
         self.assertEqual(group.status_code, 201, group.text)

@@ -11,6 +11,7 @@ os.environ["DATABASE_URL"] = f"sqlite:///{_db.name}"
 os.environ["SEED_DATA_PATH"] = "/tmp/wourkout-no-seed.json"
 
 from fastapi.testclient import TestClient  # noqa: E402
+from tests.auth_helpers import adopt, signed_in_client  # noqa: E402
 
 from app.database import Base, SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
@@ -27,7 +28,7 @@ class ChainTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         Base.metadata.create_all(bind=engine)
-        cls.client = TestClient(app)
+        cls.client = signed_in_client(app)
 
     def setUp(self):
         self.stamp = f"{id(self)}-{self._testMethodName}"
@@ -129,6 +130,7 @@ class ChainTests(unittest.TestCase):
             "title": "Client",
         })
         self.assertEqual(user.status_code, 201, user.text)
+        adopt(self.client, user.json()["id"])
         session = self.client.get(f"/api/sessions/active/{today['id']}", params={"user_id": user.json()["id"]})
         self.assertEqual(session.status_code, 200, session.text)
         squat_we = next(row for row in today["exercises"] if row["exercise_id"] == squat["id"])
@@ -316,6 +318,7 @@ class ChainTests(unittest.TestCase):
         })
         self.assertEqual(user.status_code, 201, user.text)
         self.assertEqual(coach.status_code, 201, coach.text)
+        adopt(self.client, user.json()["id"])
         db = SessionLocal()
         try:
             source = db.query(Workout).filter(Workout.id == workout["id"]).one()

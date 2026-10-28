@@ -1114,7 +1114,7 @@ def update_workout(db: Session, workout_id: int, workout_in: WorkoutUpdate):
     w.exercise_count = len(w.exercises)
     return w
 
-def add_workout_to_day(db: Session, req: AddWorkoutToDayRequest) -> Optional[Workout]:
+def add_workout_to_day(db: Session, req: AddWorkoutToDayRequest, viewer: User) -> Optional[Workout]:
     src_w = db.query(Workout).filter(Workout.id == req.workout_id).first()
     if not src_w:
         return None
@@ -1129,7 +1129,9 @@ def add_workout_to_day(db: Session, req: AddWorkoutToDayRequest) -> Optional[Wor
             calendar_date=req.calendar_date or src_w.calendar_date,
             scheduled_date=src_w.scheduled_date,
             description=src_w.description,
-            video_url=src_w.video_url
+            video_url=src_w.video_url,
+            gym_id=viewer.gym_id,
+            created_by_coach_id=viewer.id,
         )
         db.add(new_w)
         db.flush()
@@ -1151,14 +1153,16 @@ def add_workout_to_day(db: Session, req: AddWorkoutToDayRequest) -> Optional[Wor
         src_w.exercise_count = len(src_w.exercises)
         return src_w
 
-def save_program_template(db: Session, req: SaveProgramTemplateRequest) -> List[Workout]:
+def save_program_template(db: Session, req: SaveProgramTemplateRequest, viewer: User) -> List[Workout]:
+    in_gym = Workout.gym_id == viewer.gym_id if viewer.gym_id else Workout.gym_id.is_(None)
     src_workouts = db.query(Workout).filter(
+        in_gym,
         Workout.program_name == req.source_program,
         Workout.week_number == req.source_week_number
     ).all()
 
     if not src_workouts:
-        src_workouts = db.query(Workout).filter(Workout.program_name == req.source_program).all()
+        src_workouts = db.query(Workout).filter(in_gym, Workout.program_name == req.source_program).all()
 
     created = []
     for src_w in src_workouts:
@@ -1170,7 +1174,9 @@ def save_program_template(db: Session, req: SaveProgramTemplateRequest) -> List[
             calendar_date="",
             scheduled_date=src_w.scheduled_date,
             description=src_w.description,
-            video_url=src_w.video_url
+            video_url=src_w.video_url,
+            gym_id=viewer.gym_id,
+            created_by_coach_id=viewer.id,
         )
         db.add(new_w)
         db.flush()
@@ -1407,9 +1413,11 @@ def delete_personal_record(db: Session, record_id: int) -> bool:
     return True
 
 # Week Planner, Bulk Copy & Calendar Queries
-def copy_week(db: Session, req: CopyWeekRequest) -> List[Workout]:
-    # Find all workouts in source program & week
+def copy_week(db: Session, req: CopyWeekRequest, viewer: User) -> List[Workout]:
+    # Only the viewer's own gym's workouts are copied, and the copies belong to that gym.
+    in_gym = Workout.gym_id == viewer.gym_id if viewer.gym_id else Workout.gym_id.is_(None)
     source_workouts = db.query(Workout).filter(
+        in_gym,
         Workout.program_name == req.source_program,
         Workout.week_number == req.source_week_number
     ).order_by(Workout.id.asc()).all()
@@ -1417,6 +1425,7 @@ def copy_week(db: Session, req: CopyWeekRequest) -> List[Workout]:
     if not source_workouts:
         # Fallback to all workouts in that program
         source_workouts = db.query(Workout).filter(
+            in_gym,
             Workout.program_name == req.source_program
         ).order_by(Workout.id.asc()).all()
 
@@ -1460,7 +1469,9 @@ def copy_week(db: Session, req: CopyWeekRequest) -> List[Workout]:
                 calendar_date=target_iso,
                 scheduled_date=target_display,
                 description=src_w.description,
-                video_url=src_w.video_url
+                video_url=src_w.video_url,
+                gym_id=viewer.gym_id,
+                created_by_coach_id=viewer.id,
             )
             db.add(new_w)
             db.flush()
