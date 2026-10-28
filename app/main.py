@@ -128,6 +128,7 @@ def ensure_schema_migrations():
             ("intensity_kind", "VARCHAR(20) DEFAULT ''"),
             ("intensity_value", "VARCHAR(20) DEFAULT ''"),
             ("default_stations", "TEXT DEFAULT ''"),
+            ("completion_only", "BOOLEAN DEFAULT FALSE"),
         )
         added_sets = "default_sets" not in ecols
         for name, ddl in exercise_additions:

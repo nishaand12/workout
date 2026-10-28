@@ -478,6 +478,8 @@ def _one_intensity(data: dict, existing_kind: str = "", existing_value: str = ""
 
 def prepare_exercise_write(data: dict, existing: Optional[Exercise] = None) -> dict:
     clean = {key: value for key, value in data.items() if key not in _EXERCISE_WRITE_EXTRAS}
+    if "completion_only" in clean:
+        clean["completion_only"] = bool(clean["completion_only"])
     if "category" in data or existing is None:
         clean["category"] = canonical_category(data.get("category") if "category" in data else (existing.category if existing else ""))
     category = clean.get("category", existing.category if existing else "Strength")
@@ -684,6 +686,8 @@ def _tagged_defaults(exercise: Exercise, sets: int) -> str:
         lines.append("Intensities:" + ",".join([str(exercise.intensity_value)] * count))
     if props:
         lines.append("Props:" + ",".join(props))
+    if exercise.completion_only and "circuit" not in category:
+        lines.append("Flags:completionOnly")
     return "\n".join(lines)
 
 

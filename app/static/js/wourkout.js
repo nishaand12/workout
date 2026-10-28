@@ -129,7 +129,8 @@ function libraryDefaultsFrom(record) {
     intensityValue: record.intensity_value || "",
     stations: record.default_stations || "",
     note: record.default_notes || "",
-    videoUrl: record.video_url || ""
+    videoUrl: record.video_url || "",
+    completionOnly: !!record.completion_only
   };
 }
 function withPropertyDefaults(partial, defaults) {
@@ -194,7 +195,8 @@ function fromCatalog(entry) {
   const rep = defaults ? (defaults.reps != null ? defaults.reps : "10") : "10";
   return item(withPropertyDefaults({
     name: entry.name, type: "lift", letter: "A", sets, reps: Array(sets).fill(rep),
-    videoUrl: defaults && defaults.videoUrl ? defaults.videoUrl : ""
+    videoUrl: defaults && defaults.videoUrl ? defaults.videoUrl : "",
+    completionOnly: !!(defaults && defaults.completionOnly)
   }, defaults));
 }
 
@@ -2278,7 +2280,8 @@ function blankLibraryRow(name) {
     intensity_kind: "",
     intensity_value: "",
     default_stations: "",
-    default_notes: ""
+    default_notes: "",
+    completion_only: false
   };
 }
 function openNewLibraryExercise(date, name, opts) {
@@ -3612,7 +3615,7 @@ function hydrateEntryLogs(date, aid, day) {
       const athleteValues = details.athlete || {};
       cells[i] = {
         entered: athleteValues,
-        done: setIsComplete(it, athleteValues)
+        done: cellDone(it, athleteValues, log.completed)
       };
     }
     const circuitLog = (state.openSession.set_logs || []).find((row) => row.workout_exercise_id === it.weId && row.set_number === 1) || {};
@@ -3621,7 +3624,7 @@ function hydrateEntryLogs(date, aid, day) {
       cells,
       hydrated: true,
       entered: it.type === "circuit" ? circuitEntered : {},
-      done: it.type === "circuit" ? setIsComplete(it, circuitEntered) : false
+      done: it.type === "circuit" ? setIsComplete(it, circuitEntered) : (it.completionOnly ? !!circuitLog.completed : false)
     };
   });
 }
@@ -3788,26 +3791,49 @@ function setChainLetter(date, instance, letter) {
 }
 function toggleChainOpen(date, instance, audience, ev) {
   if (ev) ev.stopPropagation();
+  if (audience === "athlete") {
+    toggleAthleteChain(date, instance);
+    return;
+  }
   const day = ensureDay(date);
   const members = day.items.filter((it) => it.chainInstance === instance);
   if (!members.length) return;
-  const field = audience === "athlete" ? "chainAthleteOpen" : "chainCoachOpen";
-  const next = !members[0][field];
-  members.forEach((it) => { it[field] = next; });
-  if (audience !== "athlete") {
-    noteDayEdit(date);
-    render();
-    return;
-  }
+  const next = !members[0].chainCoachOpen;
+  members.forEach((it) => { it.chainCoachOpen = next; });
+  noteDayEdit(date);
   render();
-  const workoutId = day.savedWorkoutId || (savedDay(date) && savedDay(date).workoutId);
+}
+// Athlete screens rebuild items from the saved workout and from whichever calendar is shown,
+// so the fold has to land on every copy, not just the coach's Build calendar.
+function athleteChainCopies(date) {
+  const lists = [];
+  const shown = savedDay(date);
+  if (shown) lists.push(shown.items || []);
+  [state.actingAthlete, state.entryAthlete, state.athleteId].forEach((who) => {
+    const day = who && state.calendars[who] && state.calendars[who][date];
+    if (day && lists.indexOf(day.items) < 0) lists.push(day.items || []);
+  });
+  return lists;
+}
+function toggleAthleteChain(date, instance) {
+  const lists = athleteChainCopies(date);
+  const head = lists.map((list) => list.find((it) => it.chainInstance === instance)).find(Boolean);
+  if (!head) return;
+  const next = !head.chainAthleteOpen;
+  lists.forEach((list) => list.forEach((it) => { if (it.chainInstance === instance) it.chainAthleteOpen = next; }));
+  const workout = (state.athleteWorkouts || {})[date];
+  if (workout) (workout.exercises || []).forEach((we) => { if (we.chain_instance === instance) we.chain_athlete_open = next; });
+  render();
+  const shown = savedDay(date);
+  const workoutId = (shown && shown.workoutId) || ensureDay(date).savedWorkoutId;
   if (!workoutId) return;
   api("POST", "/api/workouts/" + workoutId + "/chain-fold", {
     chain_instance: instance,
     audience: "athlete",
     expanded: next
-  }).then((workout) => {
-    state.athleteWorkouts[date] = workout;
+  }).then((saved) => {
+    if (state.athleteWorkouts[date]) state.athleteWorkouts[date] = saved;
+    render();
   }).catch((err) => { console.error(err); });
 }
 function pickedItems(date) {
@@ -4612,9 +4638,14 @@ const PROP_FIELD = {
   load: "w", rest: "rest", restRep: "restRep", distance: "distance",
   tempo: "tempo", velocity: "velocity", power: "power", pct: "pct", intensity: "intensity"
 };
+function asksForWeight(it) {
+  return !!it && (it.type || "lift") === "lift" && !it.completionOnly;
+}
 function entryColumns(it) {
   if (!it || it.type === "circuit" || it.type === "note" || it.type === "questionnaire" || it.type === "break" || it.type === "rest" || it.type === "video") return [];
   const cols = [["r", it.trackTime ? "Time (s)" : "Reps"]];
+  // Weight is offered on every lift. It only becomes required when the coach adds Load.
+  if (asksForWeight(it)) cols.push(["w", unitTitle(entryUnit())]);
   (it.props || []).forEach((key) => {
     const field = PROP_FIELD[key];
     if (!field || cols.some((col) => col[0] === field)) return;
@@ -4643,6 +4674,10 @@ function setIsComplete(it, entered) {
   const fields = requiredEntryFields(it);
   if (!fields.length) return false;
   return fields.every((field) => countsAsEntered(entered && entered[field]));
+}
+// With nothing required, the athlete's own Done tick is the answer.
+function cellDone(it, entered, ticked) {
+  return requiredEntryFields(it).length ? setIsComplete(it, entered) : !!ticked;
 }
 function prescribedEntry(it, field, index) {
   const i = index || 0;
@@ -4807,11 +4842,25 @@ function entryItem(aid, date, it) {
       ${open ? circuitEntryHtml(aid, date, it) : ""}
     </div>`;
   }
+  if (it.completionOnly && (it.type || "lift") === "lift") {
+    const done = !!(state.logs[key] && state.logs[key].done);
+    return `<div>
+      <button class="entry-item" onclick="state.entryItem=state.entryItem==='${it.id}'?null:'${it.id}';render()">
+        <span class="letter" style="background:${LETTER_COLOR[it.letter] || "#999"}">${esc(it.chainInstance ? "" : (it.letter || "•"))}</span>
+        <span><strong>${esc(it.name)}</strong><div class="hint">${esc(scriptLine(it))}</div></span>
+      </button>
+      ${open ? `<div class="circuit-entry">
+        ${it.note ? `<div class="preview-copy">${esc(it.note)}</div>` : ""}
+        ${athletePlayerHtml(it)}
+        <button type="button" class="complete${done ? " done" : ""}" aria-pressed="${done ? "true" : "false"}" onclick="toggleExerciseComplete('${key}','${date}','${it.id}',${it.weId || 0})">${done ? "✓ Completed" : "✓ Complete"}</button>
+      </div>` : ""}
+    </div>`;
+  }
   const fields = entryColumns(it);
   const rows = Array.from({ length: it.sets || 1 }, (_, i) => {
     const cell = (state.logs[key] && state.logs[key].cells && state.logs[key].cells[i]) || {};
     const entered = cell.entered || {};
-    const done = setIsComplete(it, entered);
+    const done = cellDone(it, entered, cell.done);
     const inputs = fields.map(([field, label]) => {
       const value = shownEntry(entered, field, prescribedEntry(it, field, i));
       return `<td><input aria-label="${esc(label)} set ${i + 1}" value="${esc(value)}" onchange="logCell('${key}',${i},'${field}',this.value,'${date}','${it.id}',${it.weId || 0})"></td>`;
@@ -4841,7 +4890,8 @@ function logCell(key, i, field, value, date, itemId, weId) {
     log.cells[i].entered[field] = value;
     log.cells[i][field] = value;
   }
-  log.cells[i].done = !!(it && setIsComplete(it, log.cells[i].entered));
+  const ticked = field === "done" ? !!value : log.cells[i].done;
+  log.cells[i].done = !!(it && cellDone(it, log.cells[i].entered, ticked));
   const map = {
     w: "weight", r: "reps", rest: "rest", tempo: "tempo", velocity: "velocity",
     power: "power", pct: "pct", restRep: "restRep", distance: "distance", intensity: "intensity"
@@ -4869,6 +4919,16 @@ function logCircuitField(key, field, value, date, itemId, weId) {
   };
   if (weId && state.openSession && (state.role === "athlete" || state.coachSessionFor)) {
     logAthleteSet(weId, 1, map[field] || field, value, { athlete: log.entered, completed: log.done });
+    return;
+  }
+  render();
+}
+function toggleExerciseComplete(key, date, itemId, weId) {
+  const log = state.logs[key] || (state.logs[key] = { cells: {}, hydrated: true });
+  log.hydrated = true;
+  log.done = !log.done;
+  if (weId && state.openSession && (state.role === "athlete" || state.coachSessionFor)) {
+    logAthleteSet(weId, 1, "completed", log.done);
     return;
   }
   render();
@@ -5613,7 +5673,8 @@ function libraryExercisePayload(values) {
     default_pct: note ? "" : (values.default_pct || ""),
     default_stations: circuit ? (values.default_stations || "") : (values.default_stations || ""),
     intensity_kind: intensity.intensity_kind,
-    intensity_value: intensity.intensity_value
+    intensity_value: intensity.intensity_value,
+    completion_only: !note && !circuit && !!values.completion_only
   };
 }
 function trackingFields(row, opts) {
@@ -5683,6 +5744,11 @@ function exerciseFields(row) {
     { key: "default_pct", label: "Default %PR", value: row.default_pct || "" }
   );
   fields.push.apply(fields, intensityEditorFields(row));
+  fields.push({
+    key: "completion_only", label: "Workout options", checkbox: "Completion only",
+    hint: "Athletes just tick it off. No weight or rep entry. Applies when it is next added to a calendar.",
+    value: row.completion_only ? "1" : ""
+  });
   return fields;
 }
 function editExercise(id) {
@@ -6037,7 +6103,8 @@ async function saveExerciseName(id, previousName) {
     default_pct: row.default_pct || "",
     intensity_kind: row.intensity_kind || "",
     intensity_value: row.intensity_value || "",
-    default_stations: row.default_stations || ""
+    default_stations: row.default_stations || "",
+    completion_only: !!row.completion_only
   };
   try {
     const updated = await api("PUT", "/api/exercises/" + id, payload);
@@ -6714,6 +6781,8 @@ function mapEditFields(rows) {
     type: f.type || "text",
     options: f.options || null,
     button: f.button || "",
+    checkbox: f.checkbox || "",
+    hint: f.hint || "",
     min: f.min,
     max: f.max
   }));
@@ -6776,6 +6845,8 @@ function editModalHtml(m) {
     let control;
     if (f.button) {
       control = `<button type="button" class="pill" onclick="setEditField('${key}', '1')">${esc(f.button)}</button>`;
+    } else if (f.checkbox) {
+      return `<div class="edit-field"><span class="edit-label">${esc(f.label)}</span><label class="chk edit-check"><input type="checkbox" data-edit-key="${key}" ${f.value ? "checked" : ""} onchange="setEditField('${key}', this.checked ? '1' : '')"> ${esc(f.checkbox)}</label>${f.hint ? `<div class="hint">${esc(f.hint)}</div>` : ""}</div>`;
     } else if (f.options) {
       const options = f.options.slice();
       if (f.value && options.indexOf(f.value) < 0) options.unshift(f.value);
@@ -7075,6 +7146,7 @@ window.toggleAll = toggleAll;
 window.toggleItem = toggleItem;
 window.askDelete = askDelete;
 window.askDeleteChain = askDeleteChain;
+window.toggleExerciseComplete = toggleExerciseComplete;
 window.closeEditor = closeEditor;
 window.toggleWeekNote = toggleWeekNote;
 window.setWeekNote = setWeekNote;

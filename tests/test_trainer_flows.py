@@ -836,6 +836,35 @@ class TrainerFlowTests(unittest.TestCase):
         both = self.client.get(f"/api/calendar/week-notes?group_id={team_id}&user_id={athlete_id}", headers=auth)
         self.assertEqual(both.status_code, 400)
 
+    def test_completion_only_is_saved_on_library_exercises(self):
+        created = self.client.post("/api/exercises", json={
+            "name": f"Push Up {self.stamp}", "category": "Upper Body", "completion_only": True,
+        })
+        self.assertEqual(created.status_code, 201, created.text)
+        ex = created.json()
+        self.assertTrue(ex["completion_only"])
+
+        plain = self.client.post("/api/exercises", json={"name": f"Bench {self.stamp}", "category": "Upper Body"})
+        self.assertFalse(plain.json()["completion_only"])
+
+        renamed = self.client.put(f"/api/exercises/{ex['id']}", json={"default_reps": "12"})
+        self.assertTrue(renamed.json()["completion_only"])
+        cleared = self.client.put(f"/api/exercises/{ex['id']}", json={"completion_only": False})
+        self.assertFalse(cleared.json()["completion_only"])
+
+        from app.database import SessionLocal
+        from app import crud
+        from app.models import Exercise
+        db = SessionLocal()
+        try:
+            row = db.query(Exercise).filter(Exercise.id == ex["id"]).first()
+            self.assertNotIn("completionOnly", crud._tagged_defaults(row, 3))
+            row.completion_only = True
+            self.assertIn("Flags:completionOnly", crud._tagged_defaults(row, 3))
+        finally:
+            db.rollback()
+            db.close()
+
     def test_exercise_defaults_stay_when_a_day_changes(self):
         created = self.client.post("/api/exercises", json={
             "name": f"Back Squat {self.stamp}",

@@ -61,7 +61,8 @@ globalThis.__lib = {
   snapshot, entryColumns, setIsComplete, logCell, logCircuitField, entryItem,
   playAthleteVideo, mediaKind, athletePlayerHtml, applyBuildParams, writeBuildQuery,
   ensureBuildWindow, extendBuildWindow, loadEarlierWeeks, onBuildScroll, sundayOf, addDays, APP_TODAY, shiftWeek, buildView,
-  closeEditor, askDeleteChain, confirmDelete, weekNoteHtml, setWeekNote, toggleWeekNote, modalHtml
+  closeEditor, askDeleteChain, confirmDelete, weekNoteHtml, setWeekNote, toggleWeekNote, modalHtml,
+  toggleChainOpen, toggleExerciseComplete, savedDay, entryListHtml
 };
 `,
   sandbox,
@@ -70,7 +71,7 @@ globalThis.__lib = {
 
 const lib = sandbox.__lib;
 const state = lib.state;
-["addChainToDay", "ensureDay", "dayExerciseHtml", "chainEntryHtml", "dayCol", "item", "toggleItem", "selectExercise", "selectChain", "selectDay", "copySelection", "pasteOn", "undo", "clipHotMatches", "openCopy", "openEditor", "discardEditor", "saveEditor", "dismissEditorName", "snapshot", "entryColumns", "setIsComplete", "logCell", "logCircuitField", "entryItem", "playAthleteVideo", "mediaKind", "athletePlayerHtml", "applyBuildParams", "writeBuildQuery", "ensureBuildWindow", "extendBuildWindow", "loadEarlierWeeks", "onBuildScroll", "sundayOf", "addDays", "APP_TODAY", "shiftWeek", "buildView", "closeEditor", "askDeleteChain", "confirmDelete", "weekNoteHtml", "setWeekNote", "toggleWeekNote", "modalHtml"].forEach((name) => {
+["addChainToDay", "ensureDay", "dayExerciseHtml", "chainEntryHtml", "dayCol", "item", "toggleItem", "selectExercise", "selectChain", "selectDay", "copySelection", "pasteOn", "undo", "clipHotMatches", "openCopy", "openEditor", "discardEditor", "saveEditor", "dismissEditorName", "snapshot", "entryColumns", "setIsComplete", "logCell", "logCircuitField", "entryItem", "playAthleteVideo", "mediaKind", "athletePlayerHtml", "applyBuildParams", "writeBuildQuery", "ensureBuildWindow", "extendBuildWindow", "loadEarlierWeeks", "onBuildScroll", "sundayOf", "addDays", "APP_TODAY", "shiftWeek", "buildView", "closeEditor", "askDeleteChain", "confirmDelete", "weekNoteHtml", "setWeekNote", "toggleWeekNote", "modalHtml", "toggleChainOpen", "toggleExerciseComplete", "savedDay", "entryListHtml"].forEach((name) => {
   sandbox[name] = lib[name];
 });
 state.athleteId = "ath";
@@ -464,5 +465,59 @@ assert.ok(notesHtml.includes("▸ Notes"));
 assert.ok(notesHtml.includes("week-note-preview"));
 assert.ok(!notesHtml.includes("second line"));
 assert.ok(sandbox.buildView().includes("week-note"));
+
+// Every lift offers weight; it is optional unless the coach added Load.
+{
+  const bare = sandbox.item({ name: "Pull Up", type: "lift", sets: 2, reps: ["8", "8"], props: [] });
+  const bareDate = "2026-11-05";
+  sandbox.ensureDay(bareDate).items = [bare];
+  assert.deepEqual(sandbox.entryColumns(bare).map((col) => col[0]), ["r", "w"]);
+  const bareKey = "ath:" + bareDate + ":" + bare.id;
+  sandbox.logCell(bareKey, 0, "done", true, bareDate, bare.id, 0);
+  assert.equal(state.logs[bareKey].cells[0].done, true);
+  sandbox.logCell(bareKey, 0, "w", "20", bareDate, bare.id, 0);
+  assert.equal(state.logs[bareKey].cells[0].done, true);
+  sandbox.logCell(bareKey, 0, "done", false, bareDate, bare.id, 0);
+  assert.equal(state.logs[bareKey].cells[0].done, false);
+
+  const plank = sandbox.item({ name: "Plank", type: "lift", sets: 3, reps: ["30"], props: [], completionOnly: true, note: "Hold tight" });
+  sandbox.ensureDay(bareDate).items.push(plank);
+  assert.ok(!sandbox.entryColumns(plank).some((col) => col[0] === "w"));
+  state.entryItem = plank.id;
+  let plankHtml = sandbox.entryItem("ath", bareDate, plank);
+  assert.ok(plankHtml.includes("✓ Complete"));
+  assert.ok(!plankHtml.includes("<table"));
+  const plankKey = "ath:" + bareDate + ":" + plank.id;
+  sandbox.toggleExerciseComplete(plankKey, bareDate, plank.id, 0);
+  plankHtml = sandbox.entryItem("ath", bareDate, plank);
+  assert.ok(plankHtml.includes("✓ Completed"));
+  sandbox.toggleExerciseComplete(plankKey, bareDate, plank.id, 0);
+  assert.equal(state.logs[plankKey].done, false);
+}
+
+// Athletes can open a collapsed chain; the fold lands on the copy they are looking at.
+{
+  const foldDate = "2026-11-06";
+  state.role = "athlete";
+  state.actingAthlete = "me";
+  state.athleteId = "ath";
+  state.calendars.me = {};
+  const day = sandbox.ensureDay(foldDate, "me");
+  day.savedFor = "me";
+  day.savedWorkoutId = 0;
+  sandbox.addChainToDay(foldDate, 9);
+  day.items = sandbox.ensureDay(foldDate).items.splice(0);
+  const inst = day.items[0].chainInstance;
+  assert.ok(day.items.every((it) => !it.chainAthleteOpen));
+  assert.equal(sandbox.ensureDay(foldDate).items.length, 0);
+  sandbox.toggleChainOpen(foldDate, inst, "athlete");
+  assert.ok(sandbox.savedDay(foldDate).items.every((it) => it.chainAthleteOpen));
+  assert.ok(sandbox.entryListHtml("me", foldDate, sandbox.savedDay(foldDate).items, "athlete").includes("Brace Squat"));
+  sandbox.toggleChainOpen(foldDate, inst, "athlete");
+  assert.ok(sandbox.savedDay(foldDate).items.every((it) => !it.chainAthleteOpen));
+
+  state.role = "coach";
+  state.actingAthlete = null;
+}
 
 console.log("round 3 ui tests passed");

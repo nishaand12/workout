@@ -60,7 +60,8 @@ globalThis.__lib = {
   state, exerciseFields, exerciseRows, fromCatalog, libraryDefaultsFrom,
   workoutToDayItems, previewSheet, entryItem, itemNotes, parseNotes,
   addExerciseRecord, onFab, closeEdit, saveEdit, setEditField, catalogType,
-  addItem, setLetter, ensureDay, item, liftsView, dayItemType, setIntensityKind
+  addItem, setLetter, ensureDay, item, liftsView, dayItemType, setIntensityKind,
+  libraryExercisePayload, editModalHtml, mapEditFields, entryColumns
 };
 globalThis.__setApi = (fn) => { api = fn; };
 `;
@@ -285,6 +286,32 @@ const roundTrip = lib.parseNotes(lib.itemNotes(fly), 0);
 assert.equal(roundTrip.restReps[0], "5");
 assert.equal(roundTrip.distances[0], "30");
 assert.equal(roundTrip.intensityKind, "rpe");
+
+{
+  // Completion only lives on the library exercise and carries onto new calendar items.
+  const strength = lib.exerciseFields({ name: "Push Up", category: "Strength", completion_only: true });
+  const flag = strength.find((f) => f.key === "completion_only");
+  assert.ok(flag && flag.checkbox);
+  assert.equal(flag.value, "1");
+  const modal = lib.editModalHtml({ title: "Edit exercise", fields: lib.mapEditFields(strength) });
+  assert.ok(modal.includes("Completion only"));
+  assert.ok(/data-edit-key="completion_only" checked/.test(modal));
+  assert.ok(!lib.exerciseFields({ name: "Ramp", category: "Circuit" }).some((f) => f.key === "completion_only"));
+  assert.ok(!lib.exerciseFields({ name: "Read me", category: "Notes" }).some((f) => f.key === "completion_only"));
+  assert.equal(lib.libraryExercisePayload({ name: "Push Up", category: "Strength", completion_only: "1" }).completion_only, true);
+  assert.equal(lib.libraryExercisePayload({ name: "Push Up", category: "Strength", completion_only: "" }).completion_only, false);
+  assert.equal(lib.libraryExercisePayload({ name: "Ramp", category: "Circuit", completion_only: "1" }).completion_only, false);
+
+  lib.state.serverExercises.push({ id: 991, name: "Bodyweight Plank", category: "Core & Trunk", default_sets: 3, default_reps: "30", completion_only: true });
+  lib.state.serverExercises.push({ id: 992, name: "Weighted Squat", category: "Lower Body", default_sets: 3, default_reps: "5" });
+  const plank = lib.fromCatalog({ name: "Bodyweight Plank", type: "lift" });
+  const squat = lib.fromCatalog({ name: "Weighted Squat", type: "lift" });
+  assert.equal(plank.completionOnly, true);
+  assert.equal(squat.completionOnly, false);
+  assert.ok(lib.entryColumns(squat).some((col) => col[0] === "w"));
+  assert.ok(!lib.entryColumns(plank).some((col) => col[0] === "w"));
+  assert.ok(lib.itemNotes(plank).includes("completionOnly"));
+}
 
 console.log("exercise library ui tests passed");
 })().catch((err) => {
