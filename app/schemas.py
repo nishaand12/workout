@@ -21,6 +21,7 @@ class ExerciseBase(BaseModel):
     intensity_kind: Optional[str] = ""
     intensity_value: Optional[str] = ""
     default_stations: Optional[str] = ""
+    completion_only: Optional[bool] = False
 
 class ExerciseCreate(ExerciseBase):
     # Alternate intensity keys. An exercise still stores only one kind.
@@ -46,6 +47,7 @@ class ExerciseUpdate(BaseModel):
     intensity_kind: Optional[str] = None
     intensity_value: Optional[str] = None
     default_stations: Optional[str] = None
+    completion_only: Optional[bool] = None
     rpe: Optional[str] = None
     rir: Optional[str] = None
     pct_1rm: Optional[str] = None

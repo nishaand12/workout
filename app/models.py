@@ -171,6 +171,8 @@ class Exercise(Base):
     intensity_kind = Column(String(20), default="")
     intensity_value = Column(String(20), default="")
     default_stations = Column(Text, default="")
+    # Athletes just tick this off. No weight or rep entry.
+    completion_only = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     workout_links = relationship("WorkoutExercise", back_populates="exercise", cascade="all, delete-orphan")
