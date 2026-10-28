@@ -283,12 +283,26 @@ assert.equal(sandbox.setIsComplete(lift, { w: "0" }), false);
 assert.equal(sandbox.setIsComplete(lift, { w: "40" }), true);
 assert.equal(sandbox.setIsComplete(sandbox.item({ name: "Bare", props: [], sets: 1, reps: ["5"] }), { r: "5" }), false);
 const liftKey = "ath:" + entryDate + ":" + lift.id;
+// Ticking Done keeps what the boxes show: the prescribed 8 reps and 100 load.
 sandbox.logCell(liftKey, 0, "done", true, entryDate, lift.id, 0);
+assert.equal(state.logs[liftKey].cells[0].done, true);
+assert.equal(state.logs[liftKey].cells[0].entered.r, "8");
+assert.equal(state.logs[liftKey].cells[0].entered.w, "100");
+sandbox.logCell(liftKey, 0, "w", "0", entryDate, lift.id, 0);
 assert.equal(state.logs[liftKey].cells[0].done, false);
 sandbox.logCell(liftKey, 0, "w", "40", entryDate, lift.id, 0);
 assert.equal(state.logs[liftKey].cells[0].done, true);
 sandbox.logCell(liftKey, 0, "w", "0", entryDate, lift.id, 0);
 assert.equal(state.logs[liftKey].cells[0].done, false);
+// With no load prescribed the weight box is empty, so Done alone does not finish a required load.
+const unloaded = sandbox.item({ name: "Row", type: "lift", sets: 1, reps: ["8"], props: ["load"] });
+sandbox.ensureDay(entryDate).items.push(unloaded);
+const unloadedKey = "ath:" + entryDate + ":" + unloaded.id;
+sandbox.logCell(unloadedKey, 0, "done", true, entryDate, unloaded.id, 0);
+assert.equal(state.logs[unloadedKey].cells[0].done, false);
+assert.equal(state.logs[unloadedKey].cells[0].entered.r, "8");
+assert.ok(!("w" in state.logs[unloadedKey].cells[0].entered));
+sandbox.ensureDay(entryDate).items.pop();
 state.entryItem = lift.id;
 state.playingVideo = "";
 let liftHtml = sandbox.entryItem("ath", entryDate, lift);
