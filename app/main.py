@@ -1,13 +1,16 @@
+import hashlib
 import os
 import logging
+import re
 from contextlib import asynccontextmanager
 from typing import List, Optional
 from pydantic import BaseModel
 from fastapi import FastAPI, Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import inspect, text
 
@@ -1258,9 +1261,43 @@ static_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 if os.path.exists(static_path):
     app.mount("/static", StaticFiles(directory=static_path), name="static")
 
+# Links in index.html get ?v=<content hash>, so a file's URL changes exactly when
+# the file does. Browsers and any CDN in front can then keep it for a year.
+ASSET_LINK = re.compile(r'"(/static/[\w./-]+\.(?:js|css))"')
+_index_cache = {"key": None, "html": ""}
+
+def _asset_hash(rel_path: str) -> str:
+    with open(os.path.join(static_path, rel_path[len("/static/"):]), "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()[:12]
+
+def _versioned_index(index_file: str) -> str:
+    with open(index_file, encoding="utf-8") as fh:
+        html = fh.read()
+    assets = ASSET_LINK.findall(html)
+    key = tuple(os.path.getmtime(p) for p in [index_file] + [os.path.join(static_path, a[len("/static/"):]) for a in assets])
+    if _index_cache["key"] != key:
+        _index_cache["html"] = ASSET_LINK.sub(lambda m: f'"{m.group(1)}?v={_asset_hash(m.group(1))}"', html)
+        _index_cache["key"] = key
+    return _index_cache["html"]
+
 @app.api_route("/", methods=["GET", "HEAD"])
 def serve_index():
     index_file = os.path.join(static_path, "index.html")
     if os.path.exists(index_file):
-        return FileResponse(index_file)
+        return HTMLResponse(_versioned_index(index_file))
     return {"message": "wourkout"}
+
+@app.middleware("http")
+async def cache_headers(request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/static/"):
+        versioned = "v" in request.query_params
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable" if versioned else "no-cache"
+    elif path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    elif path == "/":
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+app.add_middleware(GZipMiddleware, minimum_size=1000)
