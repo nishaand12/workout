@@ -35,7 +35,7 @@ from app.schemas import (
     CoachAssignRequest, AthleteNoteRequest, ScheduleItem,
     BulkAthleteUploadRequest, BulkAthleteUploadResponse, CalendarScheduleEntry,
     ChainResponse, ChainWrite, ChainEditRequest, ChainEditResponse, ChainFoldRequest,
-    WeekNoteEntry, WeekNoteWrite, PersonalBest,
+    WeekNoteEntry, WeekNoteWrite, PersonalBest, SessionDurationWrite,
 )
 from app import crud
 
@@ -104,6 +104,8 @@ def ensure_schema_migrations():
         scols = {c["name"] for c in inspector.get_columns("workout_sessions")}
         if "athlete_note" not in scols:
             statements.append("ALTER TABLE workout_sessions ADD COLUMN athlete_note TEXT DEFAULT ''")
+        if "duration_minutes" not in scols:
+            statements.append("ALTER TABLE workout_sessions ADD COLUMN duration_minutes INTEGER")
 
     if "set_logs" in tables:
         lcols = {c["name"] for c in inspector.get_columns("set_logs")}
@@ -517,6 +519,15 @@ def log_set(
         rest_seconds=rest_seconds,
         details=details,
     )
+
+@app.put("/api/sessions/{session_id}/duration", response_model=WorkoutSessionResponse)
+def set_session_duration(
+    session_id: int,
+    body: SessionDurationWrite,
+    db: Session = Depends(get_db),
+    current_user: crud.User = Depends(require_auth),
+):
+    return crud.set_session_duration(db, current_user, session_id, body.minutes)
 
 @app.post("/api/sessions/{session_id}/complete", response_model=WorkoutSessionResponse)
 def finish_session(

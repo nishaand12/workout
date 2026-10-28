@@ -252,7 +252,11 @@ class WorkoutSessionResponse(BaseModel):
     end_time: Optional[datetime] = None
     completed: bool
     notes: str
+    duration_minutes: Optional[int] = None
     model_config = ConfigDict(from_attributes=True)
+
+class SessionDurationWrite(BaseModel):
+    minutes: Optional[int] = None
 
 class WorkoutSessionDetailResponse(WorkoutSessionResponse):
     workout: WorkoutDetailResponse

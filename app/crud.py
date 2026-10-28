@@ -2921,6 +2921,22 @@ def save_week_note(db: Session, viewer: User, user_id: Optional[int], group_id: 
     return {"week_start": week_start, "body": row.body}
 
 
+def set_session_duration(db: Session, viewer: User, session_id: int, minutes: Optional[int]) -> WorkoutSession:
+    """Minutes the athlete says the workout took. None clears it."""
+    session = db.query(WorkoutSession).filter(WorkoutSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    owner = get_user(db, session.user_id) if session.user_id else None
+    if not owner or not access.can_see_user(db, viewer, owner):
+        raise HTTPException(status_code=403, detail="You cannot change that session.")
+    if minutes is not None and not 1 <= minutes <= 600:
+        raise HTTPException(status_code=400, detail="Duration must be between 1 and 600 minutes.")
+    session.duration_minutes = minutes
+    db.commit()
+    db.refresh(session)
+    return session
+
+
 def personal_bests(db: Session, viewer: User, user_id: Optional[int] = None) -> List[dict]:
     """Heaviest logged set per athlete and exercise. Ties go to the set with more reps."""
     if user_id is not None:
@@ -3112,6 +3128,7 @@ def get_gym_activity(db: Session, viewer: User) -> dict:
             "completed_sets": s_sets,
             "total_reps": s_reps,
             "tonnage": round(s_tonnage, 1),
+            "duration_minutes": s.duration_minutes,
         })
 
     pr_counts = {}

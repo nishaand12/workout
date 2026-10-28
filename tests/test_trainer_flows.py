@@ -893,6 +893,36 @@ class TrainerFlowTests(unittest.TestCase):
         blocked = self.client.get(f"/api/personal-bests?user_id={athlete['id']}", headers=outsider)
         self.assertEqual(blocked.status_code, 403)
 
+    def test_session_duration_is_optional_minutes(self):
+        token, coach = self._login("coach@wourkout.app", "CoachPassword123!")
+        auth = self._auth(token)
+        athlete = next(p for p in self.client.get("/api/gym/context", headers=auth).json()["athletes"]
+                       if p["email"] == "athlete@wourkout.app")
+        workout = self._workout(f"Timed {self.stamp}", "wourkout", "2026-10-22")
+        self.client.post("/api/assignments", json={
+            "workout_id": workout["id"], "user_id": athlete["id"], "scheduled_date": "2026-10-22",
+        }, headers=auth)
+        session = self.client.get(f"/api/sessions/active/{workout['id']}", params={"user_id": athlete["id"]}, headers=auth).json()
+        self.assertIsNone(session["duration_minutes"])
+
+        url = f"/api/sessions/{session['id']}/duration"
+        saved = self.client.put(url, json={"minutes": 55}, headers=auth)
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(saved.json()["duration_minutes"], 55)
+        again = self.client.get(f"/api/sessions/active/{workout['id']}", params={"user_id": athlete["id"]}, headers=auth).json()
+        self.assertEqual(again["duration_minutes"], 55)
+        feed = self.client.get("/api/gym/activity", headers=auth).json()["sessions"]
+        self.assertEqual(next(row for row in feed if row["id"] == session["id"])["duration_minutes"], 55)
+
+        self.assertEqual(self.client.put(url, json={"minutes": 0}, headers=auth).status_code, 400)
+        self.assertEqual(self.client.put(url, json={"minutes": 601}, headers=auth).status_code, 400)
+        cleared = self.client.put(url, json={"minutes": None}, headers=auth)
+        self.assertIsNone(cleared.json()["duration_minutes"])
+
+        outsider = self._gym_coach("Timer")
+        self.assertEqual(self.client.put(url, json={"minutes": 30}, headers=outsider).status_code, 403)
+        self.assertEqual(self.client.put(url, json={"minutes": 30}).status_code, 401)
+
     def test_exercise_defaults_stay_when_a_day_changes(self):
         created = self.client.post("/api/exercises", json={
             "name": f"Back Squat {self.stamp}",

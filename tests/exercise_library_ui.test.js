@@ -62,7 +62,7 @@ globalThis.__lib = {
   addExerciseRecord, closeEdit, saveEdit, setEditField, catalogType,
   addItem, setLetter, ensureDay, item, liftsView, dayItemType, setIntensityKind,
   libraryExercisePayload, editModalHtml, mapEditFields, entryColumns,
-  goalsView, prGoalRows, squadView, logCell
+  goalsView, prGoalRows, squadView, logCell, durationField, saveSessionDuration
 };
 globalThis.__setApi = (fn) => { api = fn; };
 `;
@@ -352,6 +352,29 @@ assert.equal(roundTrip.intensityKind, "rpe");
   assert.equal(params.get("completed"), "true");
   state.openSession = null;
   state.coachSessionFor = null;
+}
+
+{
+  // Duration is an optional minutes box saved on the session; blank clears it.
+  assert.ok(lib.durationField([{ id: "x" }]).includes("—"));
+  state.openSession = { id: 88, set_logs: [], duration_minutes: null };
+  assert.ok(lib.durationField([]).includes("—"));
+  assert.ok(lib.durationField([{ id: "x" }]).includes('id="session-minutes"'));
+  const calls = [];
+  sandbox.__setApi(async (method, url, body) => { calls.push([method, url, body]); return { id: 88, duration_minutes: body.minutes }; });
+  await lib.saveSessionDuration("45");
+  assert.deepEqual(calls[0], ["PUT", "/api/sessions/88/duration", { minutes: 45 }]);
+  assert.equal(state.openSession.duration_minutes, 45);
+  assert.ok(lib.durationField([{ id: "x" }]).includes('value="45"'));
+  await lib.saveSessionDuration("45");
+  assert.equal(calls.length, 1);
+  await lib.saveSessionDuration("0");
+  await lib.saveSessionDuration("abc");
+  assert.equal(calls.length, 1);
+  await lib.saveSessionDuration("");
+  assert.deepEqual(calls[1][2], { minutes: null });
+  assert.equal(state.openSession.duration_minutes, null);
+  state.openSession = null;
 }
 
 {
