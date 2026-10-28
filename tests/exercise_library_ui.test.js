@@ -59,7 +59,7 @@ const source = fs.readFileSync("app/static/js/build-order.js", "utf8") + "\n" + 
 globalThis.__lib = {
   state, exerciseFields, exerciseRows, fromCatalog, libraryDefaultsFrom,
   workoutToDayItems, previewSheet, entryItem, itemNotes, parseNotes,
-  addExerciseRecord, onFab, closeEdit, saveEdit, setEditField, catalogType,
+  addExerciseRecord, closeEdit, saveEdit, setEditField, catalogType,
   addItem, setLetter, ensureDay, item, liftsView, dayItemType, setIntensityKind,
   libraryExercisePayload, editModalHtml, mapEditFields, entryColumns,
   goalsView, prGoalRows, squadView, logCell
@@ -142,12 +142,6 @@ assert.ok(state.modal.fields.some((field) => field.key === "default_rest_rep"));
 lib.closeEdit();
 assert.equal(state.modal, null);
 assert.equal(state.serverExercises.length, 0);
-assert.equal(posts.length, 0);
-
-lib.onFab();
-assert.equal(state.modal.type, "edit");
-assert.equal(state.modal.fields.find((field) => field.key === "category").value, "Strength");
-lib.closeEdit();
 assert.equal(posts.length, 0);
 
 lib.addExerciseRecord();
