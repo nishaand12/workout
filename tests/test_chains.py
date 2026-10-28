@@ -32,6 +32,9 @@ class ChainTests(unittest.TestCase):
     def setUp(self):
         self.stamp = f"{id(self)}-{self._testMethodName}"
 
+    def _as(self, user_id):
+        return {"Authorization": "Bearer " + crud.create_access_token(user_id)}
+
     def _exercise(self, name, **extra):
         payload = {"name": f"{name} {self.stamp}", "category": extra.pop("category", "Strength")}
         payload.update(extra)
@@ -139,6 +142,7 @@ class ChainTests(unittest.TestCase):
                 "completed": True,
                 "details": '{"tempo":"20X1"}',
             },
+            headers=self._as(user.json()["id"]),
         )
         self.assertEqual(logged.status_code, 200, logged.text)
         before_logs = {
@@ -343,6 +347,7 @@ class ChainTests(unittest.TestCase):
         logged = self.client.post(
             f"/api/sessions/{session.json()['id']}/sets",
             params={"workout_exercise_id": we_id, "set_number": 1, "weight": 15, "reps": 3, "completed": True},
+            headers=self._as(user.json()["id"]),
         )
         self.assertEqual(logged.status_code, 200, logged.text)
         current = self.client.get(f"/api/workouts/{workout['id']}").json()

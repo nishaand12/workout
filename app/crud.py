@@ -2921,14 +2921,20 @@ def save_week_note(db: Session, viewer: User, user_id: Optional[int], group_id: 
     return {"week_start": week_start, "body": row.body}
 
 
-def set_session_duration(db: Session, viewer: User, session_id: int, minutes: Optional[int]) -> WorkoutSession:
-    """Minutes the athlete says the workout took. None clears it."""
+def session_for_writer(db: Session, viewer: User, session_id: int) -> WorkoutSession:
+    """The session, if the viewer is its athlete or can see that athlete (their coach, a gym admin)."""
     session = db.query(WorkoutSession).filter(WorkoutSession.id == session_id).first()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     owner = get_user(db, session.user_id) if session.user_id else None
     if not owner or not access.can_see_user(db, viewer, owner):
         raise HTTPException(status_code=403, detail="You cannot change that session.")
+    return session
+
+
+def set_session_duration(db: Session, viewer: User, session_id: int, minutes: Optional[int]) -> WorkoutSession:
+    """Minutes the athlete says the workout took. None clears it."""
+    session = session_for_writer(db, viewer, session_id)
     if minutes is not None and not 1 <= minutes <= 600:
         raise HTTPException(status_code=400, detail="Duration must be between 1 and 600 minutes.")
     session.duration_minutes = minutes

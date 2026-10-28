@@ -923,6 +923,33 @@ class TrainerFlowTests(unittest.TestCase):
         self.assertEqual(self.client.put(url, json={"minutes": 30}, headers=outsider).status_code, 403)
         self.assertEqual(self.client.put(url, json={"minutes": 30}).status_code, 401)
 
+    def test_logging_sets_needs_the_athlete_or_their_coach(self):
+        token, coach = self._login("coach@wourkout.app", "CoachPassword123!")
+        auth = self._auth(token)
+        athlete = next(p for p in self.client.get("/api/gym/context", headers=auth).json()["athletes"]
+                       if p["email"] == "athlete@wourkout.app")
+        workout = self._workout(f"Locked {self.stamp}", "wourkout", "2026-10-23")
+        self.client.post("/api/assignments", json={
+            "workout_id": workout["id"], "user_id": athlete["id"], "scheduled_date": "2026-10-23",
+        }, headers=auth)
+        session = self.client.get(f"/api/sessions/active/{workout['id']}", params={"user_id": athlete["id"]}, headers=auth).json()
+        url = f"/api/sessions/{session['id']}/sets"
+        params = {"workout_exercise_id": workout["exercises"][0]["id"], "set_number": 1, "weight": 60, "reps": 5, "completed": True}
+
+        self.assertEqual(self.client.post(url, params=params).status_code, 401)
+        self.assertEqual(self.client.post(url, params=params, headers=self._gym_coach("Snoop")).status_code, 403)
+        self.assertEqual(self.client.post(f"/api/sessions/999999/sets", params=params, headers=auth).status_code, 404)
+        other = self._workout(f"Other {self.stamp}", "wourkout", "2026-10-24")
+        stray = dict(params, workout_exercise_id=other["exercises"][0]["id"])
+        self.assertEqual(self.client.post(url, params=stray, headers=auth).status_code, 400)
+
+        by_coach = self.client.post(url, params=params, headers=auth)
+        self.assertEqual(by_coach.status_code, 200, by_coach.text)
+        login = self.client.post("/api/auth/login", json={"email_or_username": "athlete@wourkout.app", "password": "AthletePassword123!"})
+        own = self.client.post(url, params=dict(params, weight=62.5), headers=self._auth(login.json()["access_token"]))
+        self.assertEqual(own.status_code, 200, own.text)
+        self.assertEqual(own.json()["weight"], 62.5)
+
     def test_exercise_defaults_stay_when_a_day_changes(self):
         created = self.client.post("/api/exercises", json={
             "name": f"Back Squat {self.stamp}",

@@ -506,8 +506,16 @@ def log_set(
     completed: bool = Query(False),
     rest_seconds: Optional[int] = Query(None),
     details: Optional[str] = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: crud.User = Depends(require_auth),
 ):
+    session = crud.session_for_writer(db, current_user, session_id)
+    in_workout = db.query(crud.WorkoutExercise).filter(
+        crud.WorkoutExercise.id == workout_exercise_id,
+        crud.WorkoutExercise.workout_id == session.workout_id,
+    ).first()
+    if not in_workout:
+        raise HTTPException(status_code=400, detail="That exercise is not in this session's workout.")
     return crud.log_or_update_set(
         db=db,
         session_id=session_id,

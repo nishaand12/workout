@@ -350,6 +350,15 @@ assert.equal(roundTrip.intensityKind, "rpe");
   assert.equal(params.get("weight"), "80");
   assert.equal(params.get("reps"), "5");
   assert.equal(params.get("completed"), "true");
+  // A typed value is sent with the tick too, even if the stored set says otherwise.
+  const key2 = "x:" + day + ":" + row.id;
+  lib.logCell(key2, 1, "w", "90", day, row.id, 4242);
+  state.openSession.set_logs = [{ workout_exercise_id: 4242, set_number: 2, weight: 0, reps: 0, completed: false, details: "" }];
+  lib.logCell(key2, 1, "done", true, day, row.id, 4242);
+  await new Promise((r) => setTimeout(r, 0));
+  const tick = new URLSearchParams(sent[sent.length - 1].split("?")[1]);
+  assert.equal(tick.get("weight"), "90");
+  assert.equal(tick.get("reps"), "5");
   state.openSession = null;
   state.coachSessionFor = null;
 }

@@ -5079,8 +5079,7 @@ function logCell(key, i, field, value, date, itemId, weId) {
     w: "weight", r: "reps", rest: "rest", tempo: "tempo", velocity: "velocity",
     power: "power", pct: "pct", restRep: "restRep", distance: "distance", intensity: "intensity"
   };
-  // Ticking Done keeps what the boxes show, so prefilled reps and weight are saved too.
-  const fill = {};
+  // Ticking Done keeps what the boxes show, so prefilled reps and weight count too.
   if (field === "done" && value && it) {
     entryColumns(it).forEach(([col]) => {
       if (Object.prototype.hasOwnProperty.call(log.cells[i].entered, col)) return;
@@ -5088,11 +5087,18 @@ function logCell(key, i, field, value, date, itemId, weId) {
       if (shown == null || String(shown).trim() === "") return;
       log.cells[i].entered[col] = shown;
       log.cells[i][col] = shown;
-      fill[map[col]] = shown;
     });
   }
   const ticked = field === "done" ? !!value : log.cells[i].done;
   log.cells[i].done = !!(it && cellDone(it, log.cells[i].entered, ticked));
+  // A done set is saved with every value its boxes show.
+  const fill = {};
+  if (log.cells[i].done && it) {
+    entryColumns(it).forEach(([col]) => {
+      const shown = log.cells[i].entered[col];
+      if (shown != null && String(shown).trim() !== "") fill[map[col]] = shown;
+    });
+  }
   if (weId && state.openSession && (state.role === "athlete" || state.coachSessionFor)) {
     const apiField = field === "done" ? "completed" : map[field];
     logAthleteSet(weId, i + 1, apiField || "", field === "done" ? log.cells[i].done : log.cells[i][field], {
