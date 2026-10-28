@@ -589,6 +589,16 @@ class WeekNoteWrite(BaseModel):
     week_start: str
     body: str = ""
 
+class PersonalBest(BaseModel):
+    user_id: int
+    user_name: str = ""
+    exercise_id: int
+    exercise_name: str
+    weight: float
+    reps: float = 0
+    date: str = ""
+    load_unit: str = "kg"
+
 class MoveTeamRequest(BaseModel):
     coach_id: int
 

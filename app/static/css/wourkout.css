@@ -712,11 +712,11 @@ table.data tr:hover td { background: #fafafa; }
 .banner-ok { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
 .note-box { margin-top: 16px; display: flex; flex-direction: column; gap: 8px; padding-bottom: 8px; }
 .note-box .hint { margin: 0; }
-.note-box label { font-size: 12px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; color: #bbb; }
+.note-box .ui-label { font-size: 12px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; color: #bbb; }
 .note-box textarea {
   min-height: 72px; border-radius: 8px; border: 1px solid #333; background: #111; color: #fff; padding: 8px;
 }
-.light-page .note-box label { color: #666; }
+.light-page .note-box .ui-label { color: var(--ui-text-2); text-transform: none; letter-spacing: 0; font-weight: 500; font-size: 13px; }
 .light-page .note-box textarea { background: #fff; color: #222; border-color: #ddd; }
 .editor.log-editor { width: min(720px, 96vw); }
 .group-card .member-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid #eee; }

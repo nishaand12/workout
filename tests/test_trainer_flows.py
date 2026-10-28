@@ -865,6 +865,34 @@ class TrainerFlowTests(unittest.TestCase):
             db.rollback()
             db.close()
 
+    def test_personal_bests_come_from_logged_sets(self):
+        token, coach = self._login("coach@wourkout.app", "CoachPassword123!")
+        auth = self._auth(token)
+        athlete = next(p for p in self.client.get("/api/gym/context", headers=auth).json()["athletes"]
+                       if p["email"] == "athlete@wourkout.app")
+        workout = self._workout(f"PR day {self.stamp}", "wourkout", "2026-10-20")
+        self.client.post("/api/assignments", json={
+            "workout_id": workout["id"], "user_id": athlete["id"], "scheduled_date": "2026-10-20",
+        }, headers=auth)
+        session = self.client.get(f"/api/sessions/active/{workout['id']}", params={"user_id": athlete["id"]}, headers=auth)
+        we_id = workout["exercises"][0]["id"]
+        for number, weight, reps in ((1, 100, 5), (2, 110, 3), (3, 110, 4)):
+            logged = self.client.post(f"/api/sessions/{session.json()['id']}/sets", params={
+                "workout_exercise_id": we_id, "set_number": number, "weight": weight, "reps": reps, "completed": True,
+            }, headers=auth)
+            self.assertEqual(logged.status_code, 200, logged.text)
+
+        bests = self.client.get(f"/api/personal-bests?user_id={athlete['id']}", headers=auth)
+        self.assertEqual(bests.status_code, 200, bests.text)
+        row = next(r for r in bests.json() if r["exercise_id"] == workout["exercises"][0]["exercise_id"])
+        self.assertEqual((row["weight"], row["reps"], row["date"]), (110, 4, "2026-10-20"))
+        listed = self.client.get("/api/personal-bests", headers=auth).json()
+        self.assertTrue(any(r["user_id"] == athlete["id"] and r["weight"] == 110 for r in listed))
+
+        outsider = self._gym_coach("Prs")
+        blocked = self.client.get(f"/api/personal-bests?user_id={athlete['id']}", headers=outsider)
+        self.assertEqual(blocked.status_code, 403)
+
     def test_exercise_defaults_stay_when_a_day_changes(self):
         created = self.client.post("/api/exercises", json={
             "name": f"Back Squat {self.stamp}",
