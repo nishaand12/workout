@@ -770,6 +770,72 @@ class TrainerFlowTests(unittest.TestCase):
         self.assertEqual(again.status_code, 201, again.text)
         self.assertNotIn(again.json()["users"][0]["user"]["email"], emails)
 
+    def _gym_coach(self, label):
+        reg = self.client.post("/api/auth/register", json={
+            "name": f"{label} Coach",
+            "email": f"{label.lower()}.{self.stamp}@example.com",
+            "username": f"{label.lower()}_{self.stamp[:8]}",
+            "password": "Password123!",
+            "role": "coach",
+        })
+        self.assertEqual(reg.status_code, 201, reg.text)
+        auth = self._auth(reg.json()["access_token"])
+        gym = self.client.post("/api/gyms", json={"name": f"{label} Gym {self.stamp}"}, headers=auth)
+        self.assertEqual(gym.status_code, 201, gym.text)
+        return auth
+
+    def test_week_notes_are_per_calendar_and_coach_only(self):
+        auth = self._gym_coach("Notes")
+        team = self.client.post("/api/groups", json={"name": f"Notes Team {self.stamp}"}, headers=auth)
+        self.assertEqual(team.status_code, 201, team.text)
+        team_id = team.json()["id"]
+        bulk = self.client.post("/api/gym/athletes/bulk", json={
+            "team_id": team_id,
+            "athletes": [{"name": "Note athlete"}],
+        }, headers=auth)
+        self.assertEqual(bulk.status_code, 201, bulk.text)
+        athlete = bulk.json()["users"][0]
+        athlete_id = athlete["user"]["id"]
+
+        week = "2026-11-01"
+        saved = self.client.put("/api/calendar/week-notes", json={
+            "group_id": team_id, "week_start": week, "body": "Deload, testing Friday",
+        }, headers=auth)
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(saved.json()["body"], "Deload, testing Friday")
+
+        team_notes = self.client.get(f"/api/calendar/week-notes?group_id={team_id}", headers=auth)
+        self.assertEqual(team_notes.json(), [{"week_start": week, "body": "Deload, testing Friday"}])
+        athlete_notes = self.client.get(f"/api/calendar/week-notes?user_id={athlete_id}", headers=auth)
+        self.assertEqual(athlete_notes.json(), [])
+
+        self.client.put("/api/calendar/week-notes", json={
+            "group_id": team_id, "week_start": week, "body": "Deload only",
+        }, headers=auth)
+        team_notes = self.client.get(f"/api/calendar/week-notes?group_id={team_id}", headers=auth)
+        self.assertEqual(team_notes.json(), [{"week_start": week, "body": "Deload only"}])
+
+        login = self.client.post("/api/auth/login", json={
+            "email_or_username": athlete["user"]["email"], "password": athlete["temporary_password"],
+        })
+        self.assertEqual(login.status_code, 200, login.text)
+        athlete_auth = self._auth(login.json()["access_token"])
+        blocked = self.client.get(f"/api/calendar/week-notes?user_id={athlete_id}", headers=athlete_auth)
+        self.assertEqual(blocked.status_code, 403)
+
+        other = self._gym_coach("Elsewhere")
+        foreign = self.client.get(f"/api/calendar/week-notes?group_id={team_id}", headers=other)
+        self.assertEqual(foreign.status_code, 403)
+
+        cleared = self.client.put("/api/calendar/week-notes", json={
+            "group_id": team_id, "week_start": week, "body": "  ",
+        }, headers=auth)
+        self.assertEqual(cleared.status_code, 200, cleared.text)
+        self.assertEqual(self.client.get(f"/api/calendar/week-notes?group_id={team_id}", headers=auth).json(), [])
+
+        both = self.client.get(f"/api/calendar/week-notes?group_id={team_id}&user_id={athlete_id}", headers=auth)
+        self.assertEqual(both.status_code, 400)
+
     def test_exercise_defaults_stay_when_a_day_changes(self):
         created = self.client.post("/api/exercises", json={
             "name": f"Back Squat {self.stamp}",
