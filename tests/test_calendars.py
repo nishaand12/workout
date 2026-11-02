@@ -2,6 +2,7 @@
 import os
 import tempfile
 import unittest
+import uuid
 
 _db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
 _db.close()
@@ -23,7 +24,8 @@ class CalendarTests(unittest.TestCase):
         cls.client = TestClient(app)
 
     def setUp(self):
-        self.stamp = f"{id(self)}-{self._testMethodName}"
+        # Unique per test and per process: usernames below are built from the first characters.
+        self.stamp = f"{uuid.uuid4().hex[:10]}-{self._testMethodName}"
 
     def _auth(self, token):
         return {"Authorization": f"Bearer {token}"}
@@ -32,7 +34,7 @@ class CalendarTests(unittest.TestCase):
         reg = self.client.post("/api/auth/register", json={
             "name": f"{label} Coach",
             "email": f"{label.lower()}.{self.stamp}@example.com",
-            "username": f"{label.lower()}_{self.stamp[:8]}",
+            "username": f"{label.lower()}_{self.stamp[:10]}",
             "password": "Password123!",
             "role": "coach",
         })
