@@ -228,16 +228,22 @@ button { cursor: pointer; }
 .chain-block.chain-selected { outline: 2px solid #7eb6ff; }
 .chain-block.is-collapsed { padding-bottom: 4px; }
 .chain-fold { background: transparent; border: 0; color: #9ec0ef; width: 16px; }
-.chain-field { display: inline-flex; align-items: center; gap: 4px; color: #bbb; font-size: 12px; }
+.chain-field { display: inline-flex; align-items: center; gap: 4px; color: #bbb; font-size: 12px; min-width: 0; }
 .chain-field input { width: 72px; background: #1b1b1b; color: #eee; border: 1px solid #444; border-radius: 4px; padding: 3px 6px; }
-.chain-field.chain-notes input { width: 160px; }
+/* Notes take the rest of the row; an overlong note wraps the row instead of sliding the modal. */
+.chain-field.chain-notes { flex: 1 1 100%; }
+.chain-field.chain-notes input { flex: 1 1 auto; width: auto; min-width: 0; }
+.chain-members { max-height: 44vh; overflow-y: auto; overflow-x: hidden; }
+#app.light .modal .chain-field { color: var(--ui-text-2); }
+#app.light .modal .chain-field input { background: var(--ui-surface); color: var(--ui-text); border-color: var(--ui-border-strong); }
 .athlete-player { display: block; width: min(420px, 100%); margin: 8px 0; background: #111; color: #fff; border: 0; border-radius: 8px; min-height: 84px; }
 .athlete-player.playing { position: relative; padding-top: 56.25%; }
 .athlete-player.playing iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
 .circuit-entry { padding: 8px; }
 .circuit-field { display: flex; gap: 8px; align-items: center; margin: 6px 0; color: #ccc; }
 .circuit-field input { flex: 1; }
-.chain-member { display: flex; gap: 6px; align-items: center; padding: 4px 0; font-size: 13px; }
+.chain-member { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 0; font-size: 13px; min-width: 0; }
+.chain-member > span:first-child { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .chain-member button { background: transparent; border: 0; color: #9ec0ef; }
 .chain-library { margin-top: 22px; }
 .chain-library h2 { margin: 0; font-size: 18px; }
