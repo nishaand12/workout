@@ -345,13 +345,17 @@ assert.equal(state.logs[circuitKey].done, false);
 
 state.auth = { user: { id: 3, role: "coach" } };
 state.gymContext = {
-  athletes: [{ id: 7, name: "Ada", email: "ada@example.com" }],
-  teams: [{ id: 4, name: "Team", coach_id: 3 }]
+  athletes: [
+    { id: 7, name: "Ada", email: "ada@example.com" },
+    { id: 8, name: "Bo", email: "bo@example.com", calendar_id: 4, calendar_name: "Team" }
+  ],
+  teams: [{ id: 4, name: "Team", coach_id: 3 }],
+  calendars: [{ id: 4, name: "Team", coach_id: 3, athlete_ids: [8], athlete_names: ["Bo"], athlete_count: 1, programmed_days: 0 }]
 };
-const coachQuery = sandbox.applyBuildParams("?week=2026-10-18&athlete=group:4&cal=month", "coach");
+const coachQuery = sandbox.applyBuildParams("?week=2026-10-18&athlete=cal:4&cal=month", "coach");
 assert.equal(coachQuery.applied, true);
 assert.equal(coachQuery.next.weekStart, "2026-10-18");
-assert.equal(coachQuery.next.athleteId, "group:4");
+assert.equal(coachQuery.next.athleteId, "cal:4");
 assert.equal(coachQuery.next.viewMode, "month");
 const athleteQuery = sandbox.applyBuildParams("?week=2026-10-18&athlete=u7&cal=week", "athlete");
 assert.equal(athleteQuery.applied, false);

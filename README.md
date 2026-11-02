@@ -1,6 +1,6 @@
 # wourkout
 
-A workout-programming app for athletic trainers and personal trainers. Create a workout, assign it to one client, group clients into teams, and bulk-apply a program to a team. Built with **FastAPI**, **SQLAlchemy**, and a touch-friendly web UI. Runs locally and can deploy to **Google Cloud Run** with **Cloud SQL** or **Supabase**.
+A workout-programming app for athletic trainers and personal trainers. Build a calendar of dated workouts, put athletes on it, and they follow it live. Groups hold the roster and join codes; calendars hold the programming. Built with **FastAPI**, **SQLAlchemy**, and a touch-friendly web UI. Runs locally and can deploy to **Google Cloud Run** with **Cloud SQL** or **Supabase**.
 
 ---
 
@@ -25,8 +25,12 @@ When running locally, access the app from any device on your Tailnet (e.g., iPho
   * Organize athletes into training groups (e.g. *Varsity Strength Cohort*, *Speed & Agility Track*, *Personal Training (1-on-1)*).
   * Assign / remove athletes from groups with instant UI updates.
   * Register new athletes and coaches.
+* **Calendars:**
+  * A calendar is a named programme of dated workouts. Every athlete starts on a personal calendar named after them; a coach can move any athlete onto a shared calendar from Manage Calendars, Manage Users, or the Athletes tab.
+  * An athlete follows exactly one calendar at a time and sees it live, so an edit to the calendar reaches everyone on it. Set logs stay per athlete.
+  * A calendar can be renamed or deleted once nobody follows it.
 * **Workout Assignment Manager:**
-  * Assign workouts to entire training groups or 1-on-1 to individual athletes on specific calendar dates.
+  * Assign workouts to a calendar or 1-on-1 to individual athletes on specific calendar dates.
   * Add custom coaching instructions and session notes.
   * Real-time management table with 1-click unassign.
 * **Workout Planner & Builder:**

@@ -39,6 +39,8 @@ class User(Base):
     gym_id = Column(Integer, ForeignKey("gyms.id", ondelete="SET NULL"), nullable=True, index=True)
     # Exactly one team when this login is an athlete. Not a DB FK: users and groups reference each other.
     team_id = Column(Integer, nullable=True, index=True)
+    # The calendar this athlete follows. No FK: users and calendars point at each other.
+    calendar_id = Column(Integer, nullable=True, index=True)
     title = Column(String(100), default="Athlete")  # e.g. 'Head Strength Coach', 'Varsity Athlete'
     avatar_color = Column(String(20), default="#0ea5e9")
     status_badge = Column(String(50), default="Active")  # 'Active', 'Modified', 'Rehab'
@@ -58,6 +60,12 @@ class User(Base):
         viewonly=True,
     )
     groups = relationship("Group", secondary=user_groups, back_populates="members")
+    calendar = relationship(
+        "Calendar",
+        primaryjoin="User.calendar_id==Calendar.id",
+        foreign_keys=[calendar_id],
+        viewonly=True,
+    )
     sessions = relationship("WorkoutSession", back_populates="user", cascade="all, delete-orphan")
     individual_assignments = relationship("WorkoutAssignment", back_populates="user", foreign_keys="WorkoutAssignment.user_id", cascade="all, delete-orphan")
     records = relationship("PersonalRecord", back_populates="user", cascade="all, delete-orphan")
@@ -113,6 +121,20 @@ class Group(Base):
     members = relationship("User", secondary=user_groups, back_populates="groups")
     assignments = relationship("WorkoutAssignment", back_populates="group", cascade="all, delete-orphan")
 
+class Calendar(Base):
+    """A named programme of dated workouts. An athlete follows exactly one calendar at a time,
+    and sees it live: a change to the calendar reaches everyone on it."""
+    __tablename__ = "calendars"
+
+    id = Column(Integer, primary_key=True, index=True)
+    gym_id = Column(Integer, ForeignKey("gyms.id", ondelete="CASCADE"), nullable=True, index=True)
+    coach_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    name = Column(String(255), nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    coach = relationship("User", foreign_keys=[coach_id])
+
+
 class JoinCode(Base):
     """Gym code (admin → new coach) or team code (coach → new athlete). No other kinds."""
     __tablename__ = "join_codes"
@@ -141,12 +163,14 @@ class WorkoutAssignment(Base):
     assigned_by_coach_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     group_id = Column(Integer, ForeignKey("groups.id", ondelete="CASCADE"), nullable=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
+    calendar_id = Column(Integer, ForeignKey("calendars.id", ondelete="CASCADE"), nullable=True, index=True)
     scheduled_date = Column(String(20), default="", index=True)  # YYYY-MM-DD
     notes = Column(String(255), default="")
     created_at = Column(DateTime, default=datetime.utcnow)
 
     workout = relationship("Workout", back_populates="assignments")
     group = relationship("Group", back_populates="assignments")
+    calendar = relationship("Calendar")
     user = relationship("User", back_populates="individual_assignments", foreign_keys=[user_id])
     coach = relationship("User", foreign_keys=[assigned_by_coach_id])
 
@@ -324,6 +348,7 @@ class WeekNote(Base):
     gym_id = Column(Integer, ForeignKey("gyms.id", ondelete="CASCADE"), nullable=False, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     group_id = Column(Integer, ForeignKey("groups.id", ondelete="CASCADE"), nullable=True, index=True)
+    calendar_id = Column(Integer, ForeignKey("calendars.id", ondelete="CASCADE"), nullable=True, index=True)
     week_start = Column(String(10), nullable=False, index=True)  # YYYY-MM-DD, a Sunday
     body = Column(Text, default="")
     updated_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)

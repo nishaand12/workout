@@ -14,7 +14,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, desc, asc
 
-from app.models import Exercise, ExerciseChain, ExerciseChainMember, Workout, WorkoutExercise, WorkoutSession, SetLog, PersonalRecord, User, Group, WorkoutAssignment, Gym, JoinCode, GymItem, GymHiddenExercise, WeekNote
+from app.models import Exercise, ExerciseChain, ExerciseChainMember, Workout, WorkoutExercise, WorkoutSession, SetLog, PersonalRecord, User, Group, WorkoutAssignment, Gym, JoinCode, GymItem, GymHiddenExercise, WeekNote, Calendar
 from app import access
 from app.schemas import (
     ExerciseCreate, ExerciseUpdate, WorkoutCreate, WorkoutUpdate, PersonalRecordCreate,
@@ -1520,7 +1520,7 @@ def get_calendar_workouts(db: Session, start_date: str, end_date: str, user_id: 
     if user and user.role == "student" and has_assignments:
         # Student view: strictly show workouts assigned to them or their groups
         u_group_ids = [g.id for g in user.groups]
-        who = [WorkoutAssignment.user_id == user.id]
+        who = [_athlete_rows_clause(user)]
         if u_group_ids:
             who.append(WorkoutAssignment.group_id.in_(u_group_ids))
         assign_query = db.query(WorkoutAssignment).filter(
@@ -1669,6 +1669,10 @@ def update_user(db: Session, user_id: int, user_in: UserUpdate):
     if not user:
         return None
     for field, val in user_in.model_dump(exclude_unset=True).items():
+        if field == "calendar_id" and val is not None:
+            calendar = get_calendar(db, val)
+            if not calendar or (user.gym_id and calendar.gym_id != user.gym_id):
+                raise HTTPException(status_code=400, detail="That calendar is not in this gym.")
         if field == "load_unit":
             val = "lbs" if str(val or "").lower() == "lbs" else "kg"
         if field == "distance_unit":
@@ -1685,6 +1689,7 @@ def delete_user(db: Session, user_id: int):
     block = access.coach_removal_block(db, user)
     if block:
         return block
+    _drop_orphan_calendar(db, user)
     db.delete(user)
     db.commit()
     return "deleted"
@@ -1788,7 +1793,19 @@ def remove_user_from_group(db: Session, group_id: int, user_id: int):
     return True
 
 # Workout Assignments
-def get_assignments(db: Session, date: Optional[str] = None, user_id: Optional[int] = None, group_id: Optional[int] = None):
+def _label_assignment(a: WorkoutAssignment) -> WorkoutAssignment:
+    a.workout_title = a.workout.title if a.workout else ""
+    if a.group:
+        a.target_name = f"Team: {a.group.name}"
+    elif a.user:
+        a.target_name = f"Client: {a.user.name}"
+    elif a.calendar:
+        a.target_name = f"Calendar: {a.calendar.name}"
+    else:
+        a.target_name = "All"
+    return a
+
+def get_assignments(db: Session, date: Optional[str] = None, user_id: Optional[int] = None, group_id: Optional[int] = None, calendar_id: Optional[int] = None):
     query = db.query(WorkoutAssignment)
     if date:
         query = query.filter(WorkoutAssignment.scheduled_date == date)
@@ -1796,16 +1813,19 @@ def get_assignments(db: Session, date: Optional[str] = None, user_id: Optional[i
         query = query.filter(WorkoutAssignment.user_id == user_id)
     if group_id:
         query = query.filter(WorkoutAssignment.group_id == group_id)
+    if calendar_id:
+        query = query.filter(WorkoutAssignment.calendar_id == calendar_id)
     assignments = query.order_by(WorkoutAssignment.scheduled_date.asc(), WorkoutAssignment.id.asc()).all()
     for a in assignments:
-        a.workout_title = a.workout.title if a.workout else ""
-        if a.group:
-            a.target_name = f"Team: {a.group.name}"
-        elif a.user:
-            a.target_name = f"Client: {a.user.name}"
-        else:
-            a.target_name = "All"
+        _label_assignment(a)
     return assignments
+
+def _athlete_rows_clause(user: User):
+    """Assignment rows that are this athlete's: on the calendar they follow, or pinned to them directly."""
+    clauses = [WorkoutAssignment.user_id == user.id]
+    if user.calendar_id:
+        clauses.append(WorkoutAssignment.calendar_id == user.calendar_id)
+    return or_(*clauses)
 
 def rescheduled_away_dates(db: Session, user_id: int) -> set:
     """Dates a client was individually moved off a team assignment."""
@@ -1824,7 +1844,7 @@ def rescheduled_away_dates(db: Session, user_id: int) -> set:
 def assignment_for_student_on_date(db: Session, student: User, date_str: str):
     """Personal assignment wins. Team assignment is skipped if this client was moved off that date."""
     direct = db.query(WorkoutAssignment).filter(
-        WorkoutAssignment.user_id == student.id,
+        _athlete_rows_clause(student),
         WorkoutAssignment.scheduled_date == date_str
     ).order_by(desc(WorkoutAssignment.id)).first()
     if direct:
@@ -1927,11 +1947,18 @@ def sync_group_day_to_members(db: Session, workout: Optional[Workout]):
 
 
 def create_assignment(db: Session, assign_in: WorkoutAssignmentCreate):
+    calendar_id = assign_in.calendar_id
+    if not calendar_id and assign_in.user_id:
+        # A day pinned to one athlete lands on the calendar they follow.
+        target = get_user(db, assign_in.user_id)
+        personal = ensure_personal_calendar(db, target, commit=False) if target else None
+        calendar_id = personal.id if personal else None
     assign = WorkoutAssignment(
         workout_id=assign_in.workout_id,
         assigned_by_coach_id=assign_in.assigned_by_coach_id,
         group_id=assign_in.group_id,
         user_id=assign_in.user_id,
+        calendar_id=calendar_id,
         scheduled_date=assign_in.scheduled_date,
         notes=assign_in.notes or ""
     )
@@ -1943,14 +1970,7 @@ def create_assignment(db: Session, assign_in: WorkoutAssignmentCreate):
         workout = get_workout(db, assign.workout_id)
         write_group_day_onto_members(db, group, workout, assign.scheduled_date, assign.assigned_by_coach_id)
         db.refresh(assign)
-    assign.workout_title = assign.workout.title if assign.workout else ""
-    if assign.group:
-        assign.target_name = f"Team: {assign.group.name}"
-    elif assign.user:
-        assign.target_name = f"Client: {assign.user.name}"
-    else:
-        assign.target_name = "All"
-    return assign
+    return _label_assignment(assign)
 
 def assign_program(db: Session, req) -> dict:
     """Bulk-apply every dated workout in a program to one client or one team."""
@@ -2500,9 +2520,12 @@ def gym_workout_summaries(db: Session, user: User) -> List[dict]:
     ).all() if w_ids else []
 
     team_members_by_group = {}
+    followers_by_calendar = {}
     if user.gym_id:
         for u in db.query(User).filter(User.gym_id == user.gym_id, User.team_id.isnot(None)).all():
             team_members_by_group.setdefault(u.team_id, set()).add(u.id)
+        for u in db.query(User).filter(User.gym_id == user.gym_id, User.calendar_id.isnot(None)).all():
+            followers_by_calendar.setdefault(u.calendar_id, set()).add(u.id)
 
     assigned_by_workout = {}
     latest_date_by_workout = {}
@@ -2512,6 +2535,8 @@ def gym_workout_summaries(db: Session, user: User) -> List[dict]:
             s.add(a.user_id)
         if a.group_id and a.group_id in team_members_by_group:
             s.update(team_members_by_group[a.group_id])
+        if a.calendar_id and a.calendar_id in followers_by_calendar:
+            s.update(followers_by_calendar[a.calendar_id])
         if a.scheduled_date:
             prev = latest_date_by_workout.get(a.workout_id, "")
             if a.scheduled_date > prev:
@@ -2764,8 +2789,32 @@ def get_calendar_schedule(
     viewer: Optional[User],
     user_id: Optional[int] = None,
     group_id: Optional[int] = None,
+    calendar_id: Optional[int] = None,
 ) -> List[dict]:
-    """Return full scheduled workouts (with exercises) for a group or an athlete."""
+    """Return full scheduled workouts (with exercises) for a calendar, a group, or an athlete."""
+    if calendar_id:
+        calendar = get_calendar(db, calendar_id)
+        if not calendar:
+            raise HTTPException(status_code=404, detail="Calendar not found")
+        if viewer is not None and not calendar_visible(db, viewer, calendar):
+            raise HTTPException(status_code=403, detail="You cannot open that calendar.")
+        rows = db.query(WorkoutAssignment).filter(
+            WorkoutAssignment.calendar_id == calendar.id
+        ).order_by(WorkoutAssignment.scheduled_date.asc(), WorkoutAssignment.id.desc()).all()
+        by_date = {}
+        for a in rows:
+            if not a.workout or not a.scheduled_date or a.scheduled_date in by_date:
+                continue
+            by_date[a.scheduled_date] = {
+                "assignment_id": a.id,
+                "scheduled_date": a.scheduled_date,
+                "user_id": a.user_id,
+                "group_id": None,
+                "calendar_id": calendar.id,
+                "is_group_assignment": False,
+                "workout": a.workout,
+            }
+        return [by_date[d] for d in sorted(by_date.keys())]
     if group_id:
         team = get_group(db, group_id)
         if not team:
@@ -2800,8 +2849,9 @@ def get_calendar_schedule(
     if viewer is not None and not access.can_see_user(db, viewer, target_user):
         raise HTTPException(status_code=403, detail="You cannot view that athlete's schedule.")
 
+    ensure_personal_calendar(db, target_user)
     direct_rows = db.query(WorkoutAssignment).filter(
-        WorkoutAssignment.user_id == target_user.id
+        _athlete_rows_clause(target_user)
     ).order_by(WorkoutAssignment.scheduled_date.asc(), WorkoutAssignment.id.desc()).all()
 
     moved_off = rescheduled_away_dates(db, target_user.id)
@@ -2876,46 +2926,293 @@ def _staff_user(user: User) -> bool:
     return access.is_admin(user) or access.is_coach(user)
 
 
-def _week_note_target(db: Session, viewer: User, user_id: Optional[int], group_id: Optional[int]) -> Tuple[Optional[int], Optional[int]]:
-    """Check a coach may write notes on this calendar. Returns (user_id, group_id) with exactly one set."""
+# ---------------------------------------------------------------------------
+# Calendars. A named programme of dated workouts. An athlete follows one at a
+# time and sees it live. Every athlete gets a personal calendar, named after
+# them, the first time one is needed; a coach can move them onto a shared one.
+# ---------------------------------------------------------------------------
+def _athlete_like(user: User) -> bool:
+    return bool(user.team_id or "athlete" in user.roles or (user.role or "") in ("athlete", "student"))
+
+
+def get_calendar(db: Session, calendar_id: Optional[int]) -> Optional[Calendar]:
+    if not calendar_id:
+        return None
+    return db.query(Calendar).filter(Calendar.id == calendar_id).first()
+
+
+def calendar_athletes(db: Session, calendar_id: int) -> List[User]:
+    return db.query(User).filter(User.calendar_id == calendar_id).order_by(User.name.asc()).all()
+
+
+def personal_calendar_for(db: Session, user: User, exclude_id: Optional[int] = None) -> Calendar:
+    """A calendar named after the athlete that nobody else follows: reuse one, or make it. Not committed."""
+    name = (user.name or user.email or "Athlete").strip()[:255]
+    candidates = db.query(Calendar).filter(Calendar.gym_id == user.gym_id, Calendar.name == name).order_by(Calendar.id.asc()).all()
+    for candidate in candidates:
+        if candidate.id == exclude_id:
+            continue
+        others = db.query(User).filter(User.calendar_id == candidate.id, User.id != user.id).count()
+        if others == 0:
+            return candidate
+    coach_id = None
+    if user.team_id:
+        team = db.query(Group).filter(Group.id == user.team_id).first()
+        coach_id = team.coach_id if team else None
+    calendar = Calendar(gym_id=user.gym_id, coach_id=coach_id, name=name)
+    db.add(calendar)
+    db.flush()
+    return calendar
+
+
+def ensure_personal_calendar(db: Session, user: Optional[User], commit: bool = True) -> Optional[Calendar]:
+    """The calendar this athlete follows, made on first use."""
+    if user is None:
+        return None
+    existing = get_calendar(db, user.calendar_id)
+    if existing:
+        return existing
+    if not user.gym_id:
+        return None
+    calendar = personal_calendar_for(db, user)
+    user.calendar_id = calendar.id
+    if commit:
+        db.commit()
+    return calendar
+
+
+def calendar_visible(db: Session, viewer: User, calendar: Optional[Calendar], athlete_ids: Optional[set] = None) -> bool:
+    """Admins see every calendar in the gym. A coach sees their own, and any that one of their athletes follows."""
+    if not calendar or not viewer or not viewer.gym_id or calendar.gym_id != viewer.gym_id:
+        return False
+    if access.is_admin(viewer) or calendar.coach_id == viewer.id or viewer.calendar_id == calendar.id:
+        return True
+    if not access.is_coach(viewer):
+        return False
+    if athlete_ids is None:
+        athlete_ids = set(access.athlete_ids_for(db, viewer))
+    return any(u.id in athlete_ids for u in calendar_athletes(db, calendar.id))
+
+
+def require_calendar(db: Session, viewer: User, calendar_id: int) -> Calendar:
+    calendar = get_calendar(db, calendar_id)
+    if not calendar:
+        raise HTTPException(status_code=404, detail="Calendar not found")
+    if not calendar_visible(db, viewer, calendar):
+        raise HTTPException(status_code=403, detail="You cannot open that calendar.")
+    return calendar
+
+
+def calendar_payload(db: Session, calendar: Calendar) -> dict:
+    athletes = calendar_athletes(db, calendar.id)
+    days = db.query(WorkoutAssignment.scheduled_date).filter(
+        WorkoutAssignment.calendar_id == calendar.id,
+        WorkoutAssignment.scheduled_date != "",
+    ).distinct().count()
+    return {
+        "id": calendar.id,
+        "name": calendar.name,
+        "coach_id": calendar.coach_id,
+        "coach_name": calendar.coach.name if calendar.coach else "",
+        "athlete_ids": [u.id for u in athletes],
+        "athlete_names": [u.name for u in athletes],
+        "athlete_count": len(athletes),
+        "programmed_days": days,
+    }
+
+
+def list_calendars(db: Session, viewer: User) -> List[dict]:
+    access.require_gym(viewer)
+    athlete_ids = set(access.athlete_ids_for(db, viewer)) if access.is_coach(viewer) else set()
+    rows = db.query(Calendar).filter(Calendar.gym_id == viewer.gym_id).order_by(Calendar.name.asc(), Calendar.id.asc()).all()
+    return [calendar_payload(db, c) for c in rows if calendar_visible(db, viewer, c, athlete_ids)]
+
+
+def create_calendar(db: Session, viewer: User, name: str) -> Calendar:
+    access.require_gym(viewer)
+    if not _staff_user(viewer):
+        raise HTTPException(status_code=403, detail="Only a coach can create a calendar.")
+    clean = (name or "").strip()
+    if not clean:
+        raise HTTPException(status_code=400, detail="Name the calendar.")
+    calendar = Calendar(gym_id=viewer.gym_id, coach_id=viewer.id, name=clean[:255])
+    db.add(calendar)
+    db.commit()
+    db.refresh(calendar)
+    return calendar
+
+
+def _calendar_athlete(db: Session, viewer: User, user_id: int) -> User:
+    user = get_user(db, user_id)
+    if not user or user.gym_id != viewer.gym_id:
+        raise HTTPException(status_code=404, detail="Athlete not found in this gym.")
+    if not access.is_admin(viewer):
+        access.assert_own_athlete(db, viewer, user)
+    return user
+
+
+def update_calendar(db: Session, viewer: User, calendar_id: int, name: Optional[str] = None, athlete_ids: Optional[List[int]] = None) -> Calendar:
+    """Rename, and set exactly who follows the calendar. An athlete taken off it goes back to a personal one."""
+    calendar = require_calendar(db, viewer, calendar_id)
+    if not _staff_user(viewer):
+        raise HTTPException(status_code=403, detail="Only a coach can change a calendar.")
+    if name is not None:
+        clean = name.strip()
+        if not clean:
+            raise HTTPException(status_code=400, detail="Name the calendar.")
+        calendar.name = clean[:255]
+    if athlete_ids is not None:
+        wanted = {int(uid) for uid in athlete_ids}
+        current = {u.id: u for u in calendar_athletes(db, calendar.id)}
+        for uid in sorted(wanted - set(current)):
+            _calendar_athlete(db, viewer, uid).calendar_id = calendar.id
+        for uid, user in current.items():
+            if uid in wanted:
+                continue
+            _calendar_athlete(db, viewer, uid)
+            user.calendar_id = personal_calendar_for(db, user, exclude_id=calendar.id).id
+    db.commit()
+    db.refresh(calendar)
+    return calendar
+
+
+def delete_calendar(db: Session, viewer: User, calendar_id: int) -> None:
+    calendar = require_calendar(db, viewer, calendar_id)
+    if not _staff_user(viewer):
+        raise HTTPException(status_code=403, detail="Only a coach can delete a calendar.")
+    followers = calendar_athletes(db, calendar.id)
+    if followers:
+        names = ", ".join(u.name for u in followers[:5]) + (" and more" if len(followers) > 5 else "")
+        raise HTTPException(status_code=409, detail=f"Move {names} to another calendar first.")
+    db.query(WeekNote).filter(WeekNote.calendar_id == calendar.id).delete(synchronize_session="fetch")
+    db.query(WorkoutAssignment).filter(WorkoutAssignment.calendar_id == calendar.id).delete(synchronize_session="fetch")
+    db.delete(calendar)
+    db.commit()
+
+
+def _drop_orphan_calendar(db: Session, user: User) -> None:
+    """A calendar only this athlete followed goes with them."""
+    if not user.calendar_id:
+        return
+    others = db.query(User).filter(User.calendar_id == user.calendar_id, User.id != user.id).count()
+    calendar = get_calendar(db, user.calendar_id)
+    user.calendar_id = None
+    if others or not calendar:
+        return
+    db.query(WeekNote).filter(WeekNote.calendar_id == calendar.id).delete(synchronize_session="fetch")
+    db.query(WorkoutAssignment).filter(WorkoutAssignment.calendar_id == calendar.id).delete(synchronize_session="fetch")
+    db.delete(calendar)
+
+
+def migrate_to_calendars(db: Session) -> None:
+    """One-time move onto calendars; safe to run again.
+
+    Every athlete gets a personal calendar holding the days pinned to them. A group's
+    own days become a calendar named after the group that nobody follows yet: members
+    already hold a copy of each group day, and any member missing a day gets one.
+    """
+    athletes = [u for u in db.query(User).filter(User.gym_id.isnot(None), User.calendar_id.is_(None)).all() if _athlete_like(u)]
+    for user in athletes:
+        ensure_personal_calendar(db, user, commit=False)
+    db.flush()
+
+    direct = db.query(WorkoutAssignment).filter(
+        WorkoutAssignment.calendar_id.is_(None), WorkoutAssignment.user_id.isnot(None)
+    ).all()
+    for row in direct:
+        if row.user and row.user.calendar_id:
+            row.calendar_id = row.user.calendar_id
+    for note in db.query(WeekNote).filter(WeekNote.calendar_id.is_(None), WeekNote.user_id.isnot(None)).all():
+        owner = get_user(db, note.user_id)
+        if owner and owner.calendar_id:
+            note.calendar_id = owner.calendar_id
+
+    group_rows = db.query(WorkoutAssignment).filter(
+        WorkoutAssignment.calendar_id.is_(None), WorkoutAssignment.group_id.isnot(None)
+    ).all()
+    group_notes = db.query(WeekNote).filter(WeekNote.calendar_id.is_(None), WeekNote.group_id.isnot(None)).all()
+    by_group = {}
+    for row in group_rows:
+        by_group.setdefault(row.group_id, []).append(row)
+    for gid in sorted(set(by_group) | {n.group_id for n in group_notes}):
+        group = get_group(db, gid)
+        if not group:
+            continue
+        calendar = Calendar(gym_id=group.gym_id, coach_id=group.coach_id, name=group.name)
+        db.add(calendar)
+        db.flush()
+        members = _group_athletes(db, group)
+        for row in by_group.get(gid, []):
+            for member in members:
+                if not member.calendar_id:
+                    continue
+                has_day = db.query(WorkoutAssignment).filter(
+                    WorkoutAssignment.calendar_id == member.calendar_id,
+                    WorkoutAssignment.scheduled_date == row.scheduled_date,
+                ).first()
+                if not has_day:
+                    db.add(WorkoutAssignment(
+                        workout_id=row.workout_id,
+                        assigned_by_coach_id=row.assigned_by_coach_id,
+                        user_id=member.id,
+                        calendar_id=member.calendar_id,
+                        scheduled_date=row.scheduled_date,
+                        notes="From group calendar",
+                    ))
+            row.calendar_id = calendar.id
+            row.group_id = None
+        for note in group_notes:
+            if note.group_id == gid:
+                note.calendar_id = calendar.id
+                note.group_id = None
+    db.commit()
+
+
+def _week_note_target(db: Session, viewer: User, user_id: Optional[int], group_id: Optional[int], calendar_id: Optional[int] = None) -> Tuple[Optional[int], Optional[int], Optional[int]]:
+    """Check a coach may write notes on this calendar. Returns (user_id, group_id, calendar_id)."""
     access.require_gym(viewer)
     if not _staff_user(viewer):
         raise HTTPException(status_code=403, detail="Week notes are for coaches.")
-    if bool(user_id) == bool(group_id):
-        raise HTTPException(status_code=400, detail="Pick one athlete or one team.")
+    if sum(1 for value in (user_id, group_id, calendar_id) if value) != 1:
+        raise HTTPException(status_code=400, detail="Pick one calendar, one athlete, or one team.")
+    if calendar_id:
+        return None, None, require_calendar(db, viewer, calendar_id).id
     if group_id:
         team = get_group(db, group_id)
         if not team:
             raise HTTPException(status_code=404, detail="Group not found")
         if team.gym_id != viewer.gym_id:
             raise HTTPException(status_code=403, detail="That group is in another gym.")
-        return None, team.id
+        return None, team.id, None
     target = get_user(db, user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
     if not access.can_see_user(db, viewer, target):
         raise HTTPException(status_code=403, detail="You cannot view that athlete's calendar.")
-    return target.id, None
+    calendar = ensure_personal_calendar(db, target)
+    return target.id, None, (calendar.id if calendar else None)
 
 
-def _week_note_query(db: Session, viewer: User, user_id: Optional[int], group_id: Optional[int]):
-    uid, gid = _week_note_target(db, viewer, user_id, group_id)
+def _week_note_query(db: Session, viewer: User, user_id: Optional[int], group_id: Optional[int], calendar_id: Optional[int] = None):
+    uid, gid, cid = _week_note_target(db, viewer, user_id, group_id, calendar_id)
     query = db.query(WeekNote).filter(WeekNote.gym_id == viewer.gym_id)
+    if cid:
+        return query.filter(WeekNote.calendar_id == cid), uid, gid, cid
     if gid:
-        return query.filter(WeekNote.group_id == gid, WeekNote.user_id.is_(None)), uid, gid
-    return query.filter(WeekNote.user_id == uid, WeekNote.group_id.is_(None)), uid, gid
+        return query.filter(WeekNote.group_id == gid, WeekNote.user_id.is_(None)), uid, gid, cid
+    return query.filter(WeekNote.user_id == uid, WeekNote.group_id.is_(None)), uid, gid, cid
 
 
-def list_week_notes(db: Session, viewer: User, user_id: Optional[int] = None, group_id: Optional[int] = None) -> List[dict]:
-    query, _, _ = _week_note_query(db, viewer, user_id, group_id)
+def list_week_notes(db: Session, viewer: User, user_id: Optional[int] = None, group_id: Optional[int] = None, calendar_id: Optional[int] = None) -> List[dict]:
+    query, _, _, _ = _week_note_query(db, viewer, user_id, group_id, calendar_id)
     rows = query.order_by(WeekNote.week_start.asc()).all()
     return [{"week_start": r.week_start, "body": r.body or ""} for r in rows if (r.body or "").strip()]
 
 
-def save_week_note(db: Session, viewer: User, user_id: Optional[int], group_id: Optional[int], week_start: str, body: str) -> dict:
+def save_week_note(db: Session, viewer: User, user_id: Optional[int], group_id: Optional[int], week_start: str, body: str, calendar_id: Optional[int] = None) -> dict:
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", week_start or ""):
         raise HTTPException(status_code=400, detail="week_start must be YYYY-MM-DD.")
-    query, uid, gid = _week_note_query(db, viewer, user_id, group_id)
+    query, uid, gid, cid = _week_note_query(db, viewer, user_id, group_id, calendar_id)
     row = query.filter(WeekNote.week_start == week_start).first()
     text_body = body or ""
     if not text_body.strip():
@@ -2924,7 +3221,7 @@ def save_week_note(db: Session, viewer: User, user_id: Optional[int], group_id: 
             db.commit()
         return {"week_start": week_start, "body": ""}
     if not row:
-        row = WeekNote(gym_id=viewer.gym_id, user_id=uid, group_id=gid, week_start=week_start)
+        row = WeekNote(gym_id=viewer.gym_id, user_id=uid, group_id=gid, calendar_id=cid, week_start=week_start)
         db.add(row)
     row.body = text_body
     row.updated_by = viewer.id
@@ -3168,6 +3465,9 @@ def get_gym_activity(db: Session, viewer: User) -> dict:
     assign_clauses = []
     if athlete_ids:
         assign_clauses.append(WorkoutAssignment.user_id.in_(athlete_ids))
+        calendar_ids = sorted({a.calendar_id for a in athletes if a.calendar_id})
+        if calendar_ids:
+            assign_clauses.append(WorkoutAssignment.calendar_id.in_(calendar_ids))
     if team_ids:
         assign_clauses.append(WorkoutAssignment.group_id.in_(team_ids))
     assignments = db.query(WorkoutAssignment).filter(or_(*assign_clauses)).all() if assign_clauses else []
@@ -3208,6 +3508,7 @@ def remove_athlete(db: Session, actor: User, user_id: int) -> str:
             athlete.role = "admin" if athlete.is_admin else "coach"
         db.commit()
         return "demoted"
+    _drop_orphan_calendar(db, athlete)
     db.delete(athlete)
     db.commit()
     return "deleted"
@@ -3242,6 +3543,7 @@ def latest_athlete_note(db: Session, user_id: int) -> str:
 
 def person_payload(db: Session, user: User) -> dict:
     led = [t.name for t in access.leads_teams(db, user)]
+    calendar = get_calendar(db, user.calendar_id)
     return {
         "id": user.id,
         "name": user.name,
@@ -3253,6 +3555,8 @@ def person_payload(db: Session, user: User) -> dict:
         "distance_unit": normalize_distance_unit(getattr(user, "distance_unit", None)),
         "led_teams": led,
         "latest_note": latest_athlete_note(db, user.id),
+        "calendar_id": user.calendar_id,
+        "calendar_name": calendar.name if calendar else None,
     }
 
 
@@ -3281,6 +3585,13 @@ def gym_context(db: Session, user: User) -> dict:
     else:
         raise HTTPException(status_code=403, detail="Athlete accounts do not have coach tools.")
     codes = list_join_codes(db, user)
+    made = False
+    for person in athletes:
+        if _athlete_like(person) and not person.calendar_id:
+            ensure_personal_calendar(db, person, commit=False)
+            made = True
+    if made:
+        db.commit()
     return {
         "gym_id": gym.id,
         "gym_name": gym.name,
@@ -3304,6 +3615,7 @@ def gym_context(db: Session, user: User) -> dict:
         "workouts": gym_workout_summaries(db, user),
         "items": list_gym_items(db, user),
         "hidden_exercise_ids": hidden_exercise_ids(db, user),
+        "calendars": list_calendars(db, user),
     }
 
 
@@ -3358,7 +3670,7 @@ def schedule_for_athlete(db: Session, user: User) -> List[dict]:
     if "athlete" not in user.roles and (user.role or "") not in ("athlete", "student"):
         raise HTTPException(status_code=403, detail="Only an athlete can open their schedule.")
     rows = []
-    direct = db.query(WorkoutAssignment).filter(WorkoutAssignment.user_id == user.id).all()
+    direct = db.query(WorkoutAssignment).filter(_athlete_rows_clause(user)).all()
     team_rows = []
     if user.team_id:
         team_rows = db.query(WorkoutAssignment).filter(WorkoutAssignment.group_id == user.team_id).all()
@@ -3392,7 +3704,7 @@ def schedule_for_athlete(db: Session, user: User) -> List[dict]:
 def write_athlete_note(db: Session, user: User, workout_id: int, note: str) -> WorkoutSession:
     if "athlete" not in user.roles and (user.role or "") not in ("athlete", "student"):
         raise HTTPException(status_code=403, detail="Only an athlete can write a note on their workout.")
-    clauses = [WorkoutAssignment.user_id == user.id]
+    clauses = [_athlete_rows_clause(user)]
     if user.team_id:
         clauses.append(WorkoutAssignment.group_id == user.team_id)
     allowed = db.query(WorkoutAssignment).filter(
@@ -3420,7 +3732,7 @@ def athlete_can_read_workout(db: Session, user: User, workout_id: int) -> bool:
         workout = db.query(Workout).filter(Workout.id == workout_id).first()
         if workout and workout.gym_id and workout.gym_id != user.gym_id:
             return False
-    clauses = [WorkoutAssignment.user_id == user.id]
+    clauses = [_athlete_rows_clause(user)]
     if user.team_id:
         clauses.append(WorkoutAssignment.group_id == user.team_id)
     hit = db.query(WorkoutAssignment).filter(
@@ -3440,17 +3752,22 @@ def scope_assignments(db: Session, viewer: Optional[User], rows: List[WorkoutAss
     if own_athlete and not staff:
         return [
             row for row in rows
-            if row.user_id == viewer.id or (viewer.team_id and row.group_id == viewer.team_id)
+            if row.user_id == viewer.id
+            or (viewer.team_id and row.group_id == viewer.team_id)
+            or (viewer.calendar_id and row.calendar_id == viewer.calendar_id)
         ]
     ids = set(access.athlete_ids_for(db, viewer))
     team_ids = {t.id for t in access.leads_teams(db, viewer)}
     if own_athlete:
         ids.add(viewer.id)
+    calendar_ids = {c["id"] for c in list_calendars(db, viewer)} if viewer.gym_id else set()
     scoped = []
     for row in rows:
         if row.user_id and row.user_id in ids:
             scoped.append(row)
         elif row.group_id and row.group_id in team_ids:
+            scoped.append(row)
+        elif row.calendar_id and row.calendar_id in calendar_ids:
             scoped.append(row)
         elif own_athlete and viewer.team_id and row.group_id == viewer.team_id:
             scoped.append(row)
