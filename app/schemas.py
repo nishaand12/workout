@@ -8,8 +8,8 @@ class ExerciseBase(BaseModel):
     category: Optional[str] = "Strength"
     default_notes: Optional[str] = ""
     video_url: Optional[str] = ""
-    default_sets: Optional[int] = 3
-    default_reps: Optional[str] = "10"
+    default_sets: Optional[int] = 1
+    default_reps: Optional[str] = "1"
     default_load: Optional[str] = ""
     default_rest: Optional[str] = ""
     default_tempo: Optional[str] = ""

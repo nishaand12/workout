@@ -120,8 +120,8 @@ def ensure_schema_migrations():
     if "exercises" in tables:
         ecols = {c["name"] for c in inspector.get_columns("exercises")}
         exercise_additions = (
-            ("default_sets", "INTEGER DEFAULT 3"),
-            ("default_reps", "VARCHAR(50) DEFAULT '10'"),
+            ("default_sets", "INTEGER DEFAULT 1"),
+            ("default_reps", "VARCHAR(50) DEFAULT '1'"),
             ("default_load", "VARCHAR(50) DEFAULT ''"),
             ("default_rest", "VARCHAR(50) DEFAULT ''"),
             ("default_tempo", "VARCHAR(50) DEFAULT ''"),

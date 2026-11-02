@@ -87,7 +87,7 @@ function item(partial) {
     tempos: Array(sets).fill(""), velocities: Array(sets).fill(""),
     powers: Array(sets).fill(""), pcts: Array(sets).fill(""),
     props: [], note: "", detail: "", questions: [], requireResponse: false,
-    completionOnly: false, trackReps: true, trackTime: false, trackVolume: false, videoUrl: ""
+    completionOnly: false, trackReps: true, trackTime: false, trackDistance: false, trackVolume: false, videoUrl: ""
   };
   return Object.assign(base, partial, { reps: reps.slice() });
 }
@@ -115,8 +115,8 @@ function libraryDefaultsFrom(record) {
   if (!record) return null;
   const sets = parseInt(record.default_sets, 10);
   return {
-    sets: sets > 0 ? sets : 3,
-    reps: record.default_reps != null ? String(record.default_reps) : "10",
+    sets: sets > 0 ? sets : 1,
+    reps: record.default_reps != null ? String(record.default_reps) : "1",
     load: record.default_load || "",
     rest: record.default_rest || "",
     tempo: record.default_tempo || "",
@@ -161,7 +161,8 @@ function withPropertyDefaults(partial, defaults) {
   return Object.assign(partial, extra);
 }
 function fromCatalog(entry) {
-  const defaults = libraryDefaultsFrom(exerciseRecord(entry.name));
+  const record = exerciseRecord(entry.name);
+  const defaults = libraryDefaultsFrom(record);
   if (entry.type === "note") {
     return item({
       name: entry.name, type: "note", letter: "A", sets: 0, reps: [],
@@ -191,12 +192,15 @@ function fromCatalog(entry) {
   if (entry.type === "break") return item({ name: "Session Break", type: "break", letter: "", sets: 0, reps: [], trackReps: false });
   if (entry.type === "rest") return item({ name: "Rest Time", type: "rest", letter: "", sets: 1, reps: [60], note: "60s", trackReps: false });
   if (entry.type === "video") return item({ name: "Video", type: "video", letter: "", sets: 0, reps: [], trackReps: false });
-  const sets = defaults ? Math.max(1, Math.min(10, parseInt(defaults.sets, 10) || 3)) : 3;
-  const rep = defaults ? (defaults.reps != null ? defaults.reps : "10") : "10";
+  const sets = defaults ? Math.max(1, Math.min(10, parseInt(defaults.sets, 10) || 1)) : 1;
+  const rep = defaults ? (defaults.reps != null ? defaults.reps : "1") : "1";
+  const completionOnly = !!(defaults && defaults.completionOnly);
+  const textOnly = completionOnly || (record && isTextOnlyCategory(record.category));
   return item(withPropertyDefaults({
     name: entry.name, type: "lift", letter: "A", sets, reps: Array(sets).fill(rep),
     videoUrl: defaults && defaults.videoUrl ? defaults.videoUrl : "",
-    completionOnly: !!(defaults && defaults.completionOnly)
+    note: textOnly && defaults ? (defaults.note || "") : "",
+    completionOnly
   }, defaults));
 }
 
@@ -463,8 +467,13 @@ function displayDistanceUnit() {
 }
 function doseText(it, reps) {
   const count = it.sets || reps.length || 1;
-  const rep0 = reps.length ? reps[0] : (it.trackTime ? "0" : 1);
+  const rep0 = reps.length ? reps[0] : (it.trackTime || it.trackDistance ? "0" : 1);
   const same = !reps.length || reps.every((r) => String(r) === String(rep0));
+  if (it.trackDistance) {
+    const unit = distanceWord(displayDistanceUnit());
+    const mark = (v) => String(v == null || v === "" ? "0" : v) + " " + unit;
+    return same ? count + " x " + mark(rep0) : reps.map(mark).join(", ");
+  }
   if (it.trackTime) {
     const mark = (v) => String(v == null || v === "" ? "0" : v).replace(/s$/i, "") + "s";
     return same ? count + " x " + mark(rep0) : reps.map(mark).join(", ");
@@ -490,6 +499,10 @@ function scriptLine(it, opts) {
   if (it.type === "break") return "Divider";
   if (it.type === "video") return it.videoUrl || "Video";
   if (it.type === "rest") return (it.reps[0] || 60) + "s";
+  if (isTextOnlyItem(it)) {
+    const line = String(it.note || "").split("\n").filter(Boolean)[0] || "";
+    return line || "Tick off when done";
+  }
   const reps = (it.reps || []).slice(0, it.sets || 1);
   const loads = (it.loads || []).slice(0, it.sets || 1);
   const rests = (it.rests || []).slice(0, it.sets || 1);
@@ -771,9 +784,10 @@ function itemNotes(it) {
   if ((it.props || []).length) lines.push("Props:" + it.props.join(","));
   const flags = [];
   if (it.trackTime) flags.push("trackTime");
+  else if (it.trackDistance) flags.push("trackDistance");
   if (it.type === "circuit" || it.type === "questionnaire") {
     if (it.trackReps) flags.push("trackReps");
-  } else if (it.trackReps === false && !it.trackTime) flags.push("noTrackReps");
+  } else if (it.trackReps === false && !it.trackTime && !it.trackDistance) flags.push("noTrackReps");
   if (it.trackVolume) flags.push("trackVolume");
   if (it.type === "circuit" && it.completionOnly === false) flags.push("noCompletionOnly");
   else if (it.completionOnly) flags.push("completionOnly");
@@ -797,6 +811,7 @@ function workoutToDayItems(workout) {
     const parsed = parseNotes(we.notes, we.rest_seconds);
     const flags = parsed.flags;
     const trackTime = flags.indexOf("trackTime") >= 0;
+    const trackDistance = !trackTime && flags.indexOf("trackDistance") >= 0;
     const reps = String(we.target_reps || "1").split(",").map((part) => {
       const value = part.trim();
       return trackTime ? value.replace(/s$/i, "") : value;
@@ -830,7 +845,8 @@ function workoutToDayItems(workout) {
         : (parsed.plainLines.join("\n") || (type === "note" ? ((we.exercise && we.exercise.default_notes) || "") : "")),
       questions: type === "questionnaire" ? (parsed.plainLines.length ? parsed.plainLines : QUESTIONS.slice()) : [],
       trackTime,
-      trackReps: trackTime
+      trackDistance,
+      trackReps: (trackTime || trackDistance)
         ? false
         : ((type === "circuit" || type === "questionnaire") ? flags.indexOf("trackReps") >= 0 : flags.indexOf("noTrackReps") < 0),
       trackVolume: flags.indexOf("trackVolume") >= 0,
@@ -1051,6 +1067,7 @@ function daySignature(day) {
     note: it.note || "",
     questions: it.questions || [],
     trackTime: !!it.trackTime,
+    trackDistance: !!it.trackDistance,
     trackReps: it.trackReps !== false,
     trackVolume: !!it.trackVolume,
     completionOnly: !!it.completionOnly,
@@ -1213,6 +1230,20 @@ function flushWeekNote(week) {
   clearTimeout(weekNoteTimers[key]);
   saveWeekNote(state.athleteId, week);
 }
+// Clicking out of a week note folds it. A render hands focus straight back to the
+// same textarea, so the fold waits a tick and only lands on a real click-away.
+function blurWeekNote(week) {
+  flushWeekNote(week);
+  const targetId = state.athleteId;
+  setTimeout(() => {
+    const again = document.querySelector(`[data-focus="week-note-${week}"]`);
+    if (again && document.activeElement === again) return;
+    if (state.athleteId !== targetId || !weekNoteOpen(week, targetId)) return;
+    state.weekNotesFolded[targetId + "|" + week] = true;
+    try { localStorage.setItem("wourkout_week_notes_folded", JSON.stringify(state.weekNotesFolded)); } catch (err) { /* per-viewer only */ }
+    render();
+  }, 0);
+}
 async function saveWeekNote(targetId, week) {
   const key = targetId + "|" + week;
   delete weekNoteTimers[key];
@@ -1232,7 +1263,7 @@ function weekNoteHtml(week) {
   const toggle = `<button type="button" class="week-note-toggle" aria-expanded="${open ? "true" : "false"}" onclick="toggleWeekNote('${week}', event)">${open ? "▾ Notes" : text.trim() ? "▸ Notes" : "+ Notes"}</button>`;
   if (!open) return `${toggle}${preview ? `<span class="week-note-preview">${esc(preview)}</span>` : ""}`;
   return `${toggle}<span class="week-note-private">Coaches only</span>
-    <textarea class="week-note" data-focus="week-note-${week}" rows="${Math.min(8, Math.max(2, text.split("\n").length))}" placeholder="Programming notes for this week. Athletes never see these." oninput="setWeekNote('${week}', this.value)" onblur="flushWeekNote('${week}')" onclick="event.stopPropagation()">${esc(text)}</textarea>`;
+    <textarea class="week-note" data-focus="week-note-${week}" rows="${Math.min(8, Math.max(2, text.split("\n").length))}" placeholder="Programming notes for this week. Athletes never see these." oninput="setWeekNote('${week}', this.value)" onblur="blurWeekNote('${week}')" onclick="event.stopPropagation()">${esc(text)}</textarea>`;
 }
 
 function syncFromGymContext() {
@@ -2247,6 +2278,7 @@ function searchPop(date) {
       ${chainRows}
       ${list.map((c) => `<button class="opt" onclick="addFromCatalog('${date}', ${CATALOG.indexOf(c)})">${esc(c.name)}</button>`).join("")}
       <button class="opt create-row" onclick="createExercise('${date}')">+ Create New Exercise <span class="tag">Shift+Enter</span></button>
+      <button class="opt create-row" onclick="createChainFromDay('${date}')">+ Create New Chain</button>
     </div>
   </div>`;
 }
@@ -2384,13 +2416,25 @@ function freshenChainInstances(items) {
 function createExercise(date) {
   openNewLibraryExercise(date, (state.searchQ || "").trim());
 }
+// A chain started from a day lands on that day as soon as it is saved.
+function createChainFromDay(date) {
+  const name = (state.searchQ || "").trim();
+  state.searchDay = null;
+  state.focusDay = date;
+  openChainEditor();
+  state.modal.source = "build";
+  state.modal.date = date;
+  state.modal.name = name;
+  state.pendingFocus = "chain-name";
+  render();
+}
 function blankLibraryRow(name) {
   return {
     name: name || "",
     category: "Strength",
     video_url: "",
-    default_sets: 3,
-    default_reps: "10",
+    default_sets: 1,
+    default_reps: "1",
     default_load: "",
     default_rest: "",
     default_rest_rep: "",
@@ -2543,6 +2587,15 @@ function dismissEditorName() {
   state.modal = null;
   render();
 }
+// Clicks inside the editor never reach the document handler, so any open menu
+// has to be closed here when the click lands outside the menu itself.
+function editorClick(ev) {
+  if (ev) ev.stopPropagation();
+  if (ev && ev.target && ev.target.closest && ev.target.closest(".pop, .menu")) return;
+  if (!(state.propMenu || state.letterMenu || state.optionsMenu || state.supersetMenu || state.trackMenu)) return;
+  state.propMenu = state.letterMenu = state.optionsMenu = state.supersetMenu = state.trackMenu = false;
+  render();
+}
 function toggleEditorMenu(which, ev) {
   if (ev) ev.stopPropagation();
   const next = !state[which];
@@ -2554,7 +2607,12 @@ function toggleEditorMenu(which, ev) {
   state[which] = next;
   render();
 }
+// A completion-only lift is a block of text with a Done tick, like a warm-up or cooldown.
+function isTextOnlyItem(it) {
+  return !!it && it.completionOnly && (it.type || "lift") === "lift";
+}
 function editorHead(date, it, day) {
+  const textOnly = isTextOnlyItem(it);
   const letterBtn = it.chainInstance
     ? ""
     : `<button type="button" class="pill" onclick="toggleEditorMenu('letterMenu', event)">${esc(letterCode(day, it))} ▾</button>`;
@@ -2569,12 +2627,12 @@ function editorHead(date, it, day) {
       <button type="button" class="iconbtn" title="Close" onclick="closeEditor();event.stopPropagation()">✕</button>
     </div>
     ${letterPop}
-    <button type="button" class="linkish" onclick="openInfo('${date}','${it.id}')">+ Add Additional Info (Shift + I)</button>
-    ${it.note ? `<div class="note-line">${esc(it.note)}</div>` : ""}`;
+    ${textOnly ? "" : `<button type="button" class="linkish" onclick="openInfo('${date}','${it.id}')">+ Add Additional Info (Shift + I)</button>`}
+    ${it.note && !textOnly ? `<div class="note-line">${esc(it.note)}</div>` : ""}`;
 }
 function workTable(date, it) {
   const keys = [];
-  if (it.trackTime || it.trackReps !== false || it.type === "circuit") keys.push("reps");
+  if (it.trackTime || it.trackDistance || it.trackReps !== false || it.type === "circuit") keys.push("reps");
   (it.props || []).forEach((key) => { if (PROP_LABEL[key] && keys.indexOf(key) < 0) keys.push(key); });
   const propRows = keys.map((p) => propRow(date, it, p)).join("");
   return `<table class="prop-table"><tr><th></th>${Array.from({ length: it.sets || 1 }, (_, i) => `<th>Set ${i + 1}</th>`).join("")}</tr>${propRows}</table>`;
@@ -2632,42 +2690,53 @@ function editorPop(date) {
   const head = editorHead(date, it, day);
   const frame = `style="width:min(${editorFrameWidth(it)}px, calc(100vw - 32px))"`;
   if (it.type === "note") {
-    return `<div class="editor build-editor" ${frame} onclick="event.stopPropagation()">${head}
+    return `<div class="editor build-editor" ${frame} onclick="editorClick(event)">${head}
       <div class="hint">The athlete reads this. It has no sets.</div>
       <textarea data-focus="note-${it.id}" oninput="setField('${date}','${it.id}','note', this.value)" onchange="renderSoon()">${esc(it.note || "")}</textarea>
     </div>`;
   }
   if (it.type === "questionnaire") {
-    return `<div class="editor build-editor" ${frame} onclick="event.stopPropagation()">${head}
+    return `<div class="editor build-editor" ${frame} onclick="editorClick(event)">${head}
       ${it.questions.map((q, i) => `<div class="q">${i + 1}. ${esc(q)}</div>`).join("")}
       <label class="chk" style="color:#ddd"><input type="checkbox" ${it.requireResponse ? "checked" : ""} onchange="itRequire('${date}','${it.id}', this.checked)"> Require Response</label>
       <div class="hint">All questionnaire items must be fully completed before showing workout.</div>
     </div>`;
   }
   if (it.type === "circuit") {
-    return `<div class="editor build-editor" ${frame} onclick="event.stopPropagation()">${head}
+    return `<div class="editor build-editor" ${frame} onclick="editorClick(event)">${head}
       <div class="hint">Stations, one per line</div>
       <textarea data-focus="detail-${it.id}" oninput="setField('${date}','${it.id}','detail', this.value)" onchange="renderSoon()">${esc(it.detail || "")}</textarea>
       <div class="sets-line">${setRow(date, it, "Rounds")}</div>
       ${circuitActions(date, it)}
     </div>`;
   }
+  if (isTextOnlyItem(it)) {
+    return `<div class="editor build-editor" ${frame} onclick="editorClick(event)">${head}
+      <div class="hint">The athlete reads this and ticks it off. No sets, reps, or load.</div>
+      <textarea data-focus="note-${it.id}" oninput="setField('${date}','${it.id}','note', this.value)" onchange="renderSoon()">${esc(it.note || "")}</textarea>
+      ${circuitActions(date, it)}
+    </div>`;
+  }
   if (it.type === "break" || it.type === "video" || it.type === "rest") {
-    return `<div class="editor build-editor" ${frame} onclick="event.stopPropagation()">${head}
+    return `<div class="editor build-editor" ${frame} onclick="editorClick(event)">${head}
       ${it.type === "video" ? `<input data-focus="vid-${it.id}" placeholder="Video URL" value="${esc(it.videoUrl)}" oninput="setField('${date}','${it.id}','videoUrl', this.value)" onchange="renderSoon()">` : ""}
       ${it.type === "rest" ? `<div class="row">Seconds <input style="width:80px" data-focus="rest-${it.id}" value="${esc(it.reps[0] || 60)}" oninput="setRestSeconds('${date}','${it.id}', this.value)" onchange="renderSoon()"></div>` : ""}
     </div>`;
   }
-  return `<div class="editor build-editor" ${frame} onclick="event.stopPropagation()">${head}
+  return `<div class="editor build-editor" ${frame} onclick="editorClick(event)">${head}
     <div class="sets-line">${setRow(date, it, "Sets")}${addPropButton(date, it)}</div>
     <div class="prop-scroll">${workTable(date, it)}</div>
     ${editorActions(date, it)}
   </div>`;
 }
+function trackMode(it) {
+  return it && it.trackTime ? "time" : (it && it.trackDistance ? "distance" : "reps");
+}
 function trackControl(date, it) {
-  return `<div class="dose-switch" role="group" aria-label="Reps or seconds">
-    <button type="button" class="pill ${it.trackTime ? "" : "on"}" aria-pressed="${it.trackTime ? "false" : "true"}" onclick="setTrack('${date}','${it.id}','reps')">${it.trackTime ? "" : "✓ "}Reps</button>
-    <button type="button" class="pill ${it.trackTime ? "on" : ""}" aria-pressed="${it.trackTime ? "true" : "false"}" onclick="setTrack('${date}','${it.id}','time')">${it.trackTime ? "✓ " : ""}Seconds</button>
+  const mode = trackMode(it);
+  const pill = (value, label) => `<button type="button" class="pill ${mode === value ? "on" : ""}" aria-pressed="${mode === value ? "true" : "false"}" onclick="setTrack('${date}','${it.id}','${value}')">${mode === value ? "✓ " : ""}${label}</button>`;
+  return `<div class="dose-switch" role="group" aria-label="Reps, time, or distance">
+    ${pill("reps", "Reps")}${pill("time", "Time (s)")}${pill("distance", "Distance")}
   </div>`;
 }
 function setRow(date, it, label) {
@@ -2699,7 +2768,7 @@ function propMenu(date, id) {
 function aboutProperties(ev) {
   if (ev) ev.stopPropagation();
   state.propMenu = false;
-  toast("Load, Rest, Rest/Rep, Distance, Tempo, Velocity, Peak Power, %PR, and Intensity are entered on each set. Seconds is the Reps / Seconds switch, and each set keeps its own time. Intensity is one of RPE, percent of a 1-rep max, or RIR.");
+  toast("Load, Rest, Rest/Rep, Distance, Tempo, Velocity, Peak Power, %PR, and Intensity are entered on each set. Time (s) and Distance are on the Reps / Time / Distance switch, and each set keeps its own value. Intensity is one of RPE, percent of a 1-rep max, or RIR.");
   render();
 }
 function doseValue(it, value) {
@@ -2714,7 +2783,7 @@ function propArray(it, key) {
   return arr;
 }
 function fieldLabel(it, key) {
-  if (key === "reps") return it && it.trackTime ? "Time" : "Reps";
+  if (key === "reps") return it && it.trackTime ? "Time (s)" : (it && it.trackDistance ? "Distance (" + distanceWord(displayDistanceUnit()) + ")" : "Reps");
   if (key === "load") return displayUnit() ? "Load (" + unitWord(displayUnit()) + ")" : "Load";
   if (key === "restRep") return "Rest/Rep (s)";
   if (key === "distance") return "Distance (" + distanceWord(displayDistanceUnit()) + ")";
@@ -2722,14 +2791,16 @@ function fieldLabel(it, key) {
   return PROP_LABEL[key];
 }
 function propRow(date, it, key) {
-  if (key === "reps" && it.trackReps === false && !it.trackTime && it.type !== "circuit") return "";
+  if (key === "reps" && it.trackReps === false && !it.trackTime && !it.trackDistance && it.type !== "circuit") return "";
   const label = fieldLabel(it, key);
   const time = key === "reps" && it.trackTime;
-  const info = key === "reps" ? `<button type="button" class="iconbtn reps-info" title="${time ? "Seconds for each set" : "Reps for each set. Seconds is beside Options."}" onclick="event.stopPropagation();toast('${time ? "Each set has its own seconds" : "Each set has its own reps. Seconds, beside Options, switches this row to time."}')">ⓘ</button>` : "";
+  const dist = key === "reps" && it.trackDistance;
+  const tip = time ? "Seconds for each set" : dist ? "Distance for each set" : "Reps for each set. Time (s) and Distance are beside Options.";
+  const info = key === "reps" ? `<button type="button" class="iconbtn reps-info" title="${tip}" onclick="event.stopPropagation();toast('${time ? "Each set has its own seconds" : dist ? "Each set has its own distance" : "Each set has its own reps. Time (s) and Distance, beside Options, switch this row."}')">ⓘ</button>` : "";
   const cells = propArray(it, key).map((v, i) => {
     const shown = doseValue(it, v);
-    const suffix = time ? `<span class="sec-suffix">s</span>` : "";
-    return `<td><span class="set-val${time ? " is-time" : ""}"><input aria-label="${label} set ${i + 1}" data-focus="${key}-${it.id}-${i}" data-set-field="${key}" autocomplete="off" value="${esc(shown)}" oninput="setCell('${date}','${it.id}','${key}',${i}, this.value)" onchange="commitSetCell('${date}','${it.id}','${key}',${i});renderSoon()" onkeydown="tabSetField(event,'${date}','${it.id}','${key}',${i})" onfocus="this.select()">${suffix}</span></td>`;
+    const suffix = time ? `<span class="sec-suffix">s</span>` : dist ? `<span class="sec-suffix">${esc(distanceWord(displayDistanceUnit()))}</span>` : "";
+    return `<td><span class="set-val${time || dist ? " is-time" : ""}"><input aria-label="${label} set ${i + 1}" data-focus="${key}-${it.id}-${i}" data-set-field="${key}" autocomplete="off" value="${esc(shown)}" oninput="setCell('${date}','${it.id}','${key}',${i}, this.value)" onchange="commitSetCell('${date}','${it.id}','${key}',${i});renderSoon()" onkeydown="tabSetField(event,'${date}','${it.id}','${key}',${i})" onfocus="this.select()">${suffix}</span></td>`;
   }).join("");
   const kindPick = key === "intensity"
     ? `<select aria-label="Intensity kind" onchange="setIntensityKind('${date}','${it.id}', this.value)">${["RPE", "% of 1-rep max", "RIR"].map((opt) => `<option ${intensityChoice(it.intensityKind) === opt ? "selected" : ""}>${esc(opt)}</option>`).join("")}</select>`
@@ -2818,12 +2889,12 @@ function setArray(it, key) {
 }
 function setFieldOrder(it) {
   const keys = [];
-  if (it.trackTime || it.trackReps !== false || it.type === "circuit") keys.push("reps");
+  if (it.trackTime || it.trackDistance || it.trackReps !== false || it.type === "circuit") keys.push("reps");
   (it.props || []).forEach((key) => { if (PROP_LABEL[key] && keys.indexOf(key) < 0) keys.push(key); });
   const order = [];
   const n = it.sets || 1;
   keys.forEach((key) => {
-    if (key === "reps" && it.trackReps === false && !it.trackTime && it.type !== "circuit") return;
+    if (key === "reps" && it.trackReps === false && !it.trackTime && !it.trackDistance && it.type !== "circuit") return;
     for (let i = 0; i < n; i++) order.push({ key, i, focus: key + "-" + it.id + "-" + i });
   });
   return order;
@@ -2896,7 +2967,8 @@ function setTrack(date, id, mode) {
   if (!it) return;
   snapshot();
   it.trackTime = mode === "time";
-  it.trackReps = mode !== "time";
+  it.trackDistance = mode === "distance";
+  it.trackReps = mode === "reps";
   state.trackMenu = false;
   state.propMenu = false;
   state.optionsMenu = false;
@@ -3789,6 +3861,14 @@ function noteForm(workoutId) {
 function weTracksTime(we) {
   return noteValues(we, "Flags").indexOf("trackTime") >= 0;
 }
+function weTracksDistance(we) {
+  return !weTracksTime(we) && noteValues(we, "Flags").indexOf("trackDistance") >= 0;
+}
+function weDoseLabel(we) {
+  if (weTracksTime(we)) return "Time (s)";
+  if (weTracksDistance(we)) return "Distance (" + distanceWord(entryDistanceUnit()) + ")";
+  return "Reps";
+}
 function noteValues(we, label) {
   const line = String(we.notes || "").split("\n").find((row) => row.indexOf(label + ":") === 0) || "";
   return line ? line.slice(label.length + 1).split(",") : [];
@@ -3836,7 +3916,7 @@ function athleteExercise(we) {
     }).join("");
     return `<tr><td>${n}</td>
       <td><input aria-label="Weight set ${n}" value="${esc(shownWeight)}" onchange="logAthleteSet(${we.id}, ${n}, 'weight', this.value)"></td>
-      <td><input aria-label="${weTracksTime(we) ? "Time" : "Reps"} set ${n}" value="${esc(shownReps)}" onchange="logAthleteSet(${we.id}, ${n}, 'reps', this.value)"></td>
+      <td><input aria-label="${esc(weDoseLabel(we))} set ${n}" value="${esc(shownReps)}" onchange="logAthleteSet(${we.id}, ${n}, 'reps', this.value)"></td>
       <td><input aria-label="Rest set ${n}" value="${esc(rest)}" onchange="logAthleteSet(${we.id}, ${n}, 'rest', this.value)"></td>
       ${extraCells}
       <td><input aria-label="Done set ${n}" type="checkbox" ${log.completed ? "checked" : ""} onchange="logAthleteSet(${we.id}, ${n}, 'completed', this.checked)"></td></tr>`;
@@ -3850,7 +3930,7 @@ function athleteExercise(we) {
   return `<div style="margin:12px 0">
     <strong>${esc(we.superset_group || "")} ${esc((we.exercise && we.exercise.name) || "Exercise")}</strong>
     <div class="hint">${esc(we.prescription_text || "")}${note ? " · " + esc(note) : ""}</div>
-    <table class="sets"><tr><th>Set</th><th>${esc(unitTitle(entryUnit()))}</th><th>${weTracksTime(we) ? "Time (s)" : "Reps"}</th><th>Rest (s)</th>${heads}<th>Done</th></tr>${rows}</table>
+    <table class="sets"><tr><th>Set</th><th>${esc(unitTitle(entryUnit()))}</th><th>${esc(weDoseLabel(we))}</th><th>Rest (s)</th>${heads}<th>Done</th></tr>${rows}</table>
   </div>`;
 }
 function shareDay(date) { state.dayMenu = null; state.modal = { type: "share", date }; render(); }
@@ -4527,13 +4607,13 @@ function previewSheet(it, log) {
   const n = Math.max(1, it.sets || (it.reps || []).length || 1);
   const loaded = previewHasLoad(it);
   const has = (arr) => (arr || []).some((v) => String(v || "").trim() !== "");
-  const doseHead = it.trackTime ? "TIME" : "REPS";
+  const doseHead = it.trackTime ? "TIME" : it.trackDistance ? "DISTANCE (" + distanceWord(displayDistanceUnit()).toUpperCase() + ")" : "REPS";
   const weightHead = displayUnit() === "lbs" ? "LBS" : (displayUnit() === "kg" ? "KG" : "WEIGHT");
   const cols = [];
   if (loaded) cols.push(["WEIGHT", (i) => `<span class="preview-box">${esc((it.loads || [])[i] ?? "")}</span>`]);
   cols.push([doseHead, (i) => {
     const rawRep = doseValue(it, (it.reps || [])[i] ?? "");
-    const rep = it.trackTime && rawRep !== "" ? rawRep + "s" : rawRep;
+    const rep = it.trackTime && rawRep !== "" ? rawRep + "s" : (it.trackDistance && rawRep !== "" ? rawRep + " " + distanceWord(displayDistanceUnit()) : rawRep);
     return loaded ? `<span class="preview-box">${esc(rep)}</span>` : esc(rep);
   }]);
   if (has(it.restReps)) cols.push(["REST/REP", (i) => esc((it.restReps[i] ?? "") === "" ? "" : it.restReps[i] + "s")]);
@@ -4827,7 +4907,7 @@ function asksForWeight(it) {
 }
 function entryColumns(it) {
   if (!it || it.type === "circuit" || it.type === "note" || it.type === "questionnaire" || it.type === "break" || it.type === "rest" || it.type === "video") return [];
-  const cols = [["r", it.trackTime ? "Time (s)" : "Reps"]];
+  const cols = [["r", it.trackTime ? "Time (s)" : (it.trackDistance ? "Distance (" + distanceWord(entryDistanceUnit()) + ")" : "Reps")]];
   // Weight is offered on every lift. It only becomes required when the coach adds Load.
   if (asksForWeight(it)) cols.push(["w", unitTitle(entryUnit())]);
   (it.props || []).forEach((key) => {
@@ -5870,38 +5950,45 @@ function readIntensity(values) {
   const stored = num === Math.floor(num) ? String(Math.floor(num)) : String(num);
   return { intensity_kind: kind, intensity_value: stored };
 }
+// Warm-ups and cooldowns are a block of text the athlete ticks off, like a circuit without stations.
+function isTextOnlyCategory(category) {
+  const known = canonicalCategory(category || "");
+  return known === "Warm up" || known === "Cooldown";
+}
 function libraryExercisePayload(values) {
   const name = (values.name || "").trim();
   const category = canonicalCategory(values.category || "Strength");
   const note = category === "Notes";
   const circuit = category === "Circuit";
-  const intensity = note ? { intensity_kind: "", intensity_value: "" } : readIntensity(values);
+  const textOnly = isTextOnlyCategory(category);
+  const plain = note || textOnly;
+  const intensity = plain ? { intensity_kind: "", intensity_value: "" } : readIntensity(values);
   if (intensity.error) return { error: intensity.error };
-  const sets = note ? 0 : Math.max(1, Math.min(10, parseInt(values.default_sets, 10) || (circuit ? 1 : 3)));
+  const sets = note ? 0 : textOnly ? 1 : Math.max(1, Math.min(10, parseInt(values.default_sets, 10) || 1));
   return {
     name,
     category,
     video_url: values.video_url || "",
-    default_notes: String(values.default_notes || "").slice(0, note ? 4000 : 255),
+    default_notes: String(values.default_notes || "").slice(0, plain ? 4000 : 255),
     default_sets: sets,
-    default_reps: note ? "" : (values.default_reps != null && String(values.default_reps) !== "" ? String(values.default_reps) : (circuit ? "1" : "10")),
-    default_load: note ? "" : (values.default_load || ""),
-    default_rest: note ? "" : (values.default_rest || ""),
-    default_rest_rep: note ? "" : (values.default_rest_rep || ""),
-    default_distance: note ? "" : (values.default_distance || ""),
-    default_tempo: note ? "" : (values.default_tempo || ""),
-    default_velocity: note ? "" : (values.default_velocity || ""),
-    default_power: note ? "" : (values.default_power || ""),
-    default_pct: note ? "" : (values.default_pct || ""),
-    default_stations: circuit ? (values.default_stations || "") : (values.default_stations || ""),
+    default_reps: note ? "" : textOnly ? "1" : (values.default_reps != null && String(values.default_reps) !== "" ? String(values.default_reps) : "1"),
+    default_load: plain ? "" : (values.default_load || ""),
+    default_rest: plain ? "" : (values.default_rest || ""),
+    default_rest_rep: plain ? "" : (values.default_rest_rep || ""),
+    default_distance: plain ? "" : (values.default_distance || ""),
+    default_tempo: plain ? "" : (values.default_tempo || ""),
+    default_velocity: plain ? "" : (values.default_velocity || ""),
+    default_power: plain ? "" : (values.default_power || ""),
+    default_pct: plain ? "" : (values.default_pct || ""),
+    default_stations: textOnly ? "" : (values.default_stations || ""),
     intensity_kind: intensity.intensity_kind,
     intensity_value: intensity.intensity_value,
-    completion_only: !note && !circuit && !!values.completion_only
+    completion_only: textOnly || (!note && !circuit && !!values.completion_only)
   };
 }
 function trackingFields(row, opts) {
-  const setsDefault = opts && opts.setsDefault != null ? opts.setsDefault : 3;
-  const repsDefault = opts && opts.repsDefault != null ? opts.repsDefault : "10";
+  const setsDefault = opts && opts.setsDefault != null ? opts.setsDefault : 1;
+  const repsDefault = opts && opts.repsDefault != null ? opts.repsDefault : "1";
   const fields = [];
   if (!opts || opts.sets !== false) {
     fields.push({
@@ -5938,6 +6025,14 @@ function exerciseFields(row) {
   ];
   if (category === "Notes") {
     fields.push({ key: "default_notes", label: "Note", value: row.default_notes || "", multiline: true });
+    return fields;
+  }
+  if (isTextOnlyCategory(category)) {
+    fields.push({
+      key: "default_notes", label: category === "Warm up" ? "What the warm-up looks like" : "What the cooldown looks like",
+      value: row.default_notes || "", multiline: true, tall: true,
+      hint: "Athletes read this and tick it off when done. No sets, reps, or load."
+    });
     return fields;
   }
   if (category === "Circuit") {
@@ -6007,7 +6102,7 @@ function exerciseRows() {
 }
 function exerciseDefaultsText(l) {
   const category = canonicalCategory(l.category || "Strength");
-  if (category === "Notes") return "";
+  if (category === "Notes" || isTextOnlyCategory(category)) return "";
   if (category === "Circuit") return l.default_sets ? l.default_sets + " round" + (+l.default_sets === 1 ? "" : "s") : "";
   const sets = l.default_sets || "";
   const reps = l.default_reps || "";
@@ -6178,6 +6273,7 @@ function chainEditorCommit() {
     chainId: m.chainId,
     name,
     kind: m.kind,
+    addToDate: m.source === "build" && m.date ? m.date : null,
     members: m.members.map((mem) => chainMemberPayload(mem))
   };
   if (!m.chainId) {
@@ -6203,6 +6299,10 @@ async function createChain(draft) {
     });
     rememberChain(created);
     state.modal = null;
+    if (draft.addToDate) {
+      addChainToDay(draft.addToDate, created.id);
+      return;
+    }
     toast("Chain saved");
     render();
   } catch (err) {
@@ -6343,7 +6443,7 @@ async function saveExerciseName(id, previousName) {
     video_url: row.video_url || "",
     default_notes: row.default_notes || "",
     default_sets: row.category === "Notes" ? 0 : Math.max(1, Math.min(10, parseInt(row.default_sets, 10) || 1)),
-    default_reps: row.default_reps != null ? String(row.default_reps) : "10",
+    default_reps: row.default_reps != null ? String(row.default_reps) : "1",
     default_load: row.default_load || "",
     default_rest: row.default_rest || "",
     default_rest_rep: row.default_rest_rep || "",
@@ -7210,6 +7310,7 @@ function mapEditFields(rows) {
     label: f.label,
     value: f.value == null ? "" : String(f.value),
     multiline: !!f.multiline,
+    tall: !!f.tall,
     maxlength: f.maxlength || 0,
     type: f.type || "text",
     options: f.options || null,
@@ -7288,13 +7389,13 @@ function editModalHtml(m) {
       if (f.value && options.indexOf(f.value) < 0) options.unshift(f.value);
       control = `<select class="field" data-edit-key="${key}" data-focus="edit-${key}" onchange="setEditField('${key}', this.value)">${options.map((opt) => `<option value="${esc(opt)}" ${opt === f.value ? "selected" : ""}>${esc(opt)}</option>`).join("")}</select>`;
     } else if (f.multiline) {
-      control = `<textarea data-edit-key="${key}" data-focus="edit-${key}"${max} oninput="setEditField('${key}', this.value)">${esc(f.value)}</textarea>`;
+      control = `<textarea data-edit-key="${key}" data-focus="edit-${key}"${max}${f.tall ? ' style="min-height:220px"' : ""} oninput="setEditField('${key}', this.value)">${esc(f.value)}</textarea>`;
     } else {
       const bounds = f.min != null ? ` min="${esc(f.min)}"` : "";
       const maxBound = f.max != null ? ` max="${esc(f.max)}"` : "";
       control = `<input class="field" type="${esc(f.type || "text")}" data-edit-key="${key}" data-focus="edit-${key}" value="${esc(f.value)}"${max}${bounds}${maxBound} oninput="setEditField('${key}', this.value)">`;
     }
-    return `<label class="edit-field${span}"><span>${esc(f.label)}</span>${control}</label>`;
+    return `<label class="edit-field${span}"><span>${esc(f.label)}</span>${control}${f.hint ? `<div class="hint">${esc(f.hint)}</div>` : ""}</label>`;
   }).join("");
   return `<div class="modal-back" onclick="if(event.target===this) closeEdit()"><div class="modal edit-modal${grid ? " wide" : ""}" onclick="event.stopPropagation()"><h3>${esc(m.title)}</h3>${hint}<div class="modal-body edit-fields${grid ? " grid" : ""}">${fields}</div><div class="modal-foot"><button class="full" type="button" onclick="closeEdit()">Cancel</button><button class="full save" type="button" onclick="saveEdit()">Save</button></div></div></div>`;
 }
@@ -7512,6 +7613,9 @@ window.undo = undo;
 window.openSearch = openSearch;
 window.addFromCatalog = addFromCatalog;
 window.createExercise = createExercise;
+window.createChainFromDay = createChainFromDay;
+window.editorClick = editorClick;
+window.blurWeekNote = blurWeekNote;
 window.openEditor = openEditor;
 window.setLetter = setLetter;
 window.changeSets = changeSets;

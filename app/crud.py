@@ -714,10 +714,10 @@ def _new_chain_member(workout: Workout, exercise: Exercise, chain_id: int, insta
         sets = 0
         reps = ""
     else:
-        sets = member_sets if member_sets is not None else (exercise.default_sets if exercise.default_sets is not None else 3)
+        sets = member_sets if member_sets is not None else (exercise.default_sets if exercise.default_sets is not None else 1)
         if sets < 1:
             sets = 1
-        reps = member_reps if member_reps is not None else (exercise.default_reps if exercise.default_reps is not None else "10")
+        reps = member_reps if member_reps is not None else (exercise.default_reps if exercise.default_reps is not None else "1")
     loads = ""
     if not note and exercise.default_load:
         loads = ",".join([str(exercise.default_load)] * sets)
