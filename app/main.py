@@ -39,6 +39,7 @@ from app.schemas import (
     BulkAthleteUploadRequest, BulkAthleteUploadResponse, CalendarScheduleEntry,
     ChainResponse, ChainWrite, ChainEditRequest, ChainEditResponse, ChainFoldRequest,
     WeekNoteEntry, WeekNoteWrite, PersonalBest, SessionDurationWrite,
+    CalendarCreate, CalendarUpdate, CalendarResponse,
 )
 from app import crud
 
@@ -75,6 +76,7 @@ def ensure_schema_migrations():
             ("team_id", "INTEGER"),
             ("load_unit", "VARCHAR(8) DEFAULT 'kg'"),
             ("distance_unit", "VARCHAR(16) DEFAULT 'm'"),
+            ("calendar_id", "INTEGER"),
         )
         for name, ddl in additions:
             if name not in cols:
@@ -102,6 +104,16 @@ def ensure_schema_migrations():
         wcols = {c["name"] for c in inspector.get_columns("workouts")}
         if "gym_id" not in wcols:
             statements.append("ALTER TABLE workouts ADD COLUMN gym_id INTEGER")
+
+    if "workout_assignments" in tables:
+        acols = {c["name"] for c in inspector.get_columns("workout_assignments")}
+        if "calendar_id" not in acols:
+            statements.append("ALTER TABLE workout_assignments ADD COLUMN calendar_id INTEGER")
+
+    if "week_notes" in tables:
+        ncols = {c["name"] for c in inspector.get_columns("week_notes")}
+        if "calendar_id" not in ncols:
+            statements.append("ALTER TABLE week_notes ADD COLUMN calendar_id INTEGER")
 
     if "workout_sessions" in tables:
         scols = {c["name"] for c in inspector.get_columns("workout_sessions")}
@@ -203,6 +215,7 @@ async def lifespan(app: FastAPI):
             if not settings.SUPABASE_URL:
                 crud.seed_default_users(db)
             crud.scrub_visible_brand(db)
+            crud.migrate_to_calendars(db)
         finally:
             db.close()
     except Exception as exc:
@@ -972,7 +985,7 @@ def remove_group_member(
 # -------------------------------------------------------------
 # Workout Assignments Endpoints
 # -------------------------------------------------------------
-def _guard_assignment_target(db: Session, viewer: Optional[crud.User], user_id: Optional[int], group_id: Optional[int]):
+def _guard_assignment_target(db: Session, viewer: Optional[crud.User], user_id: Optional[int], group_id: Optional[int], calendar_id: Optional[int] = None):
     if viewer is None:
         return
     if not _staff(viewer):
@@ -981,12 +994,19 @@ def _guard_assignment_target(db: Session, viewer: Optional[crud.User], user_id: 
         access.assert_own_athlete(db, viewer, crud.get_user(db, user_id))
     if group_id:
         access.assert_leads_team(db, viewer, crud.get_group(db, group_id))
+    if calendar_id:
+        crud.require_calendar(db, viewer, calendar_id)
+
+def _one_target(*ids) -> None:
+    if sum(1 for value in ids if value) != 1:
+        raise HTTPException(status_code=400, detail="Choose one calendar, one client, or one team")
 
 @app.get("/api/assignments", response_model=List[WorkoutAssignmentResponse])
 def list_assignments(
     date: Optional[str] = Query(None),
     user_id: Optional[int] = Query(None),
     group_id: Optional[int] = Query(None),
+    calendar_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
     viewer: Optional[crud.User] = Depends(get_current_user),
 ):
@@ -995,7 +1015,8 @@ def list_assignments(
             raise HTTPException(status_code=403, detail="You can only view your own workouts.")
         user_id = viewer.id
         group_id = None
-    rows = crud.get_assignments(db, date=date, user_id=user_id, group_id=group_id)
+        calendar_id = None
+    rows = crud.get_assignments(db, date=date, user_id=user_id, group_id=group_id, calendar_id=calendar_id)
     return crud.scope_assignments(db, viewer, rows)
 
 @app.post("/api/assignments", response_model=WorkoutAssignmentResponse, status_code=status.HTTP_201_CREATED)
@@ -1004,9 +1025,8 @@ def create_assignment(
     db: Session = Depends(get_db),
     viewer: Optional[crud.User] = Depends(get_current_user),
 ):
-    if bool(assign_in.group_id) == bool(assign_in.user_id):
-        raise HTTPException(status_code=400, detail="Choose either one client or one team")
-    _guard_assignment_target(db, viewer, assign_in.user_id, assign_in.group_id)
+    _one_target(assign_in.group_id, assign_in.user_id, assign_in.calendar_id)
+    _guard_assignment_target(db, viewer, assign_in.user_id, assign_in.group_id, assign_in.calendar_id)
     workout = crud.get_workout(db, assign_in.workout_id)
     if not workout:
         raise HTTPException(status_code=404, detail="Workout not found")
@@ -1163,19 +1183,21 @@ def add_athletes_bulk(
 def get_calendar_schedule(
     user_id: Optional[int] = Query(None),
     group_id: Optional[int] = Query(None),
+    calendar_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
     viewer: Optional[crud.User] = Depends(get_current_user),
 ):
-    return crud.get_calendar_schedule(db, viewer, user_id=user_id, group_id=group_id)
+    return crud.get_calendar_schedule(db, viewer, user_id=user_id, group_id=group_id, calendar_id=calendar_id)
 
 @app.get("/api/calendar/week-notes", response_model=List[WeekNoteEntry])
 def list_week_notes(
     user_id: Optional[int] = Query(None),
     group_id: Optional[int] = Query(None),
+    calendar_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
     current_user: crud.User = Depends(require_auth),
 ):
-    return crud.list_week_notes(db, current_user, user_id=user_id, group_id=group_id)
+    return crud.list_week_notes(db, current_user, user_id=user_id, group_id=group_id, calendar_id=calendar_id)
 
 @app.put("/api/calendar/week-notes", response_model=WeekNoteEntry)
 def save_week_note(
@@ -1183,7 +1205,34 @@ def save_week_note(
     db: Session = Depends(get_db),
     current_user: crud.User = Depends(require_auth),
 ):
-    return crud.save_week_note(db, current_user, body.user_id, body.group_id, body.week_start, body.body)
+    return crud.save_week_note(db, current_user, body.user_id, body.group_id, body.week_start, body.body, calendar_id=body.calendar_id)
+
+# -------------------------------------------------------------
+# Calendars: a named programme an athlete follows
+# -------------------------------------------------------------
+@app.get("/api/calendars", response_model=List[CalendarResponse])
+def list_calendars(db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    return crud.list_calendars(db, current_user)
+
+@app.post("/api/calendars", response_model=CalendarResponse, status_code=status.HTTP_201_CREATED)
+def create_calendar(body: CalendarCreate, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    calendar = crud.create_calendar(db, current_user, body.name)
+    return crud.calendar_payload(db, calendar)
+
+@app.put("/api/calendars/{calendar_id}", response_model=CalendarResponse)
+def update_calendar(
+    calendar_id: int,
+    body: CalendarUpdate,
+    db: Session = Depends(get_db),
+    current_user: crud.User = Depends(require_auth),
+):
+    calendar = crud.update_calendar(db, current_user, calendar_id, name=body.name, athlete_ids=body.athlete_ids)
+    return crud.calendar_payload(db, calendar)
+
+@app.delete("/api/calendars/{calendar_id}")
+def delete_calendar(calendar_id: int, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    crud.delete_calendar(db, current_user, calendar_id)
+    return {"message": "Calendar deleted"}
 
 @app.get("/api/personal-bests", response_model=List[PersonalBest])
 def list_personal_bests(

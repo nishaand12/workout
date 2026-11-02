@@ -61,7 +61,10 @@ globalThis.__lib = {
   state, blankLibraryRow, libraryExercisePayload, exerciseFields, fromCatalog, item, itemNotes,
   workoutToDayItems, setTrack, trackControl, editorClick, searchPop, createChainFromDay,
   chainEditorCommit, editorPop, scriptLine, entryColumns, previewSheet, weekNoteHtml, blurWeekNote,
-  setWeekNote, weekNoteOpen, exerciseDefaultsText, ensureDay, editModalHtml, mapEditFields, openEditor
+  setWeekNote, weekNoteOpen, exerciseDefaultsText, ensureDay, editModalHtml, mapEditFields, openEditor,
+  syncFromGymContext, buildAthletes, calendarForAthlete, targetById, weekNoteTarget, programmedDayCount,
+  displayUnit, buildView, calendarsView, editCalendar, askDeleteCalendar, modalHtml, editUser, usersView,
+  squadView, openAthleteInBuild, openAthleteCalendar, publishDay
 };
 globalThis.__setApi = (fn) => { api = fn; };
 `;
@@ -257,6 +260,127 @@ await (async () => {
   sandbox.document.querySelector = () => null;
   sandbox.document.activeElement = null;
 })();
+
+{
+  // The Build picker lists calendars. One followed by a single athlete carries that athlete's identity.
+  state.auth = { token: "t", user: { id: 1, name: "Coach", roles: ["coach"] } };
+  state.gymContext = {
+    gym_id: 1, gym_name: "Gym", coaches: [], teams: [{ id: 3, name: "Varsity", coach_id: 1 }], codes: [], workouts: [], items: [], hidden_exercise_ids: [],
+    athletes: [
+      { id: 7, name: "Sam Lee", email: "sam@x.com", team_id: 3, team_name: "Varsity", load_unit: "lbs", distance_unit: "yd", calendar_id: 10, calendar_name: "Sam Lee" },
+      { id: 8, name: "Jo Kim", email: "jo@x.com", team_id: 3, team_name: "Varsity", load_unit: "kg", distance_unit: "m", calendar_id: 11, calendar_name: "Fall block" },
+      { id: 9, name: "Ana Diaz", email: "ana@x.com", team_id: 3, team_name: "Varsity", load_unit: "kg", distance_unit: "m", calendar_id: 11, calendar_name: "Fall block" }
+    ],
+    calendars: [
+      { id: 10, name: "Sam Lee", coach_id: 1, coach_name: "Coach", athlete_ids: [7], athlete_names: ["Sam Lee"], athlete_count: 1, programmed_days: 4 },
+      { id: 11, name: "Fall block", coach_id: 1, coach_name: "Coach", athlete_ids: [8, 9], athlete_names: ["Jo Kim", "Ana Diaz"], athlete_count: 2, programmed_days: 12 },
+      { id: 12, name: "Empty", coach_id: 1, coach_name: "Coach", athlete_ids: [], athlete_names: [], athlete_count: 0, programmed_days: 0 }
+    ]
+  };
+  sandbox.__setApi(async (method) => (method === "GET" ? [] : {}));
+  lib.syncFromGymContext();
+  const targets = lib.buildAthletes();
+  assert.deepEqual(targets.map((t) => t.id), ["cal:10", "cal:11", "cal:12"]);
+  assert.ok(targets.every((t) => !t.isGroup && t.isCalendar));
+  const sam = targets[0];
+  assert.equal(sam.serverId, 7);
+  assert.equal(sam.load_unit, "lbs");
+  assert.equal(sam.distance_unit, "yd");
+  const fall = targets[1];
+  assert.equal(fall.serverId, null);
+  assert.deepEqual(fall.athleteIds, [8, 9]);
+  assert.equal(lib.calendarForAthlete(9).id, "cal:11");
+  assert.equal(lib.targetById("u7").serverId, 7);
+  assert.equal(lib.weekNoteTarget("cal:11").calendar_id, 11);
+  assert.equal(lib.weekNoteTarget("u7").user_id, 7);
+  assert.equal(lib.programmedDayCount(fall), 12);
+  state.athleteId = "cal:11";
+  assert.equal(lib.displayUnit(), "");
+  state.athleteId = "cal:10";
+  assert.equal(lib.displayUnit(), "lbs");
+  assert.ok(lib.buildView().includes("Save for athlete"));
+  state.athleteId = "cal:11";
+  assert.ok(lib.buildView().includes("Save calendar"));
+  assert.ok(!lib.buildView().includes("Group:"));
+
+  // Manage Calendars lists every calendar with its athletes and offers edit and delete.
+  const page = lib.calendarsView();
+  assert.ok(page.includes("Add calendar"));
+  assert.ok(page.includes("Fall block"));
+  assert.ok(page.includes("Jo Kim"));
+  assert.ok(page.includes("Nobody yet"));
+  assert.ok(page.includes("editCalendar('cal:11')"));
+  assert.ok(page.includes("askDeleteCalendar('cal:12')"));
+  assert.ok(!page.includes("Add athlete calendar"));
+  lib.editCalendar("cal:11");
+  assert.equal(state.modal.type, "edit");
+  const keys = state.modal.fields.map((f) => f.key);
+  assert.deepEqual(keys, ["name", "ath_9", "ath_8", "ath_7"]);
+  assert.equal(state.modal.fields.find((f) => f.key === "ath_8").value, "1");
+  assert.equal(state.modal.fields.find((f) => f.key === "ath_7").value, "");
+  assert.equal(state.modal.fields.find((f) => f.key === "ath_7").label, "Now on Sam Lee");
+  state.modal = null;
+  lib.askDeleteCalendar("cal:11");
+  assert.equal(state.modal, null);
+  lib.askDeleteCalendar("cal:12");
+  assert.equal(state.modal.type, "confirm");
+  assert.ok(lib.modalHtml().includes("Delete calendar"));
+  state.modal = null;
+
+  // Manage Users: Edit user carries a Calendar picker for athletes only.
+  lib.editUser("u7");
+  const calField = state.modal.fields.find((f) => f.key === "calendar");
+  assert.equal(calField.value, "Sam Lee");
+  assert.deepEqual(calField.options, ["Empty", "Fall block", "Sam Lee"]);
+  state.modal = null;
+  assert.ok(lib.usersView().includes("Fall block"));
+
+  // Athletes tab: Quick assign became Assign a calendar, and each row shows the athlete's calendar.
+  state.assignTarget = "user:8";
+  const squad = lib.squadView();
+  assert.ok(squad.includes("Assign a calendar"));
+  assert.ok(squad.includes('id="assign-calendar-id"'));
+  assert.ok(!squad.includes("assign-workout-id"));
+  assert.ok(!squad.includes("Entire group"));
+  assert.ok(squad.includes('<option value="11" selected>Fall block (2)</option>'));
+  assert.ok(squad.includes("Assign calendar"));
+
+  // Build opened from the Athletes tab lands on the athlete's calendar.
+  sandbox.document.getElementById = (id) => (id === "assign-target" ? { value: "user:9" } : null);
+  lib.openAthleteInBuild();
+  assert.equal(state.athleteId, "cal:11");
+  assert.equal(state.view, "build");
+  sandbox.document.getElementById = () => null;
+  lib.openAthleteCalendar(7);
+  assert.equal(state.athleteId, "cal:10");
+}
+
+{
+  // Saving a day on a calendar posts the assignment against that calendar.
+  const calls = [];
+  sandbox.__setApi(async (method, url, body) => {
+    calls.push({ method, url, body });
+    if (method === "GET" && url.startsWith("/api/assignments")) return [];
+    if (method === "GET" && url.startsWith("/api/exercises")) return [{ id: 5, name: "Squat" }];
+    if (method === "POST" && url === "/api/workouts") return { id: 42, exercises: [] };
+    if (method === "POST" && url === "/api/assignments") return { id: 77 };
+    if (method === "GET" && url === "/api/gym/context") return state.gymContext;
+    if (method === "GET") return [];
+    return {};
+  });
+  state.athleteId = "cal:11";
+  const day = lib.ensureDay("2026-11-09");
+  day.items.push(lib.item({ name: "Squat", type: "lift", letter: "A", sets: 1, reps: ["1"] }));
+  const ok = await lib.publishDay("2026-11-09", { quiet: true });
+  assert.equal(ok, true);
+  const lookup = calls.find((c) => c.method === "GET" && c.url.startsWith("/api/assignments"));
+  assert.equal(lookup.url, "/api/assignments?calendar_id=11&date=2026-11-09");
+  const assigned = calls.find((c) => c.method === "POST" && c.url === "/api/assignments");
+  assert.equal(assigned.body.calendar_id, 11);
+  assert.equal(assigned.body.user_id, undefined);
+  assert.equal(assigned.body.group_id, undefined);
+  assert.equal(day.savedWorkoutId, 42);
+}
 
 console.log("round 4 ui tests passed");
 })().catch((err) => {

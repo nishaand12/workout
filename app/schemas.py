@@ -293,6 +293,7 @@ class UserUpdate(BaseModel):
     load_unit: Optional[str] = None
     distance_unit: Optional[str] = None
     is_active: Optional[bool] = None
+    calendar_id: Optional[int] = None
 
 class UserBrief(BaseModel):
     id: int
@@ -361,6 +362,7 @@ class GroupResponse(GroupBase):
 class UserResponse(UserBase):
     id: int
     supabase_uid: Optional[str] = None
+    calendar_id: Optional[int] = None
     is_active: bool = True
     created_at: datetime
     groups: List[GroupBrief] = []
@@ -427,6 +429,7 @@ class WorkoutAssignmentCreate(BaseModel):
     assigned_by_coach_id: Optional[int] = None
     group_id: Optional[int] = None
     user_id: Optional[int] = None
+    calendar_id: Optional[int] = None
     scheduled_date: str  # YYYY-MM-DD
     notes: Optional[str] = ""
 
@@ -444,6 +447,7 @@ class WorkoutAssignmentResponse(BaseModel):
     assigned_by_coach_id: Optional[int] = None
     group_id: Optional[int] = None
     user_id: Optional[int] = None
+    calendar_id: Optional[int] = None
     scheduled_date: str
     notes: str
     created_at: datetime
@@ -509,6 +513,25 @@ class GymPerson(BaseModel):
     latest_note: str = ""
     load_unit: str = "kg"
     distance_unit: str = "m"
+    calendar_id: Optional[int] = None
+    calendar_name: Optional[str] = None
+
+class CalendarCreate(BaseModel):
+    name: str
+
+class CalendarUpdate(BaseModel):
+    name: Optional[str] = None
+    athlete_ids: Optional[List[int]] = None  # replaces who follows the calendar
+
+class CalendarResponse(BaseModel):
+    id: int
+    name: str
+    coach_id: Optional[int] = None
+    coach_name: str = ""
+    athlete_ids: List[int] = []
+    athlete_names: List[str] = []
+    athlete_count: int = 0
+    programmed_days: int = 0
 
 class GymTeam(BaseModel):
     id: int
@@ -553,6 +576,7 @@ class GymContext(BaseModel):
     workouts: List[GymWorkoutSummary] = []
     items: List[GymSavedItem] = []
     hidden_exercise_ids: List[int] = []
+    calendars: List[CalendarResponse] = []
 
 class GymMemberCreate(BaseModel):
     name: str
@@ -580,6 +604,7 @@ class CalendarScheduleEntry(BaseModel):
     scheduled_date: str
     user_id: Optional[int] = None
     group_id: Optional[int] = None
+    calendar_id: Optional[int] = None
     is_group_assignment: bool = False
     workout: WorkoutDetailResponse
 
@@ -590,6 +615,7 @@ class WeekNoteEntry(BaseModel):
 class WeekNoteWrite(BaseModel):
     user_id: Optional[int] = None
     group_id: Optional[int] = None
+    calendar_id: Optional[int] = None
     week_start: str
     body: str = ""
 

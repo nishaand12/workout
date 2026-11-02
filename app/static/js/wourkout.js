@@ -452,7 +452,7 @@ function entryUnit() {
 function displayUnit() {
   if (state.view === "entry" || state.view === "mine" || state.role === "athlete") return entryUnit();
   const person = athlete();
-  if (!person || person.isGroup || person.id === "none") return "";
+  if (!person || person.id === "none" || (person.isCalendar && !person.serverId)) return "";
   return normalizeUnit(person.load_unit);
 }
 function entryDistanceUnit() {
@@ -462,7 +462,7 @@ function entryDistanceUnit() {
 function displayDistanceUnit() {
   if (state.view === "entry" || state.view === "mine" || state.role === "athlete") return entryDistanceUnit();
   const person = athlete();
-  if (!person || person.isGroup || person.id === "none") return "m";
+  if (!person || person.id === "none" || (person.isCalendar && !person.serverId)) return "m";
   return normalizeDistanceUnit(person.distance_unit);
 }
 function doseText(it, reps) {
@@ -1114,11 +1114,11 @@ function installBuildAutosave() {
 
 async function loadCalendarSchedule(targetId) {
   if (!targetId || targetId === "none") return;
-  const person = buildAthletes().find((a) => a.id === targetId);
+  const person = targetById(targetId);
   if (!person) return;
   let query = "";
-  if (person.isGroup && person.groupId) {
-    query = "?group_id=" + encodeURIComponent(person.groupId);
+  if (person.isCalendar && person.calendarId) {
+    query = "?calendar_id=" + encodeURIComponent(person.calendarId);
   } else if (person.serverId) {
     query = "?user_id=" + encodeURIComponent(person.serverId);
   } else {
@@ -1174,9 +1174,9 @@ loadCalendarSchedule.gen = {};
 const WEEK_NOTE_SAVE_MS = 600;
 const weekNoteTimers = {};
 function weekNoteTarget(targetId) {
-  const person = buildAthletes().find((a) => a.id === targetId);
+  const person = targetById(targetId);
   if (!person) return null;
-  if (person.isGroup && person.groupId) return { group_id: person.groupId };
+  if (person.isCalendar && person.calendarId) return { calendar_id: person.calendarId };
   if (person.serverId) return { user_id: person.serverId };
   return null;
 }
@@ -1299,7 +1299,8 @@ function syncFromGymContext() {
       team_id: u.team_id,
       load_unit: normalizeUnit(u.load_unit),
       distance_unit: normalizeDistanceUnit(u.distance_unit),
-      cals: "1",
+      cals: u.calendar_name || "—",
+      calendar_id: u.calendar_id || null,
       role: "athlete"
     });
     if (!state.calendars[id]) state.calendars[id] = {};
@@ -1319,9 +1320,9 @@ function syncFromGymContext() {
       role: "coach"
     });
   });
-  (ctx.teams || []).forEach((t) => {
-    const gid = "group:" + t.id;
-    if (!state.calendars[gid]) state.calendars[gid] = {};
+  (ctx.calendars || []).forEach((c) => {
+    const cid = "cal:" + c.id;
+    if (!state.calendars[cid]) state.calendars[cid] = {};
   });
   const targets = buildAthletes();
   if (!state.athleteId || !targets.some((t) => t.id === state.athleteId)) {
@@ -1704,7 +1705,7 @@ function addLibraryExercise(id) {
 function panelPeople() {
   const target = athlete();
   if (!target || target.id === "none") return [];
-  if (target.isGroup) return ATHLETES.filter((a) => a.team_id === target.groupId && a.serverId).map((a) => a.serverId);
+  if (target.isCalendar) return target.athleteIds.slice();
   return target.serverId ? [target.serverId] : [];
 }
 function queuePanelBests() {
@@ -1712,7 +1713,7 @@ function queuePanelBests() {
   const key = target ? target.id : "";
   if (!key || state.panelBests.key === key) return;
   state.panelBests = { key, loading: true, bests: [], goals: [] };
-  const single = !target.isGroup && target.serverId;
+  const single = !target.isCalendar || target.athleteIds.length === 1 ? target.serverId : null;
   const query = single ? "?user_id=" + target.serverId : "";
   Promise.all([api("GET", "/api/personal-bests" + query), api("GET", "/api/records" + query)])
     .then(([bests, goals]) => {
@@ -1958,7 +1959,7 @@ function buildView() {
   }
   writeBuildQuery();
   const currentTarget = athlete();
-  const saveLabel = currentTarget.isGroup ? "Save for group" : "Save for athlete";
+  const saveLabel = currentTarget.isCalendar && currentTarget.athleteIds.length !== 1 ? "Save calendar" : "Save for athlete";
   const floatingEditor = state.editor ? editorPop(state.editor.day) : "";
   return leftRail() + buildPanelHtml() + (state.preview ? previewHtml() : "") +
     `<section class="stage">
@@ -1990,24 +1991,40 @@ function buildView() {
       ${floatingEditor}
     </section>`;
 }
+// The Build picker lists calendars. A calendar followed by exactly one athlete carries
+// that athlete's units and identity, so athlete-only controls keep working for it.
 function buildAthletes() {
   const list = [];
   const ctx = state.gymContext;
-  if (ctx && Array.isArray(ctx.teams)) {
-    ledTeams(ctx).forEach((t) => {
-      const gid = "group:" + t.id;
+  const ctxAthletes = (ctx && ctx.athletes) || [];
+  const me = state.auth && state.auth.user;
+  if (ctx && Array.isArray(ctx.calendars)) {
+    ctx.calendars.forEach((c) => {
+      const id = "cal:" + c.id;
+      const ids = (c.athlete_ids || []).slice();
+      const followers = ctxAthletes.filter((u) => ids.indexOf(u.id) >= 0);
+      const only = followers.length === 1 ? followers[0] : null;
       list.push({
-        id: gid,
-        name: "Group: " + t.name,
-        email: "",
-        groupId: t.id,
-        isGroup: true
+        id,
+        name: c.name,
+        email: only ? (only.email || "") : "",
+        calendarId: c.id,
+        isCalendar: true,
+        athleteIds: ids,
+        athleteNames: (c.athlete_names || []).slice(),
+        programmedDays: c.programmed_days || 0,
+        serverId: only ? only.id : null,
+        team_id: only ? only.team_id : null,
+        team_name: only ? (only.team_name || "") : "",
+        load_unit: normalizeUnit(only && only.load_unit),
+        distance_unit: normalizeDistanceUnit(only && only.distance_unit),
+        self: !!(only && me && only.id === me.id)
       });
-      if (!state.calendars[gid]) state.calendars[gid] = {};
+      if (!state.calendars[id]) state.calendars[id] = {};
     });
   }
-  const ctxAthletes = (ctx && ctx.athletes) || [];
   ctxAthletes.forEach((u) => {
+    if (list.some((a) => a.isCalendar && a.athleteIds.indexOf(u.id) >= 0)) return;
     const id = "u" + u.id;
     if (!list.some((a) => a.serverId === u.id)) {
       list.push({
@@ -2024,6 +2041,7 @@ function buildAthletes() {
     }
   });
   ATHLETES.forEach((a) => {
+    if (a.serverId && list.some((x) => x.isCalendar && x.athleteIds.indexOf(a.serverId) >= 0)) return;
     if (!list.some((x) => x.id === a.id || (a.serverId && x.serverId === a.serverId))) {
       list.push(Object.assign({}, a));
     }
@@ -2044,9 +2062,16 @@ function buildAthletes() {
     }
   }
   if (!list.length) {
-    return [{ id: "none", name: "No athletes or groups yet", email: "" }];
+    return [{ id: "none", name: "No calendars yet", email: "" }];
   }
   return list;
+}
+// A programming target by id: a calendar from the picker, or an athlete entry from the roster.
+function targetById(id) {
+  return buildAthletes().find((a) => a.id === id) || ATHLETES.find((a) => a.id === id) || null;
+}
+function calendarForAthlete(serverId) {
+  return buildAthletes().find((a) => a.isCalendar && a.athleteIds.indexOf(serverId) >= 0) || null;
 }
 function unitSelect(personId) {
   const person = buildAthletes().find((a) => a.id === personId);
@@ -3267,10 +3292,10 @@ async function unpublishDate(row) {
     return;
   }
   if (!row.savedFor) return;
-  const person = buildAthletes().find((a) => a.id === row.savedFor);
+  const person = targetById(row.savedFor);
   if (!person || person.id === "none") return;
-  if (person.isGroup && person.groupId) {
-    const existing = await api("GET", "/api/assignments?group_id=" + person.groupId + "&date=" + row.date);
+  if (person.isCalendar && person.calendarId) {
+    const existing = await api("GET", "/api/assignments?calendar_id=" + person.calendarId + "&date=" + row.date);
     for (const item of existing) await api("DELETE", "/api/assignments/" + item.id);
     return;
   }
@@ -3422,8 +3447,8 @@ function stampWorkoutExerciseIds(day, sentItems, workout) {
 async function publishDay(date, opts = {}) {
   const athleteId = opts.athleteId || state.athleteId;
   const day = (state.calendars[athleteId] || {})[date];
-  const person = buildAthletes().find((a) => a.id === athleteId) || null;
-  if (!person || person.id === "none") { if (!opts.quiet) toast("Create a group or athlete first"); return false; }
+  const person = targetById(athleteId);
+  if (!person || person.id === "none") { if (!opts.quiet) toast("Create a calendar or athlete first"); return false; }
   if (!day) { if (!opts.quiet) toast("Pick a day before saving"); return false; }
   if (!(day.items || []).length) day.title = "Rest";
   const snapItems = JSON.parse(JSON.stringify(day.items || []));
@@ -3437,9 +3462,9 @@ async function publishDay(date, opts = {}) {
       coachId = coach.id;
     }
     let targetUserId = null;
-    let targetGroupId = null;
-    if (person.isGroup && person.groupId) {
-      targetGroupId = person.groupId;
+    let targetCalendarId = null;
+    if (person.isCalendar && person.calendarId) {
+      targetCalendarId = person.calendarId;
     } else {
       const user = person.self && state.auth && state.auth.user
         ? state.auth.user
@@ -3485,8 +3510,8 @@ async function publishDay(date, opts = {}) {
       description: snapWeek,
       exercises
     };
-    const assignQuery = targetGroupId
-      ? ("/api/assignments?group_id=" + targetGroupId + "&date=" + date)
+    const assignQuery = targetCalendarId
+      ? ("/api/assignments?calendar_id=" + targetCalendarId + "&date=" + date)
       : ("/api/assignments?user_id=" + targetUserId + "&date=" + date);
     const existing = await api("GET", assignQuery);
     let workout;
@@ -3501,7 +3526,7 @@ async function publishDay(date, opts = {}) {
         scheduled_date: date,
         notes: "Saved from Build"
       };
-      if (targetGroupId) assignPayload.group_id = targetGroupId;
+      if (targetCalendarId) assignPayload.calendar_id = targetCalendarId;
       else assignPayload.user_id = targetUserId;
       const assignment = await api("POST", "/api/assignments", assignPayload);
       day.assignmentId = assignment.id;
@@ -3544,8 +3569,10 @@ function backToCoach() {
 }
 async function openAsAthlete(localId) {
   let person = buildAthletes().find((a) => a.id === localId) || athlete();
-  if (person && person.isGroup) {
-    const member = ATHLETES.find((a) => a.team_id === person.groupId) || ATHLETES[0];
+  if (person && person.isCalendar && person.serverId) {
+    person = ATHLETES.find((a) => a.serverId === person.serverId) || person;
+  } else if (person && person.isCalendar) {
+    const member = ATHLETES.find((a) => person.athleteIds.indexOf(a.serverId) >= 0) || ATHLETES[0];
     if (member) {
       person = member;
     } else if (state.auth && state.auth.user) {
@@ -4894,9 +4921,12 @@ function athletePicker() {
 function pickAthlete(id) {
   state.entryAthlete = id;
   state.entryOpen = false;
-  state.athleteId = id;
+  const person = ATHLETES.find((a) => a.id === id);
+  const calendar = person && person.serverId ? calendarForAthlete(person.serverId) : null;
+  state.athleteId = calendar ? calendar.id : id;
   render();
   loadCalendarSchedule(id);
+  if (calendar) loadCalendarSchedule(calendar.id);
 }
 const PROP_FIELD = {
   load: "w", rest: "rest", restRep: "restRep", distance: "distance",
@@ -5454,7 +5484,7 @@ function usersView() {
       return `<tr>
         <td><span class="ui-person">${uiAvatar(name)}<span class="who"><b>${esc(name)}</b><small>${esc(r.email || "")}</small></span></span></td>
         <td>${assignedGroups(r.groups).map((g) => `<span class="ui-badge blue">${esc(g)}</span>`).join(" ") || `<span class="muted">—</span>`}</td>
-        <td class="num hide-sm">${esc(r.cals || "0")}</td>
+        <td class="hide-sm">${r.role === "athlete" ? `<span class="ui-badge">${esc(r.cals || "—")}</span>` : `<span class="muted">${esc(r.cals || "—")}</span>`}</td>
         <td class="hide-sm">${active ? `<span class="ui-badge green">${esc(r.activity)}</span>` : `<span class="ui-badge amber">No activity</span>`}</td>
         <td class="row-actions"><button class="btn btn-ghost btn-sm" type="button" onclick="editUser('${r.id}')">Edit</button><button class="btn btn-ghost btn-sm btn-danger" type="button" onclick="removeUser('${r.id}')">Remove</button></td>
       </tr>`;
@@ -5476,7 +5506,7 @@ function usersView() {
           <select class="select auto" aria-label="Sort by" onchange="state.userSort=this.value;render()"><option value="last" ${state.userSort !== "first" ? "selected" : ""}>Last name</option><option value="first" ${state.userSort === "first" ? "selected" : ""}>First name</option></select>
           ${uiSearch("Search people", "user-q", state.userQ, "state.userQ=this.value;render()", "max-width:240px")}</span>`)}
         <div class="ui-table-wrap"><table class="ui-table">
-          <thead><tr><th>Name</th><th>Groups</th><th class="num hide-sm">Calendars</th><th class="hide-sm">Last activity</th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>Groups</th><th class="hide-sm">Calendar</th><th class="hide-sm">Last activity</th><th></th></tr></thead>
           <tbody>${body || `<tr><td colspan="5">${uiEmpty(rows.length ? "No matches" : "Nobody here yet", rows.length ? "Try a different search." : "Add someone above, or use Upload athletes.")}</td></tr>`}</tbody>
         </table></div>
       </section>`;
@@ -5598,18 +5628,31 @@ async function removeUser(id) {
   toast("User removed");
   render();
 }
+// Calendars by a label that stays unique when two share a name.
+function calendarChoices() {
+  const calendars = ((state.gymContext && state.gymContext.calendars) || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+  const counts = {};
+  calendars.forEach((c) => { counts[c.name] = (counts[c.name] || 0) + 1; });
+  return calendars.map((c) => ({ id: c.id, label: counts[c.name] > 1 ? c.name + " (#" + c.id + ")" : c.name }));
+}
 function editUser(id) {
   const row = state.coaches.concat(state.athletes).find((r) => r.id === id);
   if (!row) return;
+  const fields = [
+    { key: "first", label: "First name", value: row.first || "" },
+    { key: "last", label: "Last name", value: row.last || "" },
+    { key: "email", label: "Email", value: row.email || "", type: "email" },
+    { key: "load_unit", label: "Load unit", value: normalizeUnit(row.load_unit), options: ["kg", "lbs"] },
+    { key: "distance_unit", label: "Distance unit", value: distanceChoice(row.distance_unit), options: ["metres", "km", "yards", "miles"] }
+  ];
+  const choices = calendarChoices();
+  if (row.role === "athlete" && row.serverId && choices.length) {
+    const current = choices.find((c) => c.id === row.calendar_id) || choices[0];
+    fields.push({ key: "calendar", label: "Calendar", value: current.label, options: choices.map((c) => c.label) });
+  }
   openEdit({
     title: "Edit user",
-    fields: [
-      { key: "first", label: "First name", value: row.first || "" },
-      { key: "last", label: "Last name", value: row.last || "" },
-      { key: "email", label: "Email", value: row.email || "", type: "email" },
-      { key: "load_unit", label: "Load unit", value: normalizeUnit(row.load_unit), options: ["kg", "lbs"] },
-      { key: "distance_unit", label: "Distance unit", value: distanceChoice(row.distance_unit), options: ["metres", "km", "yards", "miles"] }
-    ],
+    fields,
     onSave: (values) => saveUserEdit(row, values)
   });
 }
@@ -5839,9 +5882,17 @@ async function saveUserEdit(row, values) {
   const name = (first + " " + last).trim();
   const loadUnit = normalizeUnit(values.load_unit);
   const distanceUnit = normalizeDistanceUnit(values.distance_unit);
+  const chosen = values.calendar ? calendarChoices().find((c) => c.label === values.calendar) : null;
+  const calendarChanged = !!(chosen && chosen.id !== row.calendar_id);
   if (row.serverId) {
-    try { await api("PUT", "/api/users/" + row.serverId, { name, email, load_unit: loadUnit, distance_unit: distanceUnit }); }
-    catch (err) { toast("Could not save user"); console.error(err); return; }
+    const payload = { name, email, load_unit: loadUnit, distance_unit: distanceUnit };
+    if (calendarChanged) payload.calendar_id = chosen.id;
+    try { await api("PUT", "/api/users/" + row.serverId, payload); }
+    catch (err) { toast(err.message || "Could not save user"); console.error(err); return; }
+  }
+  if (calendarChanged) {
+    row.calendar_id = chosen.id;
+    row.cals = chosen.label;
   }
   row.load_unit = loadUnit;
   row.distance_unit = distanceUnit;
@@ -5860,6 +5911,10 @@ async function saveUserEdit(row, values) {
   }
   state.modal = null;
   toast("User saved");
+  if (calendarChanged && state.auth && state.auth.token) {
+    try { await loadGymContext(); } catch (err) { console.error(err); }
+    render();
+  }
 }
 
 function canonicalCategory(category) {
@@ -6628,95 +6683,109 @@ function addEvaluation() {
 function programmedDayCount(target) {
   const saved = Object.values(state.calendars[target.id] || {}).filter((day) => day && day.savedWorkoutId).length;
   if (state.calendarLoaded[target.id]) return saved;
-  if (!target.isGroup && target.serverId) {
+  if (target.isCalendar) return target.programmedDays || 0;
+  if (target.serverId) {
     return ((state.gymContext && state.gymContext.workouts) || []).filter((workout) => !workout.is_template && workout.scheduled_date && (workout.assigned_athlete_ids || []).indexOf(target.serverId) >= 0).length;
   }
   return saved;
 }
 function calendarsView() {
-  const targets = buildAthletes().filter((t) => t.id !== "none");
+  const targets = buildAthletes().filter((t) => t.id !== "none" && t.isCalendar);
   targets.forEach((target) => {
     if (!state.calendarLoaded[target.id] && !state.calendarLoading[target.id]) loadCalendarSchedule(target.id);
   });
   const body = targets.map((a) => `<tr>
       <td><span class="ui-person">${uiAvatar(a.name)}<span class="who"><b>${esc(a.name)}</b>${a.email ? `<small>${esc(a.email)}</small>` : ""}</span></span></td>
-      <td>${a.isGroup ? `<span class="ui-badge blue">Group</span>` : `<span class="ui-badge">Athlete</span>`}</td>
+      <td>${a.athleteNames.length ? a.athleteNames.map((n) => `<span class="ui-badge blue">${esc(n)}</span>`).join(" ") : `<span class="ui-badge amber"><span class="ui-dot"></span>Nobody yet</span>`}</td>
       <td class="num">${programmedDayCount(a)}</td>
-      <td class="row-actions">${!a.isGroup ? `<button class="btn btn-ghost btn-sm" type="button" onclick="editCalendar('${a.id}')">Rename</button>` : ""}<button class="btn btn-secondary btn-sm" type="button" onclick="switchAthlete('${esc(a.id)}');state.view='build';render()">Open calendar</button></td>
+      <td class="row-actions"><button class="btn btn-ghost btn-sm" type="button" onclick="editCalendar('${a.id}')">Edit</button><button class="btn btn-ghost btn-sm btn-danger" type="button" onclick="askDeleteCalendar('${a.id}')">Delete</button><button class="btn btn-secondary btn-sm" type="button" onclick="switchAthlete('${esc(a.id)}');state.view='build';render()">Open calendar</button></td>
     </tr>`).join("");
   return uiPage(`
-    ${uiHead("Coach tools", "Calendars", "Every athlete and group calendar you program.", "")}
+    ${uiHead("Coach tools", "Calendars", "Every calendar you program. An athlete follows one calendar at a time and sees it live.", "")}
     <section class="ui-card"><form class="ui-card-body ui-form-row" onsubmit="addCalendar(); return false;">
-      ${uiField("Athlete name", `<input class="input" placeholder="e.g. Sam Lee" data-focus="cal-name" value="${esc(state.toolForm.calName || "")}" oninput="state.toolForm.calName=this.value">`)}
-      ${uiField("Email (optional)", `<input class="input" type="email" data-focus="cal-email" value="${esc(state.toolForm.calEmail || "")}" oninput="state.toolForm.calEmail=this.value">`)}
-      <button class="btn btn-primary" type="submit">Add athlete calendar</button>
+      ${uiField("New calendar", `<input class="input" placeholder="e.g. Fall hockey block" data-focus="cal-name" value="${esc(state.toolForm.calName || "")}" oninput="state.toolForm.calName=this.value">`)}
+      <button class="btn btn-primary" type="submit">Add calendar</button>
     </form></section>
     <section class="ui-card">${uiCardHead("Calendars", targets.length)}
-      <div class="ui-table-wrap"><table class="ui-table"><thead><tr><th>Name</th><th>Type</th><th class="num">Programmed days</th><th></th></tr></thead>
-      <tbody>${body || `<tr><td colspan="4">${uiEmpty("No calendars yet", "Create a group or upload athletes in Manage Users.")}</td></tr>`}</tbody></table></div>
+      <div class="ui-table-wrap"><table class="ui-table"><thead><tr><th>Name</th><th>Athletes</th><th class="num">Programmed days</th><th></th></tr></thead>
+      <tbody>${body || `<tr><td colspan="4">${uiEmpty("No calendars yet", "Add one above, or upload athletes in Manage Users.")}</td></tr>`}</tbody></table></div>
     </section>`, "calendars");
 }
 async function addCalendar() {
   const name = (state.toolForm.calName || "").trim();
-  const email = (state.toolForm.calEmail || "").trim();
-  if (!name) { toast("Name the athlete"); return; }
-  const teams = ledTeams(state.gymContext);
-  if (teams.length && state.auth && state.auth.token) {
-    try {
-      await api("POST", "/api/gym/athletes/bulk", {
-        team_id: teams[0].id,
-        athletes: [{ name, email: email || null }]
-      });
-      await loadGymContext();
-      state.toolForm.calName = "";
-      state.toolForm.calEmail = "";
-      toast("Athlete & calendar created");
-      render();
-      return;
-    } catch (err) {
-      toast(err.message || "Could not add athlete calendar");
-      return;
-    }
+  if (!name) { toast("Name the calendar"); return; }
+  try {
+    await api("POST", "/api/calendars", { name });
+    await loadGymContext();
+    state.toolForm.calName = "";
+    toast("Calendar added");
+  } catch (err) {
+    toast(err.message || "Could not add that calendar");
   }
-  const fallbackEmail = email || (name.toLowerCase().replace(/[^a-z0-9]+/g, "") + "@wourkout.app");
-  if (ATHLETES.some((a) => a.email === fallbackEmail)) { toast("That email already has a calendar"); return; }
-  const id = "cal" + uid();
-  ATHLETES.push({ id, name, email: fallbackEmail });
-  state.calendars[id] = {};
-  state.athletes.push({ id, first: name.split(" ")[0], last: name.split(" ").slice(1).join(" "), email: fallbackEmail, activity: "N/A", groups: "—", cals: "1" });
-  state.toolForm.calName = "";
-  state.toolForm.calEmail = "";
-  toast("Calendar added");
   render();
 }
+// Rename a calendar and tick exactly who follows it.
 function editCalendar(id) {
-  const person = ATHLETES.find((a) => a.id === id);
-  if (!person) return;
+  const target = buildAthletes().find((a) => a.id === id);
+  if (!target || !target.isCalendar) return;
+  const athletes = ((state.gymContext && state.gymContext.athletes) || []).slice().sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+  const fields = [{ key: "name", label: "Calendar name", value: target.name || "" }];
+  athletes.forEach((a) => {
+    const onIt = a.calendar_id === target.calendarId;
+    fields.push({
+      key: "ath_" + a.id,
+      label: onIt ? "On this calendar" : (a.calendar_name ? "Now on " + a.calendar_name : "No calendar yet"),
+      checkbox: a.name,
+      value: onIt ? "1" : ""
+    });
+  });
   openEdit({
     title: "Edit calendar",
-    fields: [{ key: "name", label: "Athlete name", value: person.name || "" }],
-    onSave: (values) => {
+    hint: "Tick the athletes who follow this calendar. An athlete taken off it goes back to a calendar of their own.",
+    fields,
+    onSave: async (values) => {
       const next = (values.name || "").trim();
-      if (!next) { toast("Name the athlete"); return; }
-      state.modal = null;
-      renameCalendar(id, next);
+      if (!next) { toast("Name the calendar"); return; }
+      const athleteIds = athletes.filter((a) => values["ath_" + a.id]).map((a) => a.id);
+      try {
+        await api("PUT", "/api/calendars/" + target.calendarId, { name: next, athlete_ids: athleteIds });
+        state.modal = null;
+        await loadGymContext();
+        toast("Calendar saved");
+      } catch (err) {
+        toast(err.message || "Could not save that calendar");
+      }
+      render();
     }
   });
 }
-async function renameCalendar(id, name) {
-  const next = (name || "").trim();
-  if (!next) return;
-  const person = ATHLETES.find((a) => a.id === id);
-  if (person) {
-    person.name = next;
-    if (person.serverId) {
-      try { await api("PUT", "/api/users/" + person.serverId, { name: next, email: person.email }); }
-      catch (e) { console.warn(e); }
-    }
+function askDeleteCalendar(id) {
+  const target = buildAthletes().find((a) => a.id === id);
+  if (!target || !target.isCalendar) return;
+  if (target.athleteIds.length) {
+    toast("Move " + target.athleteNames.join(", ") + " to another calendar first");
+    return;
   }
-  const row = state.athletes.find((a) => a.id === id);
-  if (row) { row.first = next.split(" ")[0]; row.last = next.split(" ").slice(1).join(" "); }
-  toast("Calendar renamed");
+  state.modal = {
+    type: "confirm",
+    title: `Delete the calendar "${target.name}"?`,
+    body: "Every programmed day on it is removed. This cannot be undone.",
+    confirmLabel: "Delete calendar",
+    onConfirm: () => deleteCalendar(target.calendarId)
+  };
+  render();
+}
+async function deleteCalendar(calendarId) {
+  state.modal = null;
+  try {
+    await api("DELETE", "/api/calendars/" + calendarId);
+    delete state.calendars["cal:" + calendarId];
+    if (state.athleteId === "cal:" + calendarId) state.athleteId = "";
+    await loadGymContext();
+    toast("Calendar deleted");
+  } catch (err) {
+    toast(err.message || "Could not delete that calendar");
+  }
   render();
 }
 function goalUnit(userId) {
@@ -7476,6 +7545,9 @@ function modalHtml() {
   if (m.type === "editor-name") {
     return `<div class="modal-back"><div class="modal" onclick="event.stopPropagation()"><h3>Name this exercise</h3><input class="field" data-focus="editor-name" aria-label="Exercise name" value="${esc(m.name || "")}" oninput="state.modal.name=this.value"><button class="full save" type="button" onclick="acceptEditorName()">Save</button><button class="full" type="button" onclick="dismissEditorName()">Cancel</button></div></div>`;
   }
+  if (m.type === "confirm") {
+    return `<div class="modal-back" onclick="state.modal=null;render()"><div class="modal" onclick="event.stopPropagation()"><h3>${esc(m.title)}</h3>${m.body ? `<div class="sub">${esc(m.body)}</div>` : ""}<button class="full red" type="button" onclick="state.modal.onConfirm()">${esc(m.confirmLabel || "Confirm")}</button><button class="full" type="button" onclick="state.modal=null;render()">Cancel</button></div></div>`;
+  }
   if (m.type === "delete") {
     return `<div class="modal-back" onclick="state.modal=null;render()"><div class="modal" onclick="event.stopPropagation()"><h3>${m.chainName ? `Delete the chain "${esc(m.chainName)}" and its ${m.ids.length} exercise${m.ids.length > 1 ? "s" : ""}?` : `You are about to delete (${m.ids.length}) workout item${m.ids.length > 1 ? "s" : ""}`}</h3><button class="full red" onclick="confirmDelete()">DELETE</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
   }
@@ -7788,21 +7860,13 @@ function groupCards(led, athletes) {
   }).join("");
 }
 function openAthleteCalendar(serverId) {
-  const match = buildAthletes().find((a) => a.serverId === serverId);
+  const match = calendarForAthlete(serverId) || buildAthletes().find((a) => a.serverId === serverId);
   if (!match) { toast("That athlete has no calendar yet"); return; }
   state.athleteId = match.id;
   state.view = "build";
   render();
   loadCalendarSchedule(match.id);
   if (!state.serverExercises.length) loadExercises();
-}
-function workoutOptionLabel(w) {
-  const exInfo = w.exercise_count
-    ? `${w.exercise_count} ex${w.exercise_summary ? ": " + w.exercise_summary : ""}`
-    : "No exercises";
-  const datePart = w.scheduled_date && !w.is_template ? ` · last ${w.scheduled_date}` : "";
-  const progPart = w.program_name && w.program_name !== "wourkout" ? ` [${w.program_name}]` : "";
-  return `${w.title}${progPart} (${exInfo}${datePart})`;
 }
 function squadView() {
   const ctx = state.gymContext || { athletes: [], teams: [], codes: [], workouts: [] };
@@ -7812,49 +7876,28 @@ function squadView() {
   const assignableAthletes = athletes.filter(
     (a) => a.id === (state.auth.user && state.auth.user.id) || led.some((t) => t.id === a.team_id)
   );
-  const defaultTarget = assignableAthletes.length
-    ? "user:" + assignableAthletes[0].id
-    : (led.length ? "group:" + led[0].id : "");
-  const selectedTarget = state.assignTarget || defaultTarget;
+  const defaultTarget = assignableAthletes.length ? "user:" + assignableAthletes[0].id : "";
+  const selectedTarget = assignableAthletes.some((a) => "user:" + a.id === state.assignTarget) ? state.assignTarget : defaultTarget;
   const targetUserId = selectedTarget.startsWith("user:") ? parseInt(selectedTarget.slice(5), 10) : null;
   const selectedAthlete = targetUserId ? assignableAthletes.find((a) => a.id === targetUserId) : null;
-
-  const allWorkouts = ctx.workouts || [];
-  const athletePrevious = targetUserId
-    ? allWorkouts.filter((w) => !w.is_template && (w.assigned_athlete_ids || []).includes(targetUserId))
-    : [];
-  const prevIds = new Set(athletePrevious.map((w) => w.id));
-  const savedGymWorkouts = allWorkouts.filter((w) => !w.is_template && !prevIds.has(w.id));
-  const templateWorkouts = allWorkouts.filter((w) => w.is_template);
-
-  let workoutOptionsHtml = "";
-  if (athletePrevious.length) {
-    workoutOptionsHtml += `<optgroup label="Previous Workouts for ${esc((selectedAthlete && selectedAthlete.name) || "Athlete")}">
-      ${athletePrevious.map((w) => `<option value="${w.id}" ${String(state.assignWorkoutId) === String(w.id) ? "selected" : ""}>${esc(workoutOptionLabel(w))}</option>`).join("")}
-    </optgroup>`;
-  }
-  if (savedGymWorkouts.length) {
-    workoutOptionsHtml += `<optgroup label="Saved Gym Workouts">
-      ${savedGymWorkouts.map((w) => `<option value="${w.id}" ${String(state.assignWorkoutId) === String(w.id) ? "selected" : ""}>${esc(workoutOptionLabel(w))}</option>`).join("")}
-    </optgroup>`;
-  }
-  if (templateWorkouts.length) {
-    workoutOptionsHtml += `<optgroup label="Program Library Templates">
-      ${templateWorkouts.map((w) => `<option value="${w.id}" ${String(state.assignWorkoutId) === String(w.id) ? "selected" : ""}>${esc(workoutOptionLabel(w))}</option>`).join("")}
-    </optgroup>`;
-  }
+  const calendars = (ctx.calendars || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+  const chosenCalendar = calendars.some((c) => String(c.id) === String(state.assignCalendarId))
+    ? String(state.assignCalendarId)
+    : (selectedAthlete && selectedAthlete.calendar_id ? String(selectedAthlete.calendar_id) : (calendars[0] ? String(calendars[0].id) : ""));
+  const calendarOptionsHtml = calendars.map((c) => `<option value="${c.id}" ${String(c.id) === chosenCalendar ? "selected" : ""}>${esc(c.name)}${c.athlete_count ? " (" + c.athlete_count + ")" : ""}</option>`).join("");
 
   const q = (state.athleteQ || "").trim().toLowerCase();
   const shown = athletes.filter((a) => !q || [a.name, a.email, a.team_name].some((v) => String(v || "").toLowerCase().includes(q)));
   const rows = shown.map((a) => `<tr>
       <td><span class="ui-person">${uiAvatar(a.name)}<span class="who"><b>${esc(a.name)}</b><small>${esc(a.email || "")}</small></span></span></td>
       <td>${groupBadge(a)}</td>
+      <td>${a.calendar_name ? `<span class="ui-badge">${esc(a.calendar_name)}</span>` : `<span class="muted">—</span>`}</td>
       <td class="muted hide-sm">${a.latest_note ? esc(a.latest_note) : "—"}</td>
       <td class="row-actions"><span class="ui-inline" style="justify-content:flex-end">${groupControl(a, led)}<button class="btn btn-secondary btn-sm" type="button" onclick="openAthleteCalendar(${a.id})">Calendar</button></span></td>
     </tr>`).join("");
   const emptyRow = athletes.length
-    ? `<tr><td colspan="4"><div class="ui-empty"><b>No matches</b>Nobody matches "${esc(state.athleteQ)}".</div></td></tr>`
-    : `<tr><td colspan="4"><div class="ui-empty"><b>No athletes yet</b>Share a team join code, or upload athletes in Manage Users.</div></td></tr>`;
+    ? `<tr><td colspan="5"><div class="ui-empty"><b>No matches</b>Nobody matches "${esc(state.athleteQ)}".</div></td></tr>`
+    : `<tr><td colspan="5"><div class="ui-empty"><b>No athletes yet</b>Share a team join code, or upload athletes in Manage Users.</div></td></tr>`;
   const unassigned = athletes.filter((a) => !a.team_id).length;
   return `<section class="stage ui-page" id="coach-assign"><div class="ui-wrap">
     ${uiHead("Coach", "Athletes", `${athletes.length} athlete${athletes.length === 1 ? "" : "s"} on ${esc(teams)}${unassigned ? ` · ${unassigned} without a group` : ""}. Other coaches' athletes stay hidden.`,
@@ -7868,30 +7911,23 @@ function squadView() {
           <div class="ui-search" style="max-width:280px"><input class="input" placeholder="Search athletes" aria-label="Search athletes" data-focus="athlete-q" value="${esc(state.athleteQ || "")}" oninput="state.athleteQ=this.value;render()"></div>
         </div>
         <div class="ui-table-wrap"><table class="ui-table" id="coach-athletes">
-          <thead><tr><th>Athlete</th><th>Group</th><th class="hide-sm">Latest note to you</th><th></th></tr></thead>
+          <thead><tr><th>Athlete</th><th>Group</th><th>Calendar</th><th class="hide-sm">Latest note to you</th><th></th></tr></thead>
           <tbody>${rows || emptyRow}</tbody>
         </table></div>
       </section>
       <div class="ui-stack">
         <section class="ui-card">
-          <div class="ui-card-head"><div><h2 class="ui-card-title">Quick assign</h2><p class="ui-card-sub">Put a saved workout or template on a calendar.</p></div></div>
-          <form class="ui-card-body ui-form" onsubmit="assignWorkout(event); return false;">
+          <div class="ui-card-head"><div><h2 class="ui-card-title">Assign a calendar</h2><p class="ui-card-sub">An athlete follows one calendar and sees every day on it.</p></div></div>
+          <form class="ui-card-body ui-form" onsubmit="assignCalendar(event); return false;">
             <label class="ui-field"><span class="ui-label">Who</span>
-              <select class="select" id="assign-target" onchange="state.assignTarget=this.value;render()" required>
-                ${assignableAthletes.length ? `<optgroup label="Athletes">
-                  ${assignableAthletes.map((a) => `<option value="user:${a.id}" ${selectedTarget === "user:" + a.id ? "selected" : ""}>${esc(a.name)}${a.team_name ? " (" + esc(a.team_name) + ")" : ""}</option>`).join("")}
-                </optgroup>` : ""}
-                ${led.length ? `<optgroup label="Entire group">
-                  ${led.map((t) => `<option value="group:${t.id}" ${selectedTarget === "group:" + t.id ? "selected" : ""}>Group: ${esc(t.name)}</option>`).join("")}
-                </optgroup>` : ""}
+              <select class="select" id="assign-target" onchange="state.assignTarget=this.value;state.assignCalendarId='';render()" required>
+                ${assignableAthletes.map((a) => `<option value="user:${a.id}" ${selectedTarget === "user:" + a.id ? "selected" : ""}>${esc(a.name)}${a.team_name ? " (" + esc(a.team_name) + ")" : ""}</option>`).join("") || `<option value="">No athletes yet</option>`}
               </select></label>
-            <label class="ui-field"><span class="ui-label">Workout</span>
-              <select class="select" id="assign-workout-id" onchange="state.assignWorkoutId=this.value" required>
-                ${workoutOptionsHtml || `<option value="">No saved workouts yet. Build one in Calendar.</option>`}
+            <label class="ui-field"><span class="ui-label">Calendar</span>
+              <select class="select" id="assign-calendar-id" onchange="state.assignCalendarId=this.value" required>
+                ${calendarOptionsHtml || `<option value="">No calendars yet. Add one in Manage Calendars.</option>`}
               </select></label>
-            <label class="ui-field"><span class="ui-label">Date</span>
-              <input class="input" id="assign-date" type="date" value="${esc(state.assignDate || APP_TODAY || "2026-10-16")}" onchange="state.assignDate=this.value" required></label>
-            <button class="btn btn-primary btn-block" type="submit" ${!workoutOptionsHtml ? "disabled" : ""}>Assign workout</button>
+            <button class="btn btn-primary btn-block" type="submit" ${!calendarOptionsHtml || !assignableAthletes.length ? "disabled" : ""}>Assign calendar</button>
           </form>
         </section>
         ${groupCards(led, athletes)}
@@ -7905,13 +7941,13 @@ function openAthleteInBuild() {
   const target = (targetEl && targetEl.value) || state.assignTarget || "";
   const date = (dateEl && dateEl.value) || state.assignDate || APP_TODAY;
   const list = buildAthletes();
-  if (target.startsWith("group:")) {
-    const gidNum = parseInt(target.slice(6), 10);
-    const match = list.find((a) => a.groupId === gidNum);
+  if (target.startsWith("calendar:")) {
+    const cidNum = parseInt(target.slice(9), 10);
+    const match = list.find((a) => a.calendarId === cidNum);
     if (match) state.athleteId = match.id;
   } else if (target.startsWith("user:")) {
     const uidNum = parseInt(target.slice(5), 10);
-    const match = list.find((a) => a.serverId === uidNum);
+    const match = list.find((a) => a.isCalendar && a.athleteIds.indexOf(uidNum) >= 0) || list.find((a) => a.serverId === uidNum);
     if (match) state.athleteId = match.id;
   }
   if (date) {
@@ -8042,40 +8078,28 @@ async function removeAthleteFromGroup(teamId, athleteId) {
   }
   render();
 }
-async function assignWorkout(e) {
+async function assignCalendar(e) {
   if (e) e.preventDefault();
   const targetEl = document.getElementById("assign-target");
-  const workoutEl = document.getElementById("assign-workout-id");
-  const dateEl = document.getElementById("assign-date");
+  const calendarEl = document.getElementById("assign-calendar-id");
   const target = (targetEl && targetEl.value) || state.assignTarget || "";
-  const workoutId = parseInt(workoutEl && workoutEl.value, 10);
-  const scheduled_date = (dateEl && dateEl.value) || state.assignDate || APP_TODAY;
-  if (!target || !workoutId || !scheduled_date) {
-    toast("Select a target, workout, and date");
+  const calendarId = parseInt((calendarEl && calendarEl.value) || state.assignCalendarId, 10);
+  const userId = parseInt(String(target).replace(/^user:/, ""), 10);
+  if (!userId || !calendarId) {
+    toast("Pick an athlete and a calendar");
     return;
   }
-  const payload = { workout_id: workoutId, scheduled_date };
-  let targetLabel = "your athlete";
-  const ctx = state.gymContext || { athletes: [], teams: [], workouts: [] };
-  if (target.startsWith("group:")) {
-    payload.group_id = parseInt(target.slice(6), 10);
-    const team = (ctx.teams || []).find((t) => t.id === payload.group_id);
-    targetLabel = team ? "group " + team.name : "your group";
-  } else {
-    payload.user_id = parseInt(target.replace(/^user:/, ""), 10);
-    const athlete = (ctx.athletes || []).find((a) => a.id === payload.user_id);
-    targetLabel = (athlete && athlete.name) || "your athlete";
-  }
+  const ctx = state.gymContext || { athletes: [], calendars: [] };
+  const athlete = (ctx.athletes || []).find((a) => a.id === userId);
+  const calendar = (ctx.calendars || []).find((c) => c.id === calendarId);
   try {
-    const res = await api("POST", "/api/assignments", payload);
-    const workoutObj = (ctx.workouts || []).find((w) => w.id === workoutId);
-    const title = (res && res.workout_title) || (workoutObj && workoutObj.title) || "Workout";
+    await api("PUT", "/api/users/" + userId, { calendar_id: calendarId });
     await loadGymContext();
-    state.assignResult = "Assigned “" + title + "” to " + targetLabel + " on " + scheduled_date + ".";
-    toast("Workout assigned");
+    state.assignResult = ((athlete && athlete.name) || "Athlete") + " now follows “" + ((calendar && calendar.name) || "that calendar") + "”.";
+    toast("Calendar assigned");
   } catch (err) {
     state.assignResult = "";
-    toast(err.message || "Could not assign that workout");
+    toast(err.message || "Could not assign that calendar");
   }
   render();
 }
@@ -8606,7 +8630,11 @@ window.createJoinCode = createJoinCode;
 window.createLedGroup = createLedGroup;
 window.addAthleteToGroup = addAthleteToGroup;
 window.removeAthleteFromGroup = removeAthleteFromGroup;
-window.assignWorkout = assignWorkout;
+window.assignCalendar = assignCalendar;
+window.addCalendar = addCalendar;
+window.editCalendar = editCalendar;
+window.askDeleteCalendar = askDeleteCalendar;
+window.deleteCalendar = deleteCalendar;
 window.openAthleteInBuild = openAthleteInBuild;
 window.openAthleteCalendar = openAthleteCalendar;
 window.saveSessionDuration = saveSessionDuration;
