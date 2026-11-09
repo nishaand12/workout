@@ -176,6 +176,11 @@ class LibraryScopeTests(unittest.TestCase):
         finally:
             db.close()
 
+        slot = self.client.get(f"/api/workout-exercises/{squat_row['id']}/logged-sets", headers=admin)
+        self.assertEqual(slot.status_code, 200, slot.text)
+        self.assertEqual(slot.json(), {"days": 1, "athletes": 1, "logged_sets": 1})
+        self.assertEqual(self.client.get(f"/api/workout-exercises/{squat_row['id']}/logged-sets", headers=ana_auth).status_code, 403)
+
         use = self.client.get(f"/api/exercises/{squat['id']}/programming", headers=admin)
         self.assertEqual(use.status_code, 200, use.text)
         self.assertEqual(use.json(), {"days": 2, "athletes": 2, "logged_sets": 1})

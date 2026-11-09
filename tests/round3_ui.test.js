@@ -498,13 +498,29 @@ assert.ok(sandbox.buildView().includes("week-note"));
   sandbox.logCell(bareKey, 0, "done", false, bareDate, bare.id, 0);
   assert.equal(state.logs[bareKey].cells[0].done, false);
 
-  const plank = sandbox.item({ name: "Plank", type: "lift", sets: 3, reps: ["30"], props: [], completionOnly: true, note: "Hold tight" });
+  // A warm-up or cooldown is a text block with one tick.
+  const plank = sandbox.item({ name: "Plank", type: "lift", sets: 3, reps: ["30"], props: [], completionOnly: true, textOnly: true, note: "Hold tight" });
   sandbox.ensureDay(bareDate).items.push(plank);
   assert.ok(!sandbox.entryColumns(plank).some((col) => col[0] === "w"));
   state.entryItem = plank.id;
   let plankHtml = sandbox.entryItem("ath", bareDate, plank);
   assert.ok(plankHtml.includes("✓ Complete"));
   assert.ok(!plankHtml.includes("<table"));
+  // Any other completion-only lift keeps its set rows. Only the weight box goes.
+  const carry = sandbox.item({ name: "Carry", type: "lift", sets: 3, reps: ["10", "10", "10"], loads: ["20", "20", "20"], props: ["load"], completionOnly: true });
+  sandbox.ensureDay(bareDate).items.push(carry);
+  assert.deepEqual(JSON.parse(JSON.stringify(sandbox.entryColumns(carry))), [["r", "Reps"]]);
+  state.entryItem = carry.id;
+  const carryHtml = sandbox.entryItem("ath", bareDate, carry);
+  assert.ok(carryHtml.includes("<table"));
+  assert.equal((carryHtml.match(/aria-label="Done set/g) || []).length, 3);
+  assert.ok(carryHtml.includes('aria-label="Reps set 2"'));
+  assert.ok(!carryHtml.includes("Weight"));
+  const carryKey = "ath:" + bareDate + ":" + carry.id;
+  sandbox.logCell(carryKey, 0, "done", true, bareDate, carry.id, 0);
+  assert.equal(state.logs[carryKey].cells[0].done, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(sandbox.entryItemStatus("ath", bareDate, carry))), { done: 1, total: 3 });
+  state.entryItem = plank.id;
   const plankKey = "ath:" + bareDate + ":" + plank.id;
   sandbox.toggleExerciseComplete(plankKey, bareDate, plank.id, 0);
   plankHtml = sandbox.entryItem("ath", bareDate, plank);

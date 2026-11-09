@@ -119,6 +119,10 @@
 .ui-card-title .count { font-size: 12px; font-weight: 500; color: var(--ui-muted); background: var(--ui-hover); border-radius: 999px; padding: 2px 8px; }
 .ui-card-sub { font-size: 13px; color: var(--ui-muted); margin: 2px 0 0; }
 .ui-card-body { padding: 16px 20px; }
+.ui-card-note { margin: 0; padding: 0 20px 14px; font-size: 13px; line-height: 1.45; color: var(--ui-muted); }
+.ui-card-note b { color: var(--ui-text-2); font-weight: 600; }
+.ui-table tr.is-hidden td { color: var(--ui-muted); }
+.ui-table tr.is-hidden td.strong { font-weight: 500; }
 .ui-card-body.tight { padding: 8px 12px; }
 .ui-card-foot { padding: 12px 20px; border-top: 1px solid var(--ui-border); background: var(--ui-sunken); border-radius: 0 0 var(--ui-r-card) var(--ui-r-card); }
 

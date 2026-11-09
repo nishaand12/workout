@@ -388,6 +388,21 @@ def remove_exercise_from_programming(
 ):
     return crud.remove_exercise_from_programming(db, current_user, exercise_id)
 
+@app.get("/api/workout-exercises/{row_id}/logged-sets", response_model=ProgrammingUse)
+def workout_exercise_logged_sets(
+    row_id: int,
+    db: Session = Depends(get_db),
+    current_user: crud.User = Depends(require_auth),
+):
+    """Sets athletes have logged on one exercise of one day. Swapping the exercise clears them."""
+    row = db.query(crud.WorkoutExercise).filter(crud.WorkoutExercise.id == row_id).first()
+    workout = crud.get_workout(db, row.workout_id) if row else None
+    if not row or not workout:
+        raise HTTPException(status_code=404, detail="Exercise not found on that day")
+    if not _staff(current_user) or not current_user.gym_id or workout.gym_id != current_user.gym_id:
+        raise HTTPException(status_code=403, detail="That workout is not visible to you.")
+    return crud.workout_exercise_logged_sets(db, row_id)
+
 @app.get("/api/chains", response_model=List[ChainResponse])
 def list_chains(db: Session = Depends(get_db)):
     return crud.list_chains(db)

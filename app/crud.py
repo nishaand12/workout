@@ -3555,6 +3555,19 @@ def _logged_set_count(db: Session, row_ids: List[int]) -> int:
     ).count()
 
 
+def workout_exercise_logged_sets(db: Session, row_id: int) -> dict:
+    touched = db.query(SetLog).filter(
+        SetLog.workout_exercise_id == row_id,
+        or_(SetLog.completed == True, SetLog.weight != 0, SetLog.reps != 0),
+    ).all()
+    session_ids = {log.session_id for log in touched}
+    athletes = set()
+    if session_ids:
+        for session in db.query(WorkoutSession.user_id).filter(WorkoutSession.id.in_(session_ids)).all():
+            athletes.add(session.user_id)
+    return {"days": 1 if touched else 0, "athletes": len(athletes), "logged_sets": len(touched)}
+
+
 def _programming_use(db: Session, coach: User, row_filter) -> dict:
     rows, workout_ids, reached = _programming_rows(db, coach, row_filter)
     return {
