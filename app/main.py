@@ -34,7 +34,8 @@ from app.schemas import (
     PasswordResetRequest, PasswordResetConfirm, SupabaseAuthSync,
     ViewSwitch, GymCreate, JoinCodeCreate, JoinCodeRedeem, JoinCodeResponse,
     GymContext, GymMemberCreate, GymMemberCreated, MoveTeamRequest,
-    GymSavedItem, GymItemCreate, GymItemUpdate, HideExerciseRequest,
+    GymSavedItem, GymItemCreate, GymItemUpdate, HideExerciseRequest, HideChainRequest,
+    ProgrammingUse, ProgrammingRemoved,
     CoachAssignRequest, AthleteNoteRequest, ScheduleItem,
     BulkAthleteUploadRequest, BulkAthleteUploadResponse, CalendarScheduleEntry,
     ChainResponse, ChainWrite, ChainEditRequest, ChainEditResponse, ChainFoldRequest,
@@ -142,6 +143,7 @@ def ensure_schema_migrations():
             ("default_pct", "VARCHAR(50) DEFAULT ''"),
             ("default_rest_rep", "VARCHAR(50) DEFAULT ''"),
             ("default_distance", "VARCHAR(50) DEFAULT ''"),
+            ("default_time", "VARCHAR(50) DEFAULT ''"),
             ("intensity_kind", "VARCHAR(20) DEFAULT ''"),
             ("intensity_value", "VARCHAR(20) DEFAULT ''"),
             ("default_stations", "TEXT DEFAULT ''"),
@@ -216,6 +218,7 @@ async def lifespan(app: FastAPI):
                 crud.seed_default_users(db)
             crud.scrub_visible_brand(db)
             crud.migrate_to_calendars(db)
+            crud.migrate_hidden_to_coaches(db)
         finally:
             db.close()
     except Exception as exc:
@@ -367,12 +370,38 @@ def update_exercise(exercise_id: int, exercise_in: ExerciseUpdate, db: Session =
         raise HTTPException(status_code=404, detail="Exercise not found")
     return updated
 
-@app.delete("/api/exercises/{exercise_id}")
-def delete_exercise(exercise_id: int, db: Session = Depends(get_db)):
-    success = crud.delete_exercise(db, exercise_id)
-    if not success:
-        raise HTTPException(status_code=404, detail="Exercise not found")
-    return {"message": "Exercise deleted"}
+# The exercise catalog is shared by every gym, so nobody deletes from it. A coach hides an
+# exercise in their own library, or strips it from their own programming.
+@app.get("/api/exercises/{exercise_id}/programming", response_model=ProgrammingUse)
+def exercise_programming(
+    exercise_id: int,
+    db: Session = Depends(get_db),
+    current_user: crud.User = Depends(require_auth),
+):
+    return crud.exercise_programming_use(db, current_user, exercise_id)
+
+@app.post("/api/exercises/{exercise_id}/remove-from-programming", response_model=ProgrammingRemoved)
+def remove_exercise_from_programming(
+    exercise_id: int,
+    db: Session = Depends(get_db),
+    current_user: crud.User = Depends(require_auth),
+):
+    return crud.remove_exercise_from_programming(db, current_user, exercise_id)
+
+@app.get("/api/workout-exercises/{row_id}/logged-sets", response_model=ProgrammingUse)
+def workout_exercise_logged_sets(
+    row_id: int,
+    db: Session = Depends(get_db),
+    current_user: crud.User = Depends(require_auth),
+):
+    """Sets athletes have logged on one exercise of one day. Swapping the exercise clears them."""
+    row = db.query(crud.WorkoutExercise).filter(crud.WorkoutExercise.id == row_id).first()
+    workout = crud.get_workout(db, row.workout_id) if row else None
+    if not row or not workout:
+        raise HTTPException(status_code=404, detail="Exercise not found on that day")
+    if not _staff(current_user) or not current_user.gym_id or workout.gym_id != current_user.gym_id:
+        raise HTTPException(status_code=403, detail="That workout is not visible to you.")
+    return crud.workout_exercise_logged_sets(db, row_id)
 
 @app.get("/api/chains", response_model=List[ChainResponse])
 def list_chains(db: Session = Depends(get_db)):
@@ -381,6 +410,22 @@ def list_chains(db: Session = Depends(get_db)):
 @app.post("/api/chains", response_model=ChainResponse, status_code=status.HTTP_201_CREATED)
 def create_chain(chain_in: ChainWrite, db: Session = Depends(get_db)):
     return crud.create_chain(db, chain_in)
+
+@app.get("/api/chains/{chain_id}/programming", response_model=ProgrammingUse)
+def chain_programming(
+    chain_id: int,
+    db: Session = Depends(get_db),
+    current_user: crud.User = Depends(require_auth),
+):
+    return crud.chain_programming_use(db, current_user, chain_id)
+
+@app.post("/api/chains/{chain_id}/remove-from-programming", response_model=ProgrammingRemoved)
+def remove_chain_from_programming(
+    chain_id: int,
+    db: Session = Depends(get_db),
+    current_user: crud.User = Depends(require_auth),
+):
+    return crud.remove_chain_from_programming(db, current_user, chain_id)
 
 @app.post("/api/chains/{chain_id}/edit", response_model=ChainEditResponse)
 def edit_chain(chain_id: int, req: ChainEditRequest, db: Session = Depends(get_db)):
@@ -1152,7 +1197,31 @@ def hide_exercise(
     db: Session = Depends(get_db),
     current_user: crud.User = Depends(require_auth),
 ):
-    return crud.hide_exercise_for_gym(db, current_user, body.exercise_id)
+    return crud.hide_exercise_for_coach(db, current_user, body.exercise_id)
+
+@app.delete("/api/gym/hidden-exercises/{exercise_id}")
+def unhide_exercise(
+    exercise_id: int,
+    db: Session = Depends(get_db),
+    current_user: crud.User = Depends(require_auth),
+):
+    return crud.unhide_exercise_for_coach(db, current_user, exercise_id)
+
+@app.post("/api/gym/hidden-chains", status_code=status.HTTP_201_CREATED)
+def hide_chain(
+    body: HideChainRequest,
+    db: Session = Depends(get_db),
+    current_user: crud.User = Depends(require_auth),
+):
+    return crud.hide_chain_for_coach(db, current_user, body.chain_id)
+
+@app.delete("/api/gym/hidden-chains/{chain_id}")
+def unhide_chain(
+    chain_id: int,
+    db: Session = Depends(get_db),
+    current_user: crud.User = Depends(require_auth),
+):
+    return crud.unhide_chain_for_coach(db, current_user, chain_id)
 
 @app.post("/api/gym/coaches", response_model=GymMemberCreated, status_code=status.HTTP_201_CREATED)
 def add_coach(body: GymMemberCreate, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):

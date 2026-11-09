@@ -82,12 +82,13 @@ function item(partial) {
   const base = {
     id: uid(), type: "lift", letter: "A", sets, reps,
     loads: Array(sets).fill(""), rests: Array(sets).fill(""),
-    restReps: Array(sets).fill(""), distances: Array(sets).fill(""),
+    restReps: Array(sets).fill(""), distances: Array(sets).fill(""), times: Array(sets).fill(""),
     intensities: Array(sets).fill(""), intensityKind: "",
     tempos: Array(sets).fill(""), velocities: Array(sets).fill(""),
     powers: Array(sets).fill(""), pcts: Array(sets).fill(""),
     props: [], note: "", detail: "", questions: [], requireResponse: false,
-    completionOnly: false, trackReps: true, trackTime: false, trackDistance: false, trackVolume: false, videoUrl: ""
+    completionOnly: false, textOnly: false, trackReps: true, trackTime: false, trackDistance: false, trackVolume: false, videoUrl: "",
+    dose: 2
   };
   return Object.assign(base, partial, { reps: reps.slice() });
 }
@@ -117,6 +118,7 @@ function libraryDefaultsFrom(record) {
   return {
     sets: sets > 0 ? sets : 1,
     reps: record.default_reps != null ? String(record.default_reps) : "1",
+    time: record.default_time || "",
     load: record.default_load || "",
     rest: record.default_rest || "",
     tempo: record.default_tempo || "",
@@ -138,7 +140,10 @@ function withPropertyDefaults(partial, defaults) {
   const props = [];
   const extra = {};
   if (defaults) {
+    // A lift tracks any mix of reps, time, and distance. Elsewhere distance stays a property.
+    const dosed = (partial.type || "lift") === "lift";
     PROP_FIELDS.forEach(([key, arr]) => {
+      if (dosed && key === "distance") return;
       const value = defaults[key];
       if (value != null && String(value) !== "") {
         props.push(key);
@@ -150,8 +155,15 @@ function withPropertyDefaults(partial, defaults) {
       extra.intensityKind = defaults.intensityKind;
       extra.intensities = Array(sets).fill(String(defaults.intensityValue));
     }
+    if (dosed && !partial.textOnly) {
+      const time = String(defaults.time == null ? "" : defaults.time);
+      const distance = String(defaults.distance == null ? "" : defaults.distance);
+      if (time !== "") { partial.trackTime = true; extra.times = Array(sets).fill(time); }
+      if (distance !== "") { partial.trackDistance = true; extra.distances = Array(sets).fill(distance); }
+      if ((time !== "" || distance !== "") && String(defaults.reps == null ? "" : defaults.reps).trim() === "") partial.trackReps = false;
+    }
     partial.libraryDefaults = {
-      sets: defaults.sets, reps: defaults.reps, load: defaults.load, rest: defaults.rest,
+      sets: defaults.sets, reps: defaults.reps, time: defaults.time || "", load: defaults.load, rest: defaults.rest,
       restRep: defaults.restRep, distance: defaults.distance,
       tempo: defaults.tempo, velocity: defaults.velocity, power: defaults.power, pct: defaults.pct,
       intensityKind: defaults.intensityKind || "", intensity: defaults.intensityValue || ""
@@ -193,14 +205,15 @@ function fromCatalog(entry) {
   if (entry.type === "rest") return item({ name: "Rest Time", type: "rest", letter: "", sets: 1, reps: [60], note: "60s", trackReps: false });
   if (entry.type === "video") return item({ name: "Video", type: "video", letter: "", sets: 0, reps: [], trackReps: false });
   const sets = defaults ? Math.max(1, Math.min(10, parseInt(defaults.sets, 10) || 1)) : 1;
-  const rep = defaults ? (defaults.reps != null ? defaults.reps : "1") : "1";
-  const completionOnly = !!(defaults && defaults.completionOnly);
-  const textOnly = completionOnly || (record && isTextOnlyCategory(record.category));
+  const rep = defaults && defaults.reps != null && String(defaults.reps).trim() !== "" ? defaults.reps : "1";
+  // Warm-ups and cooldowns are a block of text. Any other completion-only lift keeps its sets.
+  const textOnly = !!(record && isTextOnlyCategory(record.category));
+  const completionOnly = textOnly || !!(defaults && defaults.completionOnly);
   return item(withPropertyDefaults({
     name: entry.name, type: "lift", letter: "A", sets, reps: Array(sets).fill(rep),
     videoUrl: defaults && defaults.videoUrl ? defaults.videoUrl : "",
     note: textOnly && defaults ? (defaults.note || "") : "",
-    completionOnly
+    completionOnly, textOnly
   }, defaults));
 }
 
@@ -370,6 +383,9 @@ const state = {
   calendarLoaded: {},
   calendarLoading: {},
   hiddenExerciseIds: [],
+  hiddenChainIds: [],
+  showHiddenLibrary: false,
+  swap: null,
   coachSessionFor: "",
   mySchedule: [],
   notesByWorkout: {},
@@ -424,11 +440,13 @@ function normalizeDistanceUnit(value) {
   if (v === "mi" || v === "mile" || v === "miles") return "mi";
   return "m";
 }
-function distanceWord(unit) {
-  return { m: "metres", km: "km", yd: "yards", mi: "miles" }[normalizeDistanceUnit(unit)] || "metres";
+// Short form, for beside a number and in column headings.
+function distanceAbbr(unit) {
+  return normalizeDistanceUnit(unit);
 }
+// Full word, only for the unit picker.
 function distanceChoice(unit) {
-  return distanceWord(unit);
+  return { m: "metres", km: "km", yd: "yards", mi: "miles" }[normalizeDistanceUnit(unit)] || "metres";
 }
 function unitWord(unit) {
   return unit === "lbs" ? "lbs" : "kg";
@@ -465,20 +483,39 @@ function displayDistanceUnit() {
   if (!person || person.id === "none" || (person.isCalendar && !person.serverId)) return "m";
   return normalizeDistanceUnit(person.distance_unit);
 }
-function doseText(it, reps) {
-  const count = it.sets || reps.length || 1;
-  const rep0 = reps.length ? reps[0] : (it.trackTime || it.trackDistance ? "0" : 1);
-  const same = !reps.length || reps.every((r) => String(r) === String(rep0));
-  if (it.trackDistance) {
-    const unit = distanceWord(displayDistanceUnit());
-    const mark = (v) => String(v == null || v === "" ? "0" : v) + " " + unit;
-    return same ? count + " x " + mark(rep0) : reps.map(mark).join(", ");
-  }
-  if (it.trackTime) {
-    const mark = (v) => String(v == null || v === "" ? "0" : v).replace(/s$/i, "") + "s";
-    return same ? count + " x " + mark(rep0) : reps.map(mark).join(", ");
-  }
-  return same ? count + " x " + rep0 : reps.join(", ");
+function doseKeys(it) {
+  if (!it) return [];
+  if ((it.type || "lift") !== "lift") return ["reps"];
+  const keys = [];
+  if (it.trackReps !== false) keys.push("reps");
+  if (it.trackTime) keys.push("time");
+  if (it.trackDistance) keys.push("distance");
+  return keys;
+}
+function doseArray(it, key) {
+  const name = key === "time" ? "times" : key === "distance" ? "distances" : "reps";
+  const sets = it.sets || 1;
+  const arr = (it[name] || []).slice(0, sets);
+  while (arr.length < sets) arr.push(arr.length ? arr[arr.length - 1] : "");
+  return arr;
+}
+function doseMark(key, value) {
+  const raw = String(value == null || value === "" ? (key === "reps" ? "1" : "0") : value);
+  if (key === "time") return raw.replace(/s$/i, "") + "s";
+  if (key === "distance") return raw + " " + distanceAbbr(displayDistanceUnit());
+  return raw;
+}
+// "3 x 2 · 10 m": the first measure carries the set count, the rest follow it.
+function doseText(it) {
+  let keys = doseKeys(it);
+  if (!keys.length) keys = ["reps"];
+  const count = it.sets || 1;
+  return keys.map((key, index) => {
+    const values = doseArray(it, key);
+    const same = values.every((v) => String(v) === String(values[0]));
+    if (index === 0) return same ? count + " x " + doseMark(key, values[0]) : values.map((v) => doseMark(key, v)).join(", ");
+    return same ? doseMark(key, values[0]) : values.map((v) => doseMark(key, v)).join("/");
+  }).join(" · ");
 }
 function loadPhrase(loads, unit) {
   if (!(loads || []).some((x) => x !== "" && x != null)) return "";
@@ -503,29 +540,26 @@ function scriptLine(it, opts) {
     const line = String(it.note || "").split("\n").filter(Boolean)[0] || "";
     return line || "Tick off when done";
   }
-  const reps = (it.reps || []).slice(0, it.sets || 1);
   const loads = (it.loads || []).slice(0, it.sets || 1);
   const rests = (it.rests || []).slice(0, it.sets || 1);
   const plain = opts && opts.plain;
   const unit = plain ? "" : (opts && Object.prototype.hasOwnProperty.call(opts, "unit") ? (opts.unit || "") : displayUnit());
-  const vol = doseText(it, reps);
+  const vol = doseText(it);
   const loadTxt = loadPhrase(loads, unit);
   const restTxt = rests.some((x) => x !== "" && x != null) ? " · rest " + rests.map((x) => x || "—").join("/") + "s" : "";
   const restReps = (it.restReps || []).slice(0, it.sets || 1);
   const restRepTxt = restReps.some((x) => x !== "" && x != null) ? " · rest/rep " + restReps.map((x) => x || "—").join("/") + "s" : "";
-  const distances = (it.distances || []).slice(0, it.sets || 1);
-  const distUnit = plain ? "" : (" " + distanceWord(displayDistanceUnit()));
-  const distTxt = distances.some((x) => x !== "" && x != null) ? " · " + distances.map((x) => (x === "" || x == null ? "—" : String(x) + distUnit)).join("/") : "";
   if (it.type === "circuit") {
     return (it.detail || "Complete 1 round").split("\n")[0];
   }
-  return vol + loadTxt + restTxt + restRepTxt + distTxt + (it.note ? " · " + it.note : "");
+  return vol + loadTxt + restTxt + restRepTxt + (it.note ? " · " + it.note : "");
 }
 function stats(day) {
   let s = 0, r = 0, v = 0;
   day.items.forEach((it) => {
     if (it.type === "break" || it.type === "video" || it.type === "questionnaire" || it.type === "note") return;
     s += it.sets || 0;
+    if ((it.type || "lift") === "lift" && it.trackReps === false) return;
     (it.reps || []).forEach((rep, i) => {
       r += +rep || 0;
       v += (+rep || 0) * (+(it.loads[i]) || 0);
@@ -553,11 +587,12 @@ function resizeSets(it, n) {
   };
   it.sets = n;
   it.reps = grow(it.reps, it.reps[0] || 1);
-  ["loads", "rests", "restReps", "distances", "intensities", "tempos", "velocities", "powers", "pcts"].forEach((k) => { it[k] = grow(it[k] || [], ""); });
+  ["loads", "rests", "restReps", "distances", "times", "intensities", "tempos", "velocities", "powers", "pcts"].forEach((k) => { it[k] = grow(it[k] || [], ""); });
 }
 
 function closeFloats() {
   state.searchDay = null;
+  state.swap = null;
   state.editor = null;
   state.propMenu = false;
   state.trackMenu = false;
@@ -599,8 +634,9 @@ function render() {
   const pending = state.pendingFocus;
   if (pending) state.pendingFocus = "";
   root.innerHTML = nav() + '<div class="shell">' + body() + "</div>" + toastHtml + modalHtml();
-  placeSearchPop();
+  // The editor first: the swap search hangs off the exercise name inside it.
   placeEditorPop();
+  placeSearchPop();
   const focusKey = pending || focusId;
   if (focusKey) {
     const el = document.querySelector(`[data-focus="${focusKey}"]`);
@@ -618,10 +654,13 @@ function placeSearchPop() {
   const pop = document.querySelector(".search-pop");
   if (!pop || !state.searchDay) return;
   const day = document.querySelector('.day[data-day="' + state.searchDay + '"]');
-  const anchor = day && day.querySelector("button.add-ex");
+  const swapAnchor = state.swap ? document.querySelector(".editor.build-editor .name-swap") : null;
+  const anchor = swapAnchor || (day && day.querySelector("button.add-ex"));
   if (!anchor) return;
-  document.body.appendChild(pop);
+  // Moving the popup again would take focus out of its search box, so attach it once.
+  if (pop.parentNode !== document.body) document.body.appendChild(pop);
   pop.classList.add("is-fixed");
+  pop.classList.toggle("is-swap", !!swapAnchor);
   const margin = 8;
   const gap = 6;
   const header = document.querySelector(".topnav");
@@ -642,6 +681,7 @@ function placeSearchPop() {
   const rect = anchor.getBoundingClientRect();
   let top = rect.top - ph - gap;
   const below = rect.bottom + gap;
+  if (swapAnchor && below + ph <= vh - margin) top = below;
   if (top < minTop && below + ph <= vh - margin) top = below;
   if (top < minTop) top = minTop;
   if (top + ph > vh - margin) top = Math.max(minTop, vh - margin - ph);
@@ -722,7 +762,7 @@ async function enterApp(data) {
   if (state.role !== "athlete") loadExercises();
 }
 const NOTE_SKIP = {
-  Rests: 1, RestReps: 1, Distances: 1, Intensities: 1, IntensityKind: 1,
+  Rests: 1, RestReps: 1, Distances: 1, Times: 1, Intensities: 1, IntensityKind: 1,
   Tempos: 1, Velocities: 1, Powers: 1, Pcts: 1, Props: 1, Flags: 1, Additional: 1, Seeded: 1
 };
 function taggedValue(lines, label) {
@@ -748,6 +788,7 @@ function parseNotes(notes, restSeconds) {
     pcts: splitTag(lines, "Pcts"),
     restReps: splitTag(lines, "RestReps"),
     distances: splitTag(lines, "Distances"),
+    times: splitTag(lines, "Times"),
     intensities: splitTag(lines, "Intensities"),
     intensityKind: taggedValue(lines, "IntensityKind"),
     props: splitTag(lines, "Props").filter(Boolean),
@@ -783,14 +824,24 @@ function itemNotes(it) {
   }
   if ((it.props || []).length) lines.push("Props:" + it.props.join(","));
   const flags = [];
-  if (it.trackTime) flags.push("trackTime");
-  else if (it.trackDistance) flags.push("trackDistance");
-  if (it.type === "circuit" || it.type === "questionnaire") {
-    if (it.trackReps) flags.push("trackReps");
-  } else if (it.trackReps === false && !it.trackTime && !it.trackDistance) flags.push("noTrackReps");
+  const dosed = (it.type || "lift") === "lift";
+  if (dosed) {
+    // dose2: reps, time, and distance each have their own row. Time and distance sit in Times and Distances.
+    flags.push("dose2");
+    if (it.trackTime) flags.push("trackTime");
+    if (it.trackDistance) flags.push("trackDistance");
+    if (it.trackReps === false) flags.push("noTrackReps");
+  } else {
+    if (it.trackTime) flags.push("trackTime");
+    else if (it.trackDistance) flags.push("trackDistance");
+    if (it.type === "circuit" || it.type === "questionnaire") {
+      if (it.trackReps) flags.push("trackReps");
+    } else if (it.trackReps === false && !it.trackTime && !it.trackDistance) flags.push("noTrackReps");
+  }
   if (it.trackVolume) flags.push("trackVolume");
   if (it.type === "circuit" && it.completionOnly === false) flags.push("noCompletionOnly");
   else if (it.completionOnly) flags.push("completionOnly");
+  if (dosed && it.completionOnly && it.textOnly) flags.push("textOnly");
   if (flags.length) lines.push("Flags:" + flags.join(","));
   const seeded = Object.keys(it.fieldSeed || {}).filter((key) => it.fieldSeed[key]);
   if (seeded.length) lines.push("Seeded:" + seeded.join(","));
@@ -799,6 +850,10 @@ function itemNotes(it) {
     Rests: "rests", RestReps: "restReps", Distances: "distances", Intensities: "intensities",
     Tempos: "tempos", Velocities: "velocities", Powers: "powers", Pcts: "pcts"
   };
+  if (dosed) {
+    if (it.trackTime) keys.Times = "times";
+    if (!it.trackDistance) delete keys.Distances;
+  }
   Object.keys(keys).forEach((label) => {
     const tagged = taggedList(label, (it[keys[label]] || []).slice(0, sets));
     if (tagged) lines.push(tagged);
@@ -810,17 +865,22 @@ function workoutToDayItems(workout) {
   return workout.exercises.slice().sort((a, b) => (a.order_index || 0) - (b.order_index || 0)).map((we) => {
     const parsed = parseNotes(we.notes, we.rest_seconds);
     const flags = parsed.flags;
-    const trackTime = flags.indexOf("trackTime") >= 0;
-    const trackDistance = !trackTime && flags.indexOf("trackDistance") >= 0;
-    const reps = String(we.target_reps || "1").split(",").map((part) => {
-      const value = part.trim();
-      return trackTime ? value.replace(/s$/i, "") : value;
-    });
     const loads = String(we.target_weight || "").split(",");
     const cat = String((we.exercise && we.exercise.category) || "");
     const type = dayItemType(cat, parsed);
     const sets = type === "note" ? 0 : (we.prescribed_sets || 1);
-    return item({
+    // Days saved before dose2 kept seconds or distance in the reps row. upgradeDose moves them out.
+    const dose2 = type === "lift" && flags.indexOf("dose2") >= 0;
+    const trackTime = flags.indexOf("trackTime") >= 0;
+    const trackDistance = (dose2 || !trackTime) && flags.indexOf("trackDistance") >= 0;
+    const reps = String(we.target_reps || "1").split(",").map((part) => {
+      const value = part.trim();
+      return trackTime && !dose2 ? value.replace(/s$/i, "") : value;
+    });
+    const completionOnly = type === "circuit" ? flags.indexOf("noCompletionOnly") < 0 : flags.indexOf("completionOnly") >= 0;
+    return upgradeDose(item({
+      dose: dose2 ? 2 : 1,
+      times: parsed.times.length ? parsed.times.map((value) => String(value).replace(/s$/i, "")) : Array(sets).fill(""),
       id: "wx" + we.id,
       weId: we.id,
       name: (we.exercise && we.exercise.name) || "Exercise",
@@ -838,7 +898,7 @@ function workoutToDayItems(workout) {
       velocities: parsed.velocities,
       powers: parsed.powers,
       pcts: parsed.pcts,
-      props: inferProps(parsed, loads),
+      props: type === "lift" ? inferProps(parsed, loads).filter((key) => key !== "distance") : inferProps(parsed, loads),
       detail: type === "circuit" ? parsed.plainLines.join("\n") : "",
       note: type === "circuit"
         ? parsed.additional
@@ -846,11 +906,14 @@ function workoutToDayItems(workout) {
       questions: type === "questionnaire" ? (parsed.plainLines.length ? parsed.plainLines : QUESTIONS.slice()) : [],
       trackTime,
       trackDistance,
-      trackReps: (trackTime || trackDistance)
-        ? false
-        : ((type === "circuit" || type === "questionnaire") ? flags.indexOf("trackReps") >= 0 : flags.indexOf("noTrackReps") < 0),
+      trackReps: dose2
+        ? flags.indexOf("noTrackReps") < 0
+        : ((trackTime || trackDistance)
+          ? false
+          : ((type === "circuit" || type === "questionnaire") ? flags.indexOf("trackReps") >= 0 : flags.indexOf("noTrackReps") < 0)),
       trackVolume: flags.indexOf("trackVolume") >= 0,
-      completionOnly: type === "circuit" ? flags.indexOf("noCompletionOnly") < 0 : flags.indexOf("completionOnly") >= 0,
+      completionOnly,
+      textOnly: type === "lift" && completionOnly && (flags.indexOf("textOnly") >= 0 || isTextOnlyCategory(cat)),
       fieldSeed: Object.fromEntries((parsed.seeded || []).map((key) => [key, true])),
       exerciseId: we.exercise_id,
       videoUrl: (we.exercise && we.exercise.video_url) || "",
@@ -861,8 +924,45 @@ function workoutToDayItems(workout) {
       chainOrder: we.chain_order || 0,
       chainCoachOpen: !!we.chain_coach_open,
       chainAthleteOpen: !!we.chain_athlete_open
-    });
+    }));
   });
+}
+// Bring an item saved in the old shape up to dose2. Old lifts kept one measure in the reps
+// row, named by trackTime or trackDistance, and held an extra distance as a property.
+function upgradeDose(it) {
+  if (!it || it.dose === 2) return it;
+  const sets = it.sets || 1;
+  const filled = (arr) => (arr || []).some((x) => x !== "" && x != null);
+  if ((it.type || "lift") === "lift") {
+    const main = (it.reps || []).slice();
+    const extraDistance = (it.props || []).indexOf("distance") >= 0 || filled(it.distances);
+    const moved = it.trackTime ? "time" : (it.trackDistance ? "distance" : "");
+    if (it.trackTime) {
+      it.times = main.map((value) => String(value == null ? "" : value).replace(/s$/i, ""));
+      it.trackDistance = extraDistance;
+    } else if (it.trackDistance) {
+      it.distances = main;
+    } else {
+      it.trackDistance = extraDistance;
+    }
+    if (moved) {
+      it.reps = Array(sets).fill("1");
+      it.trackReps = false;
+      if (it.fieldSeed && it.fieldSeed.reps) {
+        it.fieldSeed[moved] = true;
+        delete it.fieldSeed.reps;
+      }
+    }
+    it.props = (it.props || []).filter((key) => key !== "distance");
+    if (it.textOnly == null) {
+      const record = exerciseRecord(it.name);
+      it.textOnly = !!(it.completionOnly && record && isTextOnlyCategory(record.category));
+    }
+  }
+  if (!Array.isArray(it.times)) it.times = Array(sets).fill("");
+  it.textOnly = !!it.textOnly;
+  it.dose = 2;
+  return it;
 }
 
 const autosaveTimers = {};
@@ -993,7 +1093,7 @@ function dayFromDraft(athleteId, date, draft, local) {
     weekLabel: draft.weekLabel || weekName(date),
     recurring: draft.recurring || 0,
     color: draft.color || (local && local.color) || "#3b82f6",
-    items: draft.items || [],
+    items: (draft.items || []).map(upgradeDose),
     savedFor: athleteId,
     savedWorkoutId: (local && local.savedWorkoutId) || draft.savedWorkoutId || null,
     assignmentId: (local && local.assignmentId) || draft.assignmentId || null
@@ -1056,6 +1156,7 @@ function daySignature(day) {
     rests: it.rests || [],
     restReps: it.restReps || [],
     distances: it.distances || [],
+    times: it.times || [],
     intensities: it.intensities || [],
     intensityKind: it.intensityKind || "",
     tempos: it.tempos || [],
@@ -1071,6 +1172,7 @@ function daySignature(day) {
     trackReps: it.trackReps !== false,
     trackVolume: !!it.trackVolume,
     completionOnly: !!it.completionOnly,
+    textOnly: !!it.textOnly,
     requireResponse: !!it.requireResponse,
     videoUrl: it.videoUrl || "",
     fieldSeed: it.fieldSeed || {},
@@ -1343,6 +1445,16 @@ function itemBody(item) {
 function markHiddenExercises() {
   const hidden = state.hiddenExerciseIds || [];
   (state.serverExercises || []).forEach((row) => { row.hidden = hidden.indexOf(row.id) >= 0; });
+  const hiddenChains = state.hiddenChainIds || [];
+  (state.chains || []).forEach((row) => { row.hidden = hiddenChains.indexOf(row.id) >= 0; });
+}
+function visibleChains() {
+  return (state.chains || []).filter((chain) => !chain.hidden);
+}
+const VIDEO_ICON = '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><rect x="1" y="3.5" width="9.5" height="9" rx="1.8" fill="currentColor"/><path d="M11.5 7 15 4.6v6.8L11.5 9z" fill="currentColor"/></svg>';
+// Marks an exercise that has a video attached.
+function videoMark(url) {
+  return url ? `<span class="vid-mark" title="Has a video" aria-label="Has a video">${VIDEO_ICON}</span>` : "";
 }
 function applyGymSaved(ctx) {
   const items = (ctx && ctx.items) || [];
@@ -1362,6 +1474,7 @@ function applyGymSaved(ctx) {
     return { id: item.id, title: body.title || "Note", body: body.body || "", date: body.date || "" };
   });
   state.hiddenExerciseIds = (ctx && ctx.hidden_exercise_ids) || [];
+  state.hiddenChainIds = (ctx && ctx.hidden_chain_ids) || [];
   markHiddenExercises();
 }
 async function loadOwnJournal() {
@@ -1665,7 +1778,7 @@ function libraryPanelHtml() {
   const rows = (state.serverExercises || []).filter((e) => !e.hidden
     && (cat === "All" || canonicalCategory(e.category || "Strength") === cat)
     && (!q || e.name.toLowerCase().includes(q)));
-  const chains = cat === "All" ? (state.chains || []).filter((c) => !q || c.name.toLowerCase().includes(q)) : [];
+  const chains = cat === "All" ? visibleChains().filter((c) => !q || c.name.toLowerCase().includes(q)) : [];
   const exRows = rows.slice(0, 120).map((e) => {
     const open = state.panelOpen === e.id;
     const defaults = exerciseDefaultsText(e);
@@ -1675,7 +1788,7 @@ function libraryPanelHtml() {
     ].filter((f) => f[1]).map((f) => `<div><span>${f[0]}</span>${esc(f[1])}</div>`).join("");
     return `<div class="bp-row${open ? " open" : ""}">
       <button type="button" class="bp-main" onclick="state.panelOpen=state.panelOpen===${e.id}?null:${e.id};render()">
-        <b>${esc(e.name)}</b><small>${esc(categoryLabel(e.category))}${defaults ? " · " + esc(defaults) : ""}${e.completion_only ? " · Completion only" : ""}</small>
+        <b>${esc(e.name)}${videoMark(e.video_url)}</b><small>${esc(categoryLabel(e.category))}${defaults ? " · " + esc(defaults) : ""}${e.completion_only ? " · Completion only" : ""}</small>
       </button>
       <button type="button" class="bp-add" title="Add to ${esc(fmtDay(date))}" aria-label="Add ${esc(e.name)} to ${esc(fmtDay(date))}" onclick="addLibraryExercise(${e.id})">＋</button>
       ${open ? `<div class="bp-detail">${facts}${e.default_notes ? `<p>${esc(e.default_notes)}</p>` : ""}${e.video_url ? `<a href="${esc(e.video_url)}" target="_blank" rel="noopener">▶ Watch video</a>` : ""}<button type="button" class="ghost" onclick="editExercise(${e.id})">Edit in library</button></div>` : ""}
@@ -2284,26 +2397,56 @@ function openSearch(date, ev) {
   if (ev) ev.stopPropagation();
   state.searchDay = date;
   state.searchQ = "";
+  state.swap = null;
   state.focusDay = date;
   state.editor = null;
   state.pendingFocus = "ex-search";
   render();
 }
+// Clicking an exercise's name in the editor opens the same search, to put a different exercise in its place.
+function openSwap(date, id, ev) {
+  if (ev) ev.stopPropagation();
+  if (state.swap && state.swap.id === id) { endSwap(); render(); return; }
+  state.swap = { date, id };
+  state.searchDay = date;
+  state.searchQ = "";
+  state.propMenu = state.letterMenu = state.optionsMenu = state.supersetMenu = state.trackMenu = false;
+  state.pendingFocus = "ex-search";
+  render();
+}
+function endSwap() {
+  if (!state.swap) return false;
+  state.swap = null;
+  state.searchDay = null;
+  return true;
+}
 function searchPop(date) {
   const q = state.searchQ.toLowerCase();
-  const list = CATALOG.filter((c) => !q || c.name.toLowerCase().includes(q)).slice(0, 8);
-  const chains = (state.chains || []).filter((chain) => {
+  const swap = state.swap && state.swap.date === date ? state.swap : null;
+  const structural = (c) => c.type === "break" || c.type === "rest" || c.type === "video";
+  const list = CATALOG.filter((c) => {
+    if (swap && structural(c)) return false;
+    const record = exerciseRecord(c.name);
+    if (record && record.hidden) return false;
+    return !q || c.name.toLowerCase().includes(q);
+  }).slice(0, 8);
+  const chains = swap ? [] : visibleChains().filter((chain) => {
     if (!q) return true;
     return chain.name.toLowerCase().includes(q) || String(chain.kind || "").toLowerCase().includes(q);
   }).slice(0, 8);
   const chainRows = chains.map((chain) => `<button class="opt chain-opt" onclick="addChainToDay('${date}', ${chain.id})"><span class="chain-mark">Chain</span><span>${esc(chain.name)}</span><span class="tag">${esc(chain.kind || "")}</span></button>`).join("");
+  const pick = swap ? "swapFromCatalog" : "addFromCatalog";
+  const rows = list.map((c) => {
+    const record = exerciseRecord(c.name);
+    return `<button class="opt" onclick="${pick}('${date}', ${CATALOG.indexOf(c)})"><span class="opt-name">${esc(c.name)}</span>${videoMark(record && record.video_url)}</button>`;
+  }).join("");
   return `<div class="pop search-pop" onclick="event.stopPropagation()">
-    <input data-focus="ex-search" type="text" autocomplete="off" placeholder="Search Exercises" value="${esc(state.searchQ)}" oninput="state.searchQ=this.value;render()">
+    <input data-focus="ex-search" type="text" autocomplete="off" placeholder="${swap ? "Swap for another exercise" : "Search Exercises"}" aria-label="${swap ? "Search for a different exercise" : "Search exercises"}" value="${esc(state.searchQ)}" oninput="state.searchQ=this.value;render()">
     <div class="search-results">
       ${chainRows}
-      ${list.map((c) => `<button class="opt" onclick="addFromCatalog('${date}', ${CATALOG.indexOf(c)})">${esc(c.name)}</button>`).join("")}
+      ${rows}
       <button class="opt create-row" onclick="createExercise('${date}')">+ Create New Exercise <span class="tag">Shift+Enter</span></button>
-      <button class="opt create-row" onclick="createChainFromDay('${date}')">+ Create New Chain</button>
+      ${swap ? "" : `<button class="opt create-row" onclick="createChainFromDay('${date}')">+ Create New Chain</button>`}
     </div>
   </div>`;
 }
@@ -2318,6 +2461,59 @@ function addFromCatalog(date, index) {
   const entry = Object.assign({}, CATALOG[index] || { name: "Exercise", type: "lift" });
   entry.type = catalogType(entry);
   addItem(date, fromCatalog(entry));
+}
+// Put a different exercise in this slot. Sets, reps, and load reset to the new exercise's defaults.
+function swapItemFor(date, id, entry) {
+  const it = findItem(date, id);
+  if (!it) return;
+  snapshot();
+  const was = it.name;
+  const fresh = fromCatalog(Object.assign({}, entry, { type: catalogType(entry) }));
+  const keep = {
+    id: it.id, letter: it.letter, selected: !!it.selected,
+    chainId: it.chainId || null, chainInstance: it.chainInstance || "", chainName: it.chainName || "",
+    chainKind: it.chainKind || "", chainOrder: it.chainOrder || 0,
+    chainCoachOpen: !!it.chainCoachOpen, chainAthleteOpen: !!it.chainAthleteOpen
+  };
+  // No weId: the saved row for the old exercise goes, and the sets logged on it go with it.
+  Object.keys(it).forEach((key) => { delete it[key]; });
+  Object.assign(it, fresh, keep);
+  const record = exerciseRecord(it.name);
+  it.exerciseId = record ? record.id : null;
+  endSwap();
+  state.modal = null;
+  refreshFutureCopies(date);
+  noteDayEdit(date);
+  noteHist("Swapped " + was + " for " + it.name);
+  render();
+}
+async function swapWithWarning(date, id, entry) {
+  const it = findItem(date, id);
+  if (!it) return;
+  if (String(it.name || "").toLowerCase() === String(entry.name || "").toLowerCase()) { endSwap(); render(); return; }
+  if (!it.weId) { swapItemFor(date, id, entry); return; }
+  let body = "";
+  try {
+    const use = await api("GET", "/api/workout-exercises/" + it.weId + "/logged-sets");
+    if (!use || !use.logged_sets) { swapItemFor(date, id, entry); return; }
+    body = `${use.logged_sets} set${use.logged_sets === 1 ? "" : "s"} logged on ${it.name} this day will be erased. This cannot be undone.`;
+  } catch (err) {
+    body = `Could not check for logged sets. Any sets logged on ${it.name} this day will be erased.`;
+  }
+  endSwap();
+  state.modal = {
+    type: "confirm",
+    title: `Swap ${it.name} for ${entry.name}?`,
+    body,
+    confirmLabel: "Swap",
+    onConfirm: () => swapItemFor(date, id, entry)
+  };
+  render();
+}
+function swapFromCatalog(date, index) {
+  const entry = CATALOG[index];
+  if (!entry || !state.swap) return;
+  swapWithWarning(date, state.swap.id, Object.assign({}, entry));
 }
 function nextDayLetter(day) {
   const used = day.items.map((row) => row.letter).filter(Boolean);
@@ -2464,6 +2660,7 @@ function blankLibraryRow(name) {
     default_rest: "",
     default_rest_rep: "",
     default_distance: "",
+    default_time: "",
     default_tempo: "",
     default_velocity: "",
     default_power: "",
@@ -2476,6 +2673,8 @@ function blankLibraryRow(name) {
   };
 }
 function openNewLibraryExercise(date, name, opts) {
+  const swapId = state.swap && state.swap.date === date ? state.swap.id : null;
+  state.swap = null;
   state.searchDay = null;
   const libraryOnly = !!(opts && opts.libraryOnly);
   const row = blankLibraryRow(name);
@@ -2485,7 +2684,7 @@ function openNewLibraryExercise(date, name, opts) {
     date,
     liveCategory: true,
     fields: exerciseFields(row),
-    onSave: (values) => libraryOnly ? saveLibraryExercise(values) : saveNewLibraryExercise(date, values)
+    onSave: (values) => libraryOnly ? saveLibraryExercise(values) : saveNewLibraryExercise(date, values, swapId)
   });
 }
 async function postLibraryExercise(values) {
@@ -2496,8 +2695,17 @@ async function postLibraryExercise(values) {
     return await api("POST", "/api/exercises", payload);
   } catch (err) {
     const message = err.message || "";
-    if (message.toLowerCase().indexOf("already exists") >= 0) toast("That exercise is already in the library");
-    else toast(message || "Could not save that exercise");
+    if (message.toLowerCase().indexOf("already exists") >= 0) {
+      const hidden = exerciseRecord(payload.name);
+      if (hidden && hidden.hidden) {
+        await unhideExercise(hidden.id, { quiet: true });
+        state.modal = null;
+        toast(hidden.name + " was hidden. It is back in your library.");
+        render();
+        return null;
+      }
+      toast("That exercise is already in the library");
+    } else toast(message || "Could not save that exercise");
     return null;
   }
 }
@@ -2510,11 +2718,17 @@ function rememberCreatedExercise(created) {
     state.lifts.push({ id: "srv" + created.id, name: created.name, type: dayTypeForCategory(created.category), tags: "N/A" });
   }
 }
-async function saveNewLibraryExercise(date, values) {
+async function saveNewLibraryExercise(date, values, swapId) {
   const created = await postLibraryExercise(values);
   if (!created) return;
   rememberCreatedExercise(created);
-  addItem(date, fromCatalog({ name: created.name, type: dayTypeForCategory(created.category) }));
+  const entry = { name: created.name, type: dayTypeForCategory(created.category) };
+  if (swapId && findItem(date, swapId)) {
+    state.modal = null;
+    await swapWithWarning(date, swapId, entry);
+  } else {
+    addItem(date, fromCatalog(entry));
+  }
   toast("Saved to the exercise library");
 }
 async function saveLibraryExercise(values) {
@@ -2550,6 +2764,7 @@ function openEditor(date, id, ev) {
   if (switching && !closeEditor()) return;
   state.focusDay = date;
   state.searchDay = null;
+  state.swap = null;
   state.modal = null;
   state.propMenu = false;
   state.letterMenu = false;
@@ -2579,6 +2794,7 @@ function saveEditor() {
   const date = ed.day;
   state.editor = null;
   state.modal = null;
+  endSwap();
   noteDayEdit(date);
   queueDaySave(state.athleteId, date, { explicit: true });
   render();
@@ -2597,6 +2813,7 @@ function discardEditor() {
   const date = ed.day;
   state.editor = null;
   state.modal = null;
+  endSwap();
   noteDayEdit(date);
   render();
 }
@@ -2616,14 +2833,16 @@ function dismissEditorName() {
 // has to be closed here when the click lands outside the menu itself.
 function editorClick(ev) {
   if (ev) ev.stopPropagation();
-  if (ev && ev.target && ev.target.closest && ev.target.closest(".pop, .menu")) return;
-  if (!(state.propMenu || state.letterMenu || state.optionsMenu || state.supersetMenu || state.trackMenu)) return;
+  if (ev && ev.target && ev.target.closest && ev.target.closest(".pop, .menu, .name-swap")) return;
+  if (!(state.propMenu || state.letterMenu || state.optionsMenu || state.supersetMenu || state.trackMenu || state.swap)) return;
   state.propMenu = state.letterMenu = state.optionsMenu = state.supersetMenu = state.trackMenu = false;
+  endSwap();
   render();
 }
 function toggleEditorMenu(which, ev) {
   if (ev) ev.stopPropagation();
   const next = !state[which];
+  endSwap();
   state.propMenu = false;
   state.letterMenu = false;
   state.optionsMenu = false;
@@ -2632,9 +2851,10 @@ function toggleEditorMenu(which, ev) {
   state[which] = next;
   render();
 }
-// A completion-only lift is a block of text with a Done tick, like a warm-up or cooldown.
+// A warm-up or cooldown is a block of text with a Done tick. Other completion-only lifts keep
+// their sets and reps: the athlete just has no weight to enter.
 function isTextOnlyItem(it) {
-  return !!it && it.completionOnly && (it.type || "lift") === "lift";
+  return !!it && !!it.completionOnly && !!it.textOnly && (it.type || "lift") === "lift";
 }
 function editorHead(date, it, day) {
   const textOnly = isTextOnlyItem(it);
@@ -2646,7 +2866,9 @@ function editorHead(date, it, day) {
     : "";
   return `<div class="editor-h">
       <span class="letter" style="background:${LETTER_COLOR[it.letter] || "#666"}">${esc(it.letter || "•")}</span>
-      <input class="name-input" aria-label="Exercise name" data-focus="exname-${it.id}" value="${esc(it.name)}" oninput="setField('${date}','${it.id}','name', this.value)" onchange="renderSoon()">
+      ${it.type === "break" || it.type === "rest" || it.type === "video"
+        ? `<input class="name-input" aria-label="Exercise name" data-focus="exname-${it.id}" value="${esc(it.name)}" oninput="setField('${date}','${it.id}','name', this.value)" onchange="renderSoon()">`
+        : `<button type="button" class="name-input name-swap" aria-label="${esc(it.name)}. Choose a different exercise" aria-expanded="${state.swap && state.swap.id === it.id ? "true" : "false"}" title="Choose a different exercise" onclick="openSwap('${date}','${it.id}', event)"><span class="name-swap-text">${esc(it.name)}</span><span class="name-swap-caret" aria-hidden="true">▾</span></button>`}
       ${letterBtn}
       <button type="button" class="iconbtn" title="Delete" onclick="askDelete('${date}','${it.id}')">🗑</button>
       <button type="button" class="iconbtn" title="Close" onclick="closeEditor();event.stopPropagation()">✕</button>
@@ -2655,10 +2877,14 @@ function editorHead(date, it, day) {
     ${textOnly ? "" : `<button type="button" class="linkish" onclick="openInfo('${date}','${it.id}')">+ Add Additional Info (Shift + I)</button>`}
     ${it.note && !textOnly ? `<div class="note-line">${esc(it.note)}</div>` : ""}`;
 }
-function workTable(date, it) {
-  const keys = [];
-  if (it.trackTime || it.trackDistance || it.trackReps !== false || it.type === "circuit") keys.push("reps");
+// Rows of the set table: the tracked measures first, then the added properties.
+function setFieldKeys(it) {
+  const keys = doseKeys(it);
   (it.props || []).forEach((key) => { if (PROP_LABEL[key] && keys.indexOf(key) < 0) keys.push(key); });
+  return keys;
+}
+function workTable(date, it) {
+  const keys = setFieldKeys(it);
   const propRows = keys.map((p) => propRow(date, it, p)).join("");
   return `<table class="prop-table"><tr><th></th>${Array.from({ length: it.sets || 1 }, (_, i) => `<th>Set ${i + 1}</th>`).join("")}</tr>${propRows}</table>`;
 }
@@ -2754,14 +2980,12 @@ function editorPop(date) {
     ${editorActions(date, it)}
   </div>`;
 }
-function trackMode(it) {
-  return it && it.trackTime ? "time" : (it && it.trackDistance ? "distance" : "reps");
-}
+// Reps, time, and distance are separate switches. Any mix can be on, and each gets its own row.
 function trackControl(date, it) {
-  const mode = trackMode(it);
-  const pill = (value, label) => `<button type="button" class="pill ${mode === value ? "on" : ""}" aria-pressed="${mode === value ? "true" : "false"}" onclick="setTrack('${date}','${it.id}','${value}')">${mode === value ? "✓ " : ""}${label}</button>`;
-  return `<div class="dose-switch" role="group" aria-label="Reps, time, or distance">
-    ${pill("reps", "Reps")}${pill("time", "Time (s)")}${pill("distance", "Distance")}
+  const on = { reps: it.trackReps !== false, time: !!it.trackTime, distance: !!it.trackDistance };
+  const pill = (value, label) => `<button type="button" class="pill ${on[value] ? "on" : ""}" aria-pressed="${on[value] ? "true" : "false"}" onclick="toggleTrack('${date}','${it.id}','${value}')">${on[value] ? "✓ " : ""}${label}</button>`;
+  return `<div class="dose-switch" role="group" aria-label="Track reps, time, and distance">
+    ${pill("reps", "Reps")}${pill("time", "Time (s)")}${pill("distance", "Distance (" + distanceAbbr(displayDistanceUnit()) + ")")}
   </div>`;
 }
 function setRow(date, it, label) {
@@ -2780,7 +3004,6 @@ function propMenu(date, id) {
   const loadLabel = displayUnit() ? "Load (" + unitWord(displayUnit()) + ")" : "Load";
   const opts = [
     ["load", loadLabel], ["rest", "Rest"], ["restRep", "Rest/Rep"],
-    ["distance", "Distance (" + distanceWord(displayDistanceUnit()) + ")"],
     ["tempo", "Tempo"], ["velocity", "Velocity"], ["power", "Peak Power"], ["pct", "%PR"],
     ["intensity", "Intensity"]
   ];
@@ -2793,39 +3016,36 @@ function propMenu(date, id) {
 function aboutProperties(ev) {
   if (ev) ev.stopPropagation();
   state.propMenu = false;
-  toast("Load, Rest, Rest/Rep, Distance, Tempo, Velocity, Peak Power, %PR, and Intensity are entered on each set. Time (s) and Distance are on the Reps / Time / Distance switch, and each set keeps its own value. Intensity is one of RPE, percent of a 1-rep max, or RIR.");
+  toast("Load, Rest, Rest/Rep, Tempo, Velocity, Peak Power, %PR, and Intensity are entered on each set. Reps, Time (s), and Distance are switches beside Options: turn on any mix, and each gets its own row. Intensity is one of RPE, percent of a 1-rep max, or RIR, as one number or a range like 5-7.");
   render();
 }
-function doseValue(it, value) {
-  const raw = value == null ? "" : String(value);
-  return it && it.trackTime ? raw.replace(/s$/i, "") : raw;
-}
 function propArray(it, key) {
-  const map = { reps: "reps", load: "loads", rest: "rests", restRep: "restReps", distance: "distances", intensity: "intensities", tempo: "tempos", velocity: "velocities", power: "powers", pct: "pcts" };
+  const map = { reps: "reps", time: "times", load: "loads", rest: "rests", restRep: "restReps", distance: "distances", intensity: "intensities", tempo: "tempos", velocity: "velocities", power: "powers", pct: "pcts" };
   const sets = it.sets || 1;
   const arr = (it[map[key]] || []).slice(0, sets);
   while (arr.length < sets) arr.push("");
   return arr;
 }
 function fieldLabel(it, key) {
-  if (key === "reps") return it && it.trackTime ? "Time (s)" : (it && it.trackDistance ? "Distance (" + distanceWord(displayDistanceUnit()) + ")" : "Reps");
+  if (key === "reps") return "Reps";
+  if (key === "time") return "Time (s)";
   if (key === "load") return displayUnit() ? "Load (" + unitWord(displayUnit()) + ")" : "Load";
   if (key === "restRep") return "Rest/Rep (s)";
-  if (key === "distance") return "Distance (" + distanceWord(displayDistanceUnit()) + ")";
+  if (key === "distance") return "Distance (" + distanceAbbr(displayDistanceUnit()) + ")";
   if (key === "intensity") return intensityLabel(it && it.intensityKind);
   return PROP_LABEL[key];
 }
 function propRow(date, it, key) {
-  if (key === "reps" && it.trackReps === false && !it.trackTime && !it.trackDistance && it.type !== "circuit") return "";
   const label = fieldLabel(it, key);
-  const time = key === "reps" && it.trackTime;
-  const dist = key === "reps" && it.trackDistance;
-  const tip = time ? "Seconds for each set" : dist ? "Distance for each set" : "Reps for each set. Time (s) and Distance are beside Options.";
-  const info = key === "reps" ? `<button type="button" class="iconbtn reps-info" title="${tip}" onclick="event.stopPropagation();toast('${time ? "Each set has its own seconds" : dist ? "Each set has its own distance" : "Each set has its own reps. Time (s) and Distance, beside Options, switch this row."}')">ⓘ</button>` : "";
+  const time = key === "time";
+  const dist = key === "distance";
+  const info = key === "reps" ? `<button type="button" class="iconbtn reps-info" title="Reps for each set. Time (s) and Distance are beside Options." onclick="event.stopPropagation();toast('Each set has its own reps. Time (s) and Distance, beside Options, add their own rows.')">ⓘ</button>` : "";
   const cells = propArray(it, key).map((v, i) => {
-    const shown = doseValue(it, v);
-    const suffix = time ? `<span class="sec-suffix">s</span>` : dist ? `<span class="sec-suffix">${esc(distanceWord(displayDistanceUnit()))}</span>` : "";
-    return `<td><span class="set-val${time || dist ? " is-time" : ""}"><input aria-label="${label} set ${i + 1}" data-focus="${key}-${it.id}-${i}" data-set-field="${key}" autocomplete="off" value="${esc(shown)}" oninput="setCell('${date}','${it.id}','${key}',${i}, this.value)" onchange="commitSetCell('${date}','${it.id}','${key}',${i});renderSoon()" onkeydown="tabSetField(event,'${date}','${it.id}','${key}',${i})" onfocus="this.select()">${suffix}</span></td>`;
+    const raw = v == null ? "" : String(v);
+    const shown = time ? raw.replace(/s$/i, "") : raw;
+    const suffix = time ? `<span class="sec-suffix">s</span>` : dist ? `<span class="sec-suffix">${esc(distanceAbbr(displayDistanceUnit()))}</span>` : "";
+    const hint = key === "intensity" ? ' placeholder="7 or 5-7"' : "";
+    return `<td><span class="set-val${time || dist ? " is-time" : ""}"><input aria-label="${label} set ${i + 1}" data-focus="${key}-${it.id}-${i}" data-set-field="${key}" autocomplete="off"${hint} value="${esc(shown)}" oninput="setCell('${date}','${it.id}','${key}',${i}, this.value)" onchange="commitSetCell('${date}','${it.id}','${key}',${i});renderSoon()" onkeydown="tabSetField(event,'${date}','${it.id}','${key}',${i})" onfocus="this.select()">${suffix}</span></td>`;
   }).join("");
   const kindPick = key === "intensity"
     ? `<select aria-label="Intensity kind" onchange="setIntensityKind('${date}','${it.id}', this.value)">${["RPE", "% of 1-rep max", "RIR"].map((opt) => `<option ${intensityChoice(it.intensityKind) === opt ? "selected" : ""}>${esc(opt)}</option>`).join("")}</select>`
@@ -2894,7 +3114,7 @@ function fillSetsFromFirst(date, id) {
     return Array.from({ length: n }, () => (first == null ? "" : first));
   };
   it.reps = fill(it.reps || []);
-  ["loads", "rests", "restReps", "distances", "intensities", "tempos", "velocities", "powers", "pcts"].forEach((key) => {
+  ["loads", "rests", "restReps", "distances", "times", "intensities", "tempos", "velocities", "powers", "pcts"].forEach((key) => {
     it[key] = fill(it[key] || []);
   });
   it.touchedCells = {};
@@ -2903,7 +3123,7 @@ function fillSetsFromFirst(date, id) {
   render();
 }
 const SET_ARRAY = {
-  reps: "reps", load: "loads", rest: "rests", restRep: "restReps", distance: "distances",
+  reps: "reps", time: "times", load: "loads", rest: "rests", restRep: "restReps", distance: "distances",
   intensity: "intensities", tempo: "tempos", velocity: "velocities", power: "powers", pct: "pcts"
 };
 function setArray(it, key) {
@@ -2913,13 +3133,10 @@ function setArray(it, key) {
   return it[name];
 }
 function setFieldOrder(it) {
-  const keys = [];
-  if (it.trackTime || it.trackDistance || it.trackReps !== false || it.type === "circuit") keys.push("reps");
-  (it.props || []).forEach((key) => { if (PROP_LABEL[key] && keys.indexOf(key) < 0) keys.push(key); });
+  const keys = setFieldKeys(it);
   const order = [];
   const n = it.sets || 1;
   keys.forEach((key) => {
-    if (key === "reps" && it.trackReps === false && !it.trackTime && !it.trackDistance && it.type !== "circuit") return;
     for (let i = 0; i < n; i++) order.push({ key, i, focus: key + "-" + it.id + "-" + i });
   });
   return order;
@@ -2987,13 +3204,27 @@ function tabSetField(ev, date, id, key, i) {
   state.pendingFocus = dest.focus;
   render();
 }
-function setTrack(date, id, mode) {
+function toggleTrack(date, id, key) {
   const it = findItem(date, id);
-  if (!it) return;
+  const flag = { reps: "trackReps", time: "trackTime", distance: "trackDistance" }[key];
+  if (!it || !flag) return;
+  const on = key === "reps" ? it.trackReps !== false : !!it[flag];
+  if (on && doseKeys(it).length <= 1) {
+    toast("Keep at least one of reps, time, or distance");
+    return;
+  }
   snapshot();
-  it.trackTime = mode === "time";
-  it.trackDistance = mode === "distance";
-  it.trackReps = mode === "reps";
+  it[flag] = !on;
+  if (!on) {
+    const name = SET_ARRAY[key];
+    const sets = it.sets || 1;
+    let arr = (it[name] || []).slice(0, sets);
+    while (arr.length < sets) arr.push("");
+    const fill = key === "reps" ? "1" : ((it.libraryDefaults && it.libraryDefaults[key]) || "");
+    if (fill && arr.every((x) => x === "" || x == null)) arr = Array(sets).fill(String(fill));
+    it[name] = arr;
+    state.pendingFocus = key + "-" + it.id + "-0";
+  }
   state.trackMenu = false;
   state.propMenu = false;
   state.optionsMenu = false;
@@ -3028,7 +3259,7 @@ function addProp(date, id, key) {
 function setCell(date, id, key, i, value) {
   const it = findItem(date, id);
   if (!it || !SET_ARRAY[key]) return;
-  if (key === "reps" && it.trackTime) value = String(value == null ? "" : value).replace(/s$/i, "");
+  if (key === "time") value = String(value == null ? "" : value).replace(/s$/i, "");
   const arr = setArray(it, key);
   while (arr.length <= i) arr.push("");
   const seeded = !!(it.fieldSeed && it.fieldSeed[key]);
@@ -3079,6 +3310,10 @@ function moveItem(date, id, dir) {
 function toggleFlag(date, id, key) {
   const it = findItem(date, id);
   it[key] = !it[key];
+  if (key === "completionOnly" && (it.type || "lift") === "lift") {
+    const record = exerciseRecord(it.name);
+    it.textOnly = !!(it.completionOnly && record && isTextOnlyCategory(record.category));
+  }
   state.optionsMenu = false;
   noteDayEdit(date);
   render();
@@ -3843,6 +4078,8 @@ function hydrateEntryLogs(date, aid, day) {
       const log = (state.openSession.set_logs || []).find((row) => row.workout_exercise_id === it.weId && row.set_number === i + 1) || {};
       const details = logDetails(log);
       const athleteValues = details.athlete || {};
+      const primary = primaryEntryField(it);
+      if (primary !== "r" && athleteValues[primary] == null && athleteValues.r != null) athleteValues[primary] = athleteValues.r;
       cells[i] = {
         entered: athleteValues,
         done: cellDone(it, athleteValues, log.completed)
@@ -3854,7 +4091,7 @@ function hydrateEntryLogs(date, aid, day) {
       cells,
       hydrated: true,
       entered: it.type === "circuit" ? circuitEntered : {},
-      done: it.type === "circuit" ? setIsComplete(it, circuitEntered) : (it.completionOnly ? !!circuitLog.completed : false)
+      done: it.type === "circuit" ? setIsComplete(it, circuitEntered) : (isTextOnlyItem(it) ? !!circuitLog.completed : false)
     };
   });
 }
@@ -3893,7 +4130,7 @@ function weTracksDistance(we) {
 }
 function weDoseLabel(we) {
   if (weTracksTime(we)) return "Time (s)";
-  if (weTracksDistance(we)) return "Distance (" + distanceWord(entryDistanceUnit()) + ")";
+  if (weTracksDistance(we)) return "Distance (" + distanceAbbr(entryDistanceUnit()) + ")";
   return "Reps";
 }
 function noteValues(we, label) {
@@ -3918,7 +4155,7 @@ function athleteExercise(we) {
   const kind = noteValues(we, "IntensityKind")[0] || "";
   const extras = [
     ["restRep", "Rest/Rep (s)", "RestReps"],
-    ["distance", "Distance (" + distanceWord(entryDistanceUnit()) + ")", "Distances"],
+    ["distance", "Distance (" + distanceAbbr(entryDistanceUnit()) + ")", "Distances"],
     ["intensity", intensityLabel(kind), "Intensities"],
     ["tempo", "Tempo", "Tempos"],
     ["velocity", "Velocity", "Velocities"],
@@ -4625,7 +4862,7 @@ function previewSheet(it, log) {
     const qs = (it.questions || []).map((q, i) => `<div class="q">${i + 1}. ${esc(q)}</div>`).join("") || '<div class="hint">No questions</div>';
     return qs + button;
   }
-  if (it.type === "circuit" || it.completionOnly || it.type === "video" || it.type === "rest") {
+  if (it.type === "circuit" || isTextOnlyItem(it) || it.type === "video" || it.type === "rest") {
     const text = it.detail || it.note || (it.type === "rest" ? ((it.reps && it.reps[0]) || 60) + "s" : "Complete 1 round");
     return `<div class="preview-copy">${esc(text)}</div>${button}`;
   }
@@ -4634,17 +4871,19 @@ function previewSheet(it, log) {
   const n = Math.max(1, it.sets || (it.reps || []).length || 1);
   const loaded = previewHasLoad(it);
   const has = (arr) => (arr || []).some((v) => String(v || "").trim() !== "");
-  const doseHead = it.trackTime ? "TIME" : it.trackDistance ? "DISTANCE (" + distanceWord(displayDistanceUnit()).toUpperCase() + ")" : "REPS";
   const weightHead = displayUnit() === "lbs" ? "LBS" : (displayUnit() === "kg" ? "KG" : "WEIGHT");
   const cols = [];
   if (loaded) cols.push(["WEIGHT", (i) => `<span class="preview-box">${esc((it.loads || [])[i] ?? "")}</span>`]);
-  cols.push([doseHead, (i) => {
-    const rawRep = doseValue(it, (it.reps || [])[i] ?? "");
-    const rep = it.trackTime && rawRep !== "" ? rawRep + "s" : (it.trackDistance && rawRep !== "" ? rawRep + " " + distanceWord(displayDistanceUnit()) : rawRep);
-    return loaded ? `<span class="preview-box">${esc(rep)}</span>` : esc(rep);
-  }]);
+  const doseHeads = { reps: "REPS", time: "TIME", distance: "DISTANCE (" + distanceAbbr(displayDistanceUnit()) + ")" };
+  (doseKeys(it).length ? doseKeys(it) : ["reps"]).forEach((key) => {
+    cols.push([doseHeads[key], (i) => {
+      const raw = String(doseArray(it, key)[i] ?? "");
+      const shown = raw === "" ? "" : (key === "reps" ? raw : doseMark(key, raw));
+      return loaded ? `<span class="preview-box">${esc(shown)}</span>` : esc(shown);
+    }]);
+  });
   if (has(it.restReps)) cols.push(["REST/REP", (i) => esc((it.restReps[i] ?? "") === "" ? "" : it.restReps[i] + "s")]);
-  if (has(it.distances)) cols.push(["DISTANCE (" + distanceWord(displayDistanceUnit()).toUpperCase() + ")", (i) => esc(it.distances[i] ?? "")]);
+  if ((it.type || "lift") !== "lift" && has(it.distances)) cols.push(["DISTANCE (" + distanceAbbr(displayDistanceUnit()) + ")", (i) => esc(it.distances[i] ?? "")]);
   if (it.intensityKind || has(it.intensities)) cols.push([intensityLabel(it.intensityKind).toUpperCase(), (i) => esc(it.intensities[i] ?? "")]);
   const rows = Array.from({ length: n }, (_, i) => `<tr><td>${i + 1}</td>${cols.map((col) => `<td>${col[1](i)}</td>`).join("")}</tr>`).join("");
   const head = `<tr><th>SET</th>${cols.map((col) => `<th>${esc(col[0])}</th>`).join("")}</tr>`;
@@ -4937,21 +5176,35 @@ function asksForWeight(it) {
 }
 function entryColumns(it) {
   if (!it || it.type === "circuit" || it.type === "note" || it.type === "questionnaire" || it.type === "break" || it.type === "rest" || it.type === "video") return [];
-  const cols = [["r", it.trackTime ? "Time (s)" : (it.trackDistance ? "Distance (" + distanceWord(entryDistanceUnit()) + ")" : "Reps")]];
+  const cols = [];
+  // One column for each measure the coach tracks: reps, time, distance.
+  doseKeys(it).forEach((key) => {
+    if (key === "reps") cols.push(["r", "Reps"]);
+    else if (key === "time") cols.push(["time", "Time (s)"]);
+    else cols.push(["distance", "Distance (" + distanceAbbr(entryDistanceUnit()) + ")"]);
+  });
   // Weight is offered on every lift. It only becomes required when the coach adds Load.
+  // A completion-only lift never asks for a weight.
   if (asksForWeight(it)) cols.push(["w", unitTitle(entryUnit())]);
   (it.props || []).forEach((key) => {
     const field = PROP_FIELD[key];
     if (!field || cols.some((col) => col[0] === field)) return;
+    if (key === "load" && !asksForWeight(it)) return;
     let label = PROP_LABEL[key] || key;
     if (key === "load") label = unitTitle(entryUnit());
     else if (key === "rest") label = "Rest (s)";
     else if (key === "restRep") label = "Rest/Rep (s)";
-    else if (key === "distance") label = "Distance (" + distanceWord(entryDistanceUnit()) + ")";
+    else if (key === "distance") label = "Distance (" + distanceAbbr(entryDistanceUnit()) + ")";
     else if (key === "intensity") label = intensityLabel(it.intensityKind);
     cols.push([field, label]);
   });
   return cols;
+}
+// The measure a set is counted by. Its value is also saved as the set's reps, as it always was.
+function primaryEntryField(it) {
+  const keys = doseKeys(it);
+  if (!keys.length || keys[0] === "reps") return "r";
+  return keys[0];
 }
 function countsAsEntered(value) {
   if (value == null) return false;
@@ -4962,7 +5215,22 @@ function countsAsEntered(value) {
   return true;
 }
 function requiredEntryFields(it) {
-  return ((it && it.props) || []).map((key) => PROP_FIELD[key]).filter(Boolean);
+  const lift = !!it && (it.type || "lift") === "lift";
+  return ((it && it.props) || []).filter((key) => {
+    if (lift && key === "distance") return false;
+    if (key === "load" && lift && it.completionOnly) return false;
+    return true;
+  }).map((key) => PROP_FIELD[key]).filter(Boolean);
+}
+function isIntensityRange(value) {
+  return /^\s*\d+(\.\d+)?\s*%?\s*(-|\u2013|\u2014|to)\s*\d+(\.\d+)?\s*%?\s*$/i.test(String(value == null ? "" : value));
+}
+// What an entry box starts with. A prescribed range such as RPE 5-7 is a target, not an
+// answer, so the box starts empty and the athlete types the number they hit.
+function prefillEntry(it, field, index) {
+  const prescribed = prescribedEntry(it, field, index);
+  if (field === "intensity" && isIntensityRange(prescribed)) return "";
+  return prescribed;
 }
 function setIsComplete(it, entered) {
   const fields = requiredEntryFields(it);
@@ -4978,7 +5246,7 @@ function prescribedEntry(it, field, index) {
   if (field === "r") return (it.reps && (it.reps[i] != null ? it.reps[i] : it.reps[0])) || "";
   if (field === "w") return (it.loads && (it.loads[i] != null ? it.loads[i] : it.loads[0])) || "";
   const map = {
-    rest: "rests", restRep: "restReps", distance: "distances", tempo: "tempos",
+    rest: "rests", restRep: "restReps", distance: "distances", time: "times", tempo: "tempos",
     velocity: "velocities", power: "powers", pct: "pcts", intensity: "intensities"
   };
   const arr = it[map[field]] || [];
@@ -5105,8 +5373,9 @@ function circuitEntryHtml(aid, date, it) {
     const field = PROP_FIELD[prop];
     if (!field) return "";
     const label = prop === "load" ? unitTitle(entryUnit()) : (PROP_LABEL[prop] || prop);
-    const value = shownEntry(entered, field, prescribedEntry(it, field, 0));
-    return `<label class="circuit-field">${esc(label)} <input aria-label="${esc(label)}" value="${esc(value)}" onchange="logCircuitField('${key}','${field}',this.value,'${date}','${it.id}',${it.weId || 0})"></label>`;
+    const value = shownEntry(entered, field, prefillEntry(it, field, 0));
+    const target = field === "intensity" && isIntensityRange(prescribedEntry(it, field, 0)) ? ` placeholder="${esc(prescribedEntry(it, field, 0))}"` : "";
+    return `<label class="circuit-field">${esc(label)} <input aria-label="${esc(label)}"${target} value="${esc(value)}" onchange="logCircuitField('${key}','${field}',this.value,'${date}','${it.id}',${it.weId || 0})"></label>`;
   }).join("");
   return `<div class="circuit-entry">
     <div class="preview-copy">${esc(it.detail || "")}</div>
@@ -5119,7 +5388,7 @@ function entryItemStatus(aid, date, it) {
   if (!it || it.type === "note" || it.type === "break" || it.type === "rest" || it.type === "video") return null;
   const log = state.logs[aid + ":" + date + ":" + it.id] || {};
   if (it.type === "circuit") return { done: setIsComplete(it, log.entered || {}) ? 1 : 0, total: 1 };
-  if (it.type === "questionnaire" || (it.completionOnly && (it.type || "lift") === "lift")) return { done: log.done ? 1 : 0, total: 1 };
+  if (it.type === "questionnaire" || isTextOnlyItem(it)) return { done: log.done ? 1 : 0, total: 1 };
   const total = it.sets || 1;
   const cells = log.cells || {};
   let done = 0;
@@ -5149,7 +5418,7 @@ function entryItem(aid, date, it) {
   const key = aid + ":" + date + ":" + it.id;
   if (it.type === "note") return entryShell(aid, date, it, `<div class="preview-copy">${esc(it.note || "")}</div>`);
   if (it.type === "circuit") return entryShell(aid, date, it, circuitEntryHtml(aid, date, it));
-  if (it.completionOnly && (it.type || "lift") === "lift") {
+  if (isTextOnlyItem(it)) {
     const done = !!(state.logs[key] && state.logs[key].done);
     return entryShell(aid, date, it, `<div class="circuit-entry">
         ${it.note ? `<div class="preview-copy">${esc(it.note)}</div>` : ""}
@@ -5163,9 +5432,10 @@ function entryItem(aid, date, it) {
     const entered = cell.entered || {};
     const done = cellDone(it, entered, cell.done);
     const inputs = fields.map(([field, label]) => {
-      const value = shownEntry(entered, field, prescribedEntry(it, field, i));
+      const value = shownEntry(entered, field, prefillEntry(it, field, i));
       const mode = field === "tempo" ? "text" : "decimal";
-      return `<td><input aria-label="${esc(label)} set ${i + 1}" inputmode="${mode}" value="${esc(value)}" onchange="logCell('${key}',${i},'${field}',this.value,'${date}','${it.id}',${it.weId || 0})"></td>`;
+      const target = field === "intensity" && isIntensityRange(prescribedEntry(it, field, i)) ? ` placeholder="${esc(prescribedEntry(it, field, i))}"` : "";
+      return `<td><input aria-label="${esc(label)} set ${i + 1}" inputmode="${mode}"${target} value="${esc(value)}" onchange="logCell('${key}',${i},'${field}',this.value,'${date}','${it.id}',${it.weId || 0})"></td>`;
     }).join("");
     return `<tr class="${done ? "set-done" : ""}"><td class="set-n">${i + 1}</td>${inputs}<td class="set-tick"><input aria-label="Done set ${i + 1}" type="checkbox" ${done ? "checked" : ""} onchange="logCell('${key}',${i},'done',this.checked,'${date}','${it.id}',${it.weId || 0})"></td></tr>`;
   }).join("");
@@ -5186,14 +5456,14 @@ function logCell(key, i, field, value, date, itemId, weId) {
     log.cells[i][field] = value;
   }
   const map = {
-    w: "weight", r: "reps", rest: "rest", tempo: "tempo", velocity: "velocity",
+    w: "weight", r: "reps", time: "time", rest: "rest", tempo: "tempo", velocity: "velocity",
     power: "power", pct: "pct", restRep: "restRep", distance: "distance", intensity: "intensity"
   };
   // Ticking Done keeps what the boxes show, so prefilled reps and weight count too.
   if (field === "done" && value && it) {
     entryColumns(it).forEach(([col]) => {
       if (Object.prototype.hasOwnProperty.call(log.cells[i].entered, col)) return;
-      const shown = prescribedEntry(it, col, i);
+      const shown = prefillEntry(it, col, i);
       if (shown == null || String(shown).trim() === "") return;
       log.cells[i].entered[col] = shown;
       log.cells[i][col] = shown;
@@ -5208,6 +5478,12 @@ function logCell(key, i, field, value, date, itemId, weId) {
       const shown = log.cells[i].entered[col];
       if (shown != null && String(shown).trim() !== "") fill[map[col]] = shown;
     });
+  }
+  // With no reps column, the first measure (seconds or distance) is what the set counts by.
+  const primary = it ? primaryEntryField(it) : "r";
+  if (primary !== "r") {
+    if (field === primary) fill.reps = value;
+    else if (fill[map[primary]] != null) fill.reps = fill[map[primary]];
   }
   if (weId && state.openSession && (state.role === "athlete" || state.coachSessionFor)) {
     const apiField = field === "done" ? "completed" : map[field];
@@ -5228,7 +5504,7 @@ function logCircuitField(key, field, value, date, itemId, weId) {
   const it = entryItemById(date, itemId);
   log.done = !!(it && setIsComplete(it, log.entered));
   const map = {
-    w: "weight", r: "reps", rest: "rest", tempo: "tempo", velocity: "velocity",
+    w: "weight", r: "reps", time: "time", rest: "rest", tempo: "tempo", velocity: "velocity",
     power: "power", pct: "pct", restRep: "restRep", distance: "distance", intensity: "intensity"
   };
   if (weId && state.openSession && (state.role === "athlete" || state.coachSessionFor)) {
@@ -5268,7 +5544,7 @@ function summarize(aid, date, items) {
       const c = log.cells[i];
       if (!c.done) return;
       const entered = c.entered || {};
-      const r = +shownEntry(entered, "r", prescribedEntry(it, "r", +i)) || 0;
+      const r = (it.type || "lift") === "lift" && it.trackReps === false ? 0 : (+shownEntry(entered, "r", prescribedEntry(it, "r", +i)) || 0);
       const w = +shownEntry(entered, "w", prescribedEntry(it, "w", +i)) || 0;
       sets += 1; reps += r; tonnage += r * w;
     });
@@ -5991,19 +6267,33 @@ function categoryLabel(category) {
 }
 function readIntensity(values) {
   const kind = intensityKindCode(values && values.intensity_kind);
-  const raw = values ? values.intensity_value : "";
+  const raw = String(values && values.intensity_value != null ? values.intensity_value : "").trim();
   if (!kind) {
-    if (String(raw || "").trim()) return { error: "Intensity needs one kind and one number" };
+    if (raw) return { error: "Intensity needs one kind and one number" };
     return { intensity_kind: "", intensity_value: "" };
   }
-  const num = Number(raw);
-  if (!Number.isFinite(num) || String(raw || "").trim() === "") return { error: "Enter an intensity number" };
-  if ((kind === "rpe" || kind === "rir") && (num < 1 || num > 10 || num !== Math.floor(num))) {
-    return { error: "RPE and RIR stay between 1 and 10" };
+  const one = (text) => {
+    const clean = String(text).trim().replace(/%$/, "").trim();
+    const num = Number(clean);
+    if (clean === "" || !Number.isFinite(num)) return { error: "Enter an intensity number, or a range like 5-7" };
+    if ((kind === "rpe" || kind === "rir") && (num < 1 || num > 10 || num !== Math.floor(num))) {
+      return { error: "RPE and RIR stay between 1 and 10" };
+    }
+    if (kind === "pct1rm" && num <= 0) return { error: "Enter an intensity number, or a range like 5-7" };
+    return { num, text: num === Math.floor(num) ? String(Math.floor(num)) : String(num) };
+  };
+  // One number, or a low-high range such as 5-7.
+  const range = raw.match(/^(\d+(?:\.\d+)?)\s*%?\s*(?:-|\u2013|\u2014|to)\s*(\d+(?:\.\d+)?)\s*%?$/i);
+  if (!range) {
+    const single = one(raw);
+    if (single.error) return { error: single.error };
+    return { intensity_kind: kind, intensity_value: single.text };
   }
-  if (kind === "pct1rm" && num <= 0) return { error: "Enter an intensity number" };
-  const stored = num === Math.floor(num) ? String(Math.floor(num)) : String(num);
-  return { intensity_kind: kind, intensity_value: stored };
+  const low = one(range[1]);
+  const high = one(range[2]);
+  if (low.error || high.error) return { error: low.error || high.error };
+  if (low.num > high.num) return { error: "Put the lower intensity first, like 5-7" };
+  return { intensity_kind: kind, intensity_value: low.num === high.num ? low.text : low.text + "-" + high.text };
 }
 // Warm-ups and cooldowns are a block of text the athlete ticks off, like a circuit without stations.
 function isTextOnlyCategory(category) {
@@ -6020,17 +6310,23 @@ function libraryExercisePayload(values) {
   const intensity = plain ? { intensity_kind: "", intensity_value: "" } : readIntensity(values);
   if (intensity.error) return { error: intensity.error };
   const sets = note ? 0 : textOnly ? 1 : Math.max(1, Math.min(10, parseInt(values.default_sets, 10) || 1));
+  const time = plain || circuit ? "" : String(values.default_time || "").trim().replace(/s$/i, "");
+  const distance = plain ? "" : String(values.default_distance || "").trim();
+  const repsGiven = values.default_reps != null && String(values.default_reps).trim() !== "";
+  // Blank reps beside a time or distance means the exercise is not counted in reps.
+  const blankReps = !circuit && (time !== "" || distance !== "") ? "" : "1";
   return {
     name,
     category,
     video_url: values.video_url || "",
     default_notes: String(values.default_notes || "").slice(0, plain ? 4000 : 255),
     default_sets: sets,
-    default_reps: note ? "" : textOnly ? "1" : (values.default_reps != null && String(values.default_reps) !== "" ? String(values.default_reps) : "1"),
+    default_reps: note ? "" : textOnly ? "1" : (repsGiven ? String(values.default_reps).trim() : blankReps),
     default_load: plain ? "" : (values.default_load || ""),
     default_rest: plain ? "" : (values.default_rest || ""),
     default_rest_rep: plain ? "" : (values.default_rest_rep || ""),
-    default_distance: plain ? "" : (values.default_distance || ""),
+    default_distance: distance,
+    default_time: time,
     default_tempo: plain ? "" : (values.default_tempo || ""),
     default_velocity: plain ? "" : (values.default_velocity || ""),
     default_power: plain ? "" : (values.default_power || ""),
@@ -6053,21 +6349,27 @@ function trackingFields(row, opts) {
       type: "number"
     });
   }
+  const dosed = !!(opts && opts.dosed);
+  const measured = dosed && (String(row.default_time || "") !== "" || String(row.default_distance || "") !== "");
+  const repsValue = row.default_reps != null && String(row.default_reps) !== "" ? String(row.default_reps) : (measured ? "" : repsDefault);
+  fields.push({
+    key: "default_reps", label: "Default reps", value: repsValue,
+    hint: dosed ? "Leave blank if it is only timed or only run for distance." : ""
+  });
+  if (dosed) fields.push({ key: "default_time", label: "Default time (s)", value: row.default_time || "" });
   fields.push(
-    { key: "default_reps", label: "Default reps", value: row.default_reps != null && String(row.default_reps) !== "" ? String(row.default_reps) : repsDefault },
+    { key: "default_distance", label: dosed ? "Default distance" : "Distance", value: row.default_distance || "" },
     { key: "default_rest", label: "Default rest", value: row.default_rest || "" },
-    { key: "default_rest_rep", label: "Rest/Rep (s)", value: row.default_rest_rep || "" },
-    { key: "default_distance", label: "Distance", value: row.default_distance || "" }
+    { key: "default_rest_rep", label: "Rest/Rep (s)", value: row.default_rest_rep || "" }
   );
   return fields;
 }
 function intensityEditorFields(row) {
   const kind = intensityKindCode(row.intensity_kind);
   if (!kind) return [{ key: "add_intensity", label: "Intensity", button: "Add intensity" }];
-  const bounds = kind === "pct1rm" ? { min: "1" } : { min: "1", max: "10" };
   return [
     { key: "intensity_kind", label: "Intensity", value: intensityChoice(kind), options: ["RPE", "% of 1-rep max", "RIR"] },
-    Object.assign({ key: "intensity_value", label: intensityLabel(kind), value: row.intensity_value || "", type: "number" }, bounds),
+    { key: "intensity_value", label: intensityLabel(kind), value: row.intensity_value || "", placeholder: kind === "pct1rm" ? "75 or 70-80" : "7 or 5-7", hint: "One number, or a range like " + (kind === "pct1rm" ? "70-80" : "5-7") + "." },
     { key: "remove_intensity", label: "Intensity", button: "Remove intensity" }
   ];
 }
@@ -6105,7 +6407,7 @@ function exerciseFields(row) {
     fields.push.apply(fields, intensityEditorFields(row));
     return fields;
   }
-  const tracking = trackingFields(row);
+  const tracking = trackingFields(row, { dosed: true });
   const restAt = tracking.findIndex((field) => field.key === "default_rest");
   tracking.splice(restAt, 0, { key: "default_load", label: "Default load", value: row.default_load || "" });
   fields.push.apply(fields, tracking);
@@ -6118,7 +6420,7 @@ function exerciseFields(row) {
   fields.push.apply(fields, intensityEditorFields(row));
   fields.push({
     key: "completion_only", label: "Workout options", checkbox: "Completion only",
-    hint: "Athletes just tick it off. No weight or rep entry. Applies when it is next added to a calendar.",
+    hint: "Athletes log their sets with no weight box. Sets, reps, and everything else work as usual. Applies when it is next added to a calendar.",
     value: row.completion_only ? "1" : ""
   });
   return fields;
@@ -6148,7 +6450,7 @@ function editExercise(id) {
 function exerciseRows() {
   const q = state.liftQ.toLowerCase();
   if (state.serverExercises.length) {
-    return state.serverExercises.filter((e) => !e.hidden && categoryVisible(e.category) && e.name.toLowerCase().includes(q));
+    return state.serverExercises.filter((e) => (state.showHiddenLibrary || !e.hidden) && categoryVisible(e.category) && e.name.toLowerCase().includes(q));
   }
   return state.lifts.filter((l) => {
     const mapped = l.type === "Circuits" || l.type === "circuit" ? "Circuit" : (l.type === "Questionnaires" || l.type === "questionnaire" ? "Questionnaire" : "Strength");
@@ -6160,42 +6462,52 @@ function exerciseDefaultsText(l) {
   if (category === "Notes" || isTextOnlyCategory(category)) return "";
   if (category === "Circuit") return l.default_sets ? l.default_sets + " round" + (+l.default_sets === 1 ? "" : "s") : "";
   const sets = l.default_sets || "";
-  const reps = l.default_reps || "";
-  if (sets && reps) return sets + " × " + reps;
+  const parts = [];
+  if (l.default_reps) parts.push(String(l.default_reps));
+  if (l.default_time) parts.push(String(l.default_time).replace(/s$/i, "") + "s");
+  if (l.default_distance) parts.push("dist " + l.default_distance);
+  if (sets && parts.length) return sets + " × " + parts.join(" · ");
   return sets ? sets + " sets" : "";
 }
 function liftsView() {
   const rows = exerciseRows();
   const server = state.serverExercises.length > 0;
   const total = server ? state.serverExercises.filter((e) => !e.hidden).length : state.lifts.length;
+  const hiddenCount = (server ? state.serverExercises.filter((e) => e.hidden).length : 0) + (state.chains || []).filter((c) => c.hidden).length;
   const filters = ["All"].concat(EXERCISE_CATEGORIES);
   const empty = state.managing === "All" ? "No exercises yet." : ("No " + state.managing + " exercises yet.");
   const body = rows.map((l) => {
     if (!server) return `<tr><td class="strong">${esc(l.name)}</td><td>${esc(l.type)}</td><td></td><td></td><td></td></tr>`;
     const tags = [
-      l.video_url ? `<span class="ui-badge">Video</span>` : "",
+      l.hidden ? `<span class="ui-badge amber">Hidden</span>` : "",
+      l.video_url ? `<span class="ui-badge">${VIDEO_ICON} Video</span>` : "",
       l.completion_only ? `<span class="ui-badge green">Completion only</span>` : ""
     ].join(" ");
-    return `<tr>
+    const actions = l.hidden
+      ? `<button class="btn btn-ghost btn-sm" type="button" onclick="unhideExercise(${l.id})">Unhide</button>`
+      : `<button class="btn btn-ghost btn-sm" type="button" onclick="editExercise(${l.id})">Edit</button><button class="btn btn-ghost btn-sm" type="button" title="Take it out of your library. Days that use it keep it." onclick="hideExercise(${l.id})">Hide</button>`;
+    return `<tr class="${l.hidden ? "is-hidden" : ""}">
       <td class="strong">${esc(l.name)}</td>
       <td><span class="ui-badge">${esc(categoryLabel(l.category))}</span></td>
       <td class="muted hide-sm">${esc(exerciseDefaultsText(l)) || "—"}</td>
       <td class="hide-sm">${tags}</td>
-      <td class="row-actions"><button class="btn btn-ghost btn-sm" type="button" onclick="editExercise(${l.id})">Edit</button><button class="btn btn-ghost btn-sm btn-danger" type="button" onclick="hideExercise(${l.id})">Hide</button></td>
+      <td class="row-actions">${actions}<button class="btn btn-ghost btn-sm btn-danger" type="button" title="Remove it from all of your programming" onclick="askRemoveExercise(${l.id})">Delete</button></td>
     </tr>`;
   }).join("");
   return `<section class="stage ui-page"><div class="ui-wrap">
-    ${uiHead("Coach tools", "Exercise library", `${total} exercise${total === 1 ? "" : "s"} in your gym's master database. Defaults here fill in when an exercise is added to a calendar.`,
+    ${uiHead("Coach tools", "Exercise library", `${total} exercise${total === 1 ? "" : "s"} in your library. Defaults here fill in when an exercise is added to a calendar.`,
       `<button class="btn btn-secondary" type="button" onclick="openChainEditor()">New chain</button>`)}
     <section class="ui-card">
       <div class="ui-card-body ui-inline">
         <div class="ui-search"><input class="input" placeholder="Search exercises and chains" aria-label="Search exercises" data-focus="lift-q" value="${esc(state.liftQ)}" oninput="state.liftQ=this.value;render()"></div>
         <select class="select auto" aria-label="Exercise category" onchange="state.managing=this.value;render()">${filters.map((t) => `<option ${state.managing === t ? "selected" : ""}>${t}</option>`).join("")}</select>
+        <label class="ui-check"><input type="checkbox" ${state.showHiddenLibrary ? "checked" : ""} onchange="state.showHiddenLibrary=this.checked;render()"> Show hidden${hiddenCount ? " (" + hiddenCount + ")" : ""}</label>
         <form class="ui-inline" onsubmit="addExerciseRecord(); return false;">
           <input class="input auto" style="width:220px" placeholder="New exercise name" aria-label="New exercise name" data-focus="ex-name" value="${esc(state.toolForm.exName || "")}" oninput="state.toolForm.exName=this.value">
           <button class="btn btn-primary" type="submit">Add exercise</button>
         </form>
       </div>
+      <p class="ui-card-note"><b>Hide</b> takes an exercise or chain out of your library and pickers. Days that already use it keep it, and you can unhide it later. <b>Delete</b> also removes it from all of your programming, past and future, and cannot be undone. Both only affect you: other coaches keep their own library.</p>
     </section>
     <section class="ui-card">
       <div class="ui-card-head"><h2 class="ui-card-title">Exercises <span class="count">${rows.length}</span></h2></div>
@@ -6209,13 +6521,19 @@ function liftsView() {
 }
 function chainLibraryHtml() {
   const q = state.liftQ.toLowerCase();
-  const chains = (state.chains || []).filter((chain) => !q || chain.name.toLowerCase().includes(q) || String(chain.kind || "").toLowerCase().includes(q));
-  const body = chains.map((chain) => `<tr>
-    <td class="strong"><span class="chain-mark">Chain</span> ${esc(chain.name)}</td>
+  const chains = (state.chains || []).filter((chain) => (state.showHiddenLibrary || !chain.hidden)
+    && (!q || chain.name.toLowerCase().includes(q) || String(chain.kind || "").toLowerCase().includes(q)));
+  const body = chains.map((chain) => {
+    const actions = chain.hidden
+      ? `<button class="btn btn-ghost btn-sm" type="button" onclick="unhideChain(${chain.id})">Unhide</button>`
+      : `<button class="btn btn-ghost btn-sm" type="button" onclick="openChainEditor(${chain.id})">Edit</button><button class="btn btn-ghost btn-sm" type="button" title="Take it out of your library. Days that use it keep their block." onclick="hideChain(${chain.id})">Hide</button>`;
+    return `<tr class="${chain.hidden ? "is-hidden" : ""}">
+    <td class="strong"><span class="chain-mark">Chain</span> ${esc(chain.name)}${chain.hidden ? ` <span class="ui-badge amber">Hidden</span>` : ""}</td>
     <td><span class="ui-badge">${esc(chain.kind || "")}</span></td>
     <td class="num">${(chain.members || []).length}</td>
-    <td class="row-actions"><button class="btn btn-ghost btn-sm" type="button" onclick="openChainEditor(${chain.id})">Edit</button></td>
-  </tr>`).join("");
+    <td class="row-actions">${actions}<button class="btn btn-ghost btn-sm btn-danger" type="button" title="Remove its blocks from all of your programming" onclick="askRemoveChain(${chain.id})">Delete</button></td>
+  </tr>`;
+  }).join("");
   return `<section class="ui-card chain-library">
     <div class="ui-card-head">
       <div><h2 class="ui-card-title">Chains <span class="count">${chains.length}</span></h2>
@@ -6237,6 +6555,7 @@ function rememberChain(chain) {
 async function loadChains() {
   try {
     state.chains = await api("GET", "/api/chains");
+    markHiddenExercises();
   } catch (err) {
     console.error(err);
   }
@@ -6252,7 +6571,7 @@ function openChainEditor(chainId) {
     instance: "",
     name: chain ? chain.name : "",
     kind: chain ? chain.kind : "Warm up",
-    pick: "",
+    pickQ: "",
     members: chain ? (chain.members || []).map((member) => chainMemberDraft(member)) : []
   };
   render();
@@ -6271,7 +6590,7 @@ function openChainFromDay(date, instance) {
     instance,
     name: members[0].chainName || "",
     kind: members[0].chainKind || "Warm up",
-    pick: "",
+    pickQ: "",
     members: members.map((it, index) => {
       const record = it.exerciseId ? null : exerciseRecord(it.name);
       const template = (state.chains || []).find((row) => row.id === members[0].chainId);
@@ -6291,13 +6610,39 @@ function openChainFromDay(date, instance) {
   };
   render();
 }
-function addChainMember() {
+function addChainMember(exerciseId) {
   const m = state.modal;
   if (!m || m.type !== "chain") return;
-  const exerciseId = parseInt(m.pick, 10);
   const record = (state.serverExercises || []).find((row) => row.id === exerciseId);
   if (!record) { toast("Choose an exercise"); return; }
   m.members.push(chainMemberDraft({ exercise_id: record.id, name: record.name, exercise: record }));
+  m.pickQ = "";
+  state.pendingFocus = "chain-pick";
+  render();
+}
+// A chain can only hold library exercises, so a missing one is made here and dropped straight in.
+function createExerciseForChain() {
+  const chainModal = state.modal;
+  if (!chainModal || chainModal.type !== "chain") return;
+  openEdit({
+    title: "Create exercise",
+    hint: "Saved to the exercise library, then added to this chain. Cancel goes back to the chain.",
+    liveCategory: true,
+    parent: chainModal,
+    fields: exerciseFields(blankLibraryRow((chainModal.pickQ || "").trim())),
+    onSave: async (values) => {
+      const created = await postLibraryExercise(values);
+      if (!created) return;
+      rememberCreatedExercise(created);
+      chainModal.members.push(chainMemberDraft({ exercise_id: created.id, name: created.name, exercise: created }));
+      chainModal.pickQ = "";
+      state.modal = chainModal;
+      state.pendingFocus = "chain-pick";
+      toast(created.name + " added to the chain");
+      render();
+    }
+  });
+  state.pendingFocus = "edit-name";
   render();
 }
 function moveChainMember(index, dir) {
@@ -6503,6 +6848,7 @@ async function saveExerciseName(id, previousName) {
     default_rest: row.default_rest || "",
     default_rest_rep: row.default_rest_rep || "",
     default_distance: row.default_distance || "",
+    default_time: row.default_time || "",
     default_tempo: row.default_tempo || "",
     default_velocity: row.default_velocity || "",
     default_power: row.default_power || "",
@@ -6531,12 +6877,100 @@ async function hideExercise(id) {
   render();
   try {
     await api("POST", "/api/gym/hidden-exercises", { exercise_id: id });
+    toast((row ? row.name : "Exercise") + " hidden. Show hidden to bring it back.");
   } catch (err) {
     if (row) row.hidden = false;
     state.hiddenExerciseIds = state.hiddenExerciseIds.filter((n) => n !== id);
     toast(err.message || "Could not hide that exercise");
     render();
   }
+}
+async function unhideExercise(id, opts) {
+  const row = state.serverExercises.find((e) => e.id === id);
+  try {
+    await api("DELETE", "/api/gym/hidden-exercises/" + id);
+    if (row) row.hidden = false;
+    state.hiddenExerciseIds = state.hiddenExerciseIds.filter((n) => n !== id);
+    if (!(opts && opts.quiet)) toast((row ? row.name : "Exercise") + " is back in your library");
+  } catch (err) {
+    toast(err.message || "Could not unhide that exercise");
+  }
+  render();
+}
+async function hideChain(id) {
+  const row = (state.chains || []).find((c) => c.id === id);
+  try {
+    await api("POST", "/api/gym/hidden-chains", { chain_id: id });
+    if (row) row.hidden = true;
+    if (state.hiddenChainIds.indexOf(id) < 0) state.hiddenChainIds.push(id);
+    toast((row ? row.name : "Chain") + " hidden. Show hidden to bring it back.");
+  } catch (err) {
+    toast(err.message || "Could not hide that chain");
+  }
+  render();
+}
+async function unhideChain(id) {
+  const row = (state.chains || []).find((c) => c.id === id);
+  try {
+    await api("DELETE", "/api/gym/hidden-chains/" + id);
+    if (row) row.hidden = false;
+    state.hiddenChainIds = state.hiddenChainIds.filter((n) => n !== id);
+    toast((row ? row.name : "Chain") + " is back in your library");
+  } catch (err) {
+    toast(err.message || "Could not unhide that chain");
+  }
+  render();
+}
+// Spells out what Delete reaches before the coach confirms it.
+function removalWarning(use, kind) {
+  const plural = (n, word) => n + " " + word + (n === 1 ? "" : "s");
+  const what = kind === "chain" ? "This chain's blocks are" : "It is";
+  const where = use && use.days
+    ? `${what} on ${plural(use.days, "day")} of your programming, reaching ${plural(use.athletes, "athlete")}. Every one is removed, past and future.`
+    : (kind === "chain" ? "None of your days use this chain." : "It is not on any of your days.");
+  const logs = use && use.logged_sets ? ` ${plural(use.logged_sets, "logged set")} on those days ${use.logged_sets === 1 ? "is" : "are"} erased with it.` : "";
+  const keep = kind === "chain" ? "" : " PRs stay.";
+  return `${where}${logs}${keep} It also leaves your library. Other coaches keep it. This cannot be undone.`;
+}
+async function askRemoveFromProgramming(kind, id) {
+  const chain = kind === "chain";
+  const row = chain ? (state.chains || []).find((c) => c.id === id) : state.serverExercises.find((e) => e.id === id);
+  if (!row) return;
+  let use;
+  try {
+    use = await api("GET", (chain ? "/api/chains/" : "/api/exercises/") + id + "/programming");
+  } catch (err) {
+    toast(err.message || "Could not check where that is used");
+    return;
+  }
+  state.modal = {
+    type: "confirm",
+    title: `Delete ${row.name} from your programming?`,
+    body: removalWarning(use, kind),
+    confirmLabel: use.days ? `Delete from ${use.days} day${use.days === 1 ? "" : "s"}` : "Delete",
+    onConfirm: () => removeFromProgramming(kind, id)
+  };
+  render();
+}
+function askRemoveExercise(id) { return askRemoveFromProgramming("exercise", id); }
+function askRemoveChain(id) { return askRemoveFromProgramming("chain", id); }
+async function removeFromProgramming(kind, id) {
+  const chain = kind === "chain";
+  const row = chain ? (state.chains || []).find((c) => c.id === id) : state.serverExercises.find((e) => e.id === id);
+  state.modal = null;
+  try {
+    flushAutosaves();
+    const result = await api("POST", (chain ? "/api/chains/" : "/api/exercises/") + id + "/remove-from-programming");
+    if (row) row.hidden = true;
+    const list = chain ? state.hiddenChainIds : state.hiddenExerciseIds;
+    if (list.indexOf(id) < 0) list.push(id);
+    await reloadChainWorkouts((result && result.workout_ids) || []);
+    const days = (result && result.days) || 0;
+    toast((row ? row.name : "It") + (days ? ` removed from ${days} day${days === 1 ? "" : "s"}` : " removed from your library"));
+  } catch (err) {
+    toast(err.message || "Could not delete that");
+  }
+  render();
 }
 
 function dailyView() {
@@ -7386,6 +7820,7 @@ function mapEditFields(rows) {
     button: f.button || "",
     checkbox: f.checkbox || "",
     hint: f.hint || "",
+    placeholder: f.placeholder || "",
     min: f.min,
     max: f.max
   }));
@@ -7399,7 +7834,8 @@ function openEdit(opts) {
     id: opts.id,
     fields: mapEditFields(opts.fields),
     onSave: opts.onSave,
-    liveCategory: !!opts.liveCategory
+    liveCategory: !!opts.liveCategory,
+    parent: opts.parent || null
   };
   render();
 }
@@ -7426,7 +7862,9 @@ function setEditField(key, value) {
   render();
 }
 function closeEdit() {
-  state.modal = null;
+  const m = state.modal;
+  // An edit opened from another modal, such as a new exercise from the chain editor, goes back to it.
+  state.modal = (m && m.parent) || null;
   render();
 }
 async function saveEdit() {
@@ -7462,7 +7900,8 @@ function editModalHtml(m) {
     } else {
       const bounds = f.min != null ? ` min="${esc(f.min)}"` : "";
       const maxBound = f.max != null ? ` max="${esc(f.max)}"` : "";
-      control = `<input class="field" type="${esc(f.type || "text")}" data-edit-key="${key}" data-focus="edit-${key}" value="${esc(f.value)}"${max}${bounds}${maxBound} oninput="setEditField('${key}', this.value)">`;
+      const placeholder = f.placeholder ? ` placeholder="${esc(f.placeholder)}"` : "";
+      control = `<input class="field" type="${esc(f.type || "text")}" data-edit-key="${key}" data-focus="edit-${key}" value="${esc(f.value)}"${max}${bounds}${maxBound}${placeholder} oninput="setEditField('${key}', this.value)">`;
     }
     return `<label class="edit-field${span}"><span>${esc(f.label)}</span>${control}${f.hint ? `<div class="hint">${esc(f.hint)}</div>` : ""}</label>`;
   }).join("");
@@ -7496,7 +7935,9 @@ function setChainMemberField(index, key, value) {
 }
 function chainEditorHtml(m) {
   const kinds = ["Warm up", "Circuit", "Cooldown"];
-  const options = (state.serverExercises || []).filter((row) => !row.hidden);
+  const q = String(m.pickQ || "").trim().toLowerCase();
+  const matches = (state.serverExercises || []).filter((row) => !row.hidden && (!q || row.name.toLowerCase().includes(q)));
+  const options = matches.slice(0, 6);
   const members = (m.members || []).map((mem, index) => `<div class="chain-member">
       <span>${index + 1}. ${esc(mem.name)}</span>
       <button type="button" onclick="moveChainMember(${index}, -1)">Up</button>
@@ -7506,15 +7947,21 @@ function chainEditorHtml(m) {
       <label class="chain-field">Reps <input aria-label="Reps for ${esc(mem.name)}" value="${esc(mem.reps || "")}" oninput="setChainMemberField(${index}, 'reps', this.value)"></label>
       <label class="chain-field chain-notes">Notes <input aria-label="Notes for ${esc(mem.name)}" value="${esc(mem.notes || "")}" oninput="setChainMemberField(${index}, 'notes', this.value)"></label>
     </div>`).join("");
-  return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render()}"><div class="modal edit-modal" onclick="event.stopPropagation()">
+  const rows = options.map((row) => `<button type="button" class="opt" onclick="addChainMember(${row.id})"><span class="opt-name">${esc(row.name)}</span>${videoMark(row.video_url)}<span class="tag">${esc(categoryLabel(row.category))}</span></button>`).join("");
+  const more = matches.length > options.length ? `<div class="hint">${matches.length - options.length} more. Keep typing to narrow it down.</div>` : "";
+  return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render()}"><div class="modal edit-modal chain-modal" onclick="event.stopPropagation()">
     <h3>${m.chainId ? "Edit chain" : "New chain"}</h3>
-    <div class="sub">A chain groups existing exercises. It has its own name and no video. Saving an existing chain asks which days change.</div>
+    <div class="sub">A chain groups library exercises. It has its own name and no video. Saving an existing chain asks which days change.</div>
     <label class="edit-field"><span>Name</span><input class="field" data-focus="chain-name" value="${esc(m.name || "")}" oninput="state.modal.name=this.value"></label>
     <label class="edit-field"><span>Kind</span><select class="field" onchange="state.modal.kind=this.value">${kinds.map((kind) => `<option ${m.kind === kind ? "selected" : ""}>${esc(kind)}</option>`).join("")}</select></label>
     <div class="chain-members">${members || `<p class="hint">No exercises in this chain yet. The same exercise can be added twice.</p>`}</div>
-    <div class="row">
-      <select class="field" onchange="state.modal.pick=this.value"><option value="">Add exercise</option>${options.map((row) => `<option value="${row.id}">${esc(row.name)}</option>`).join("")}</select>
-      <button type="button" class="pill" onclick="addChainMember()">Add</button>
+    <div class="chain-pick">
+      <label class="edit-field"><span>Add an exercise</span><input class="field" type="text" autocomplete="off" data-focus="chain-pick" placeholder="Search the exercise library" aria-label="Search exercises to add to the chain" value="${esc(m.pickQ || "")}" oninput="state.modal.pickQ=this.value;render()"></label>
+      <div class="chain-pick-results">
+        ${rows || `<div class="hint">No exercise matches that.</div>`}
+        ${more}
+        <button type="button" class="opt create-row" onclick="createExerciseForChain()">+ Create new exercise${q ? ` “${esc(String(m.pickQ).trim())}”` : ""}</button>
+      </div>
     </div>
     <button class="full save" type="button" onclick="chainEditorCommit()">${m.chainId ? "Continue" : "Save chain"}</button>
     <button class="full" type="button" onclick="state.modal=null;render()">Cancel</button>
@@ -7611,8 +8058,8 @@ function saveInfo() {
   state.modal = null;
   render();
 }
-window.addEventListener("resize", () => { if (state.searchDay) placeSearchPop(); if (state.editor) placeEditorPop(); });
-document.addEventListener("scroll", () => { if (state.searchDay) placeSearchPop(); if (state.editor) placeEditorPop(); }, true);
+window.addEventListener("resize", () => { if (state.editor) placeEditorPop(); if (state.searchDay) placeSearchPop(); });
+document.addEventListener("scroll", () => { if (state.editor) placeEditorPop(); if (state.searchDay) placeSearchPop(); }, true);
 document.addEventListener("click", (ev) => {
   if (state.editor && state.view === "build" && !ev.target.closest(".build-editor, .modal, .modal-back, .menu, .pop")) {
     closeEditor();
@@ -7622,7 +8069,7 @@ document.addEventListener("click", (ev) => {
   let changed = false;
   if (state.navMenu) { state.navMenu = null; changed = true; }
   if (state.dayMenu || state.recurMenu || state.propMenu || state.letterMenu || state.optionsMenu || state.supersetMenu || state.trackMenu || state.colorMenu || state.searchDay) {
-    state.dayMenu = state.recurMenu = state.colorMenu = state.searchDay = null;
+    state.dayMenu = state.recurMenu = state.colorMenu = state.searchDay = state.swap = null;
     state.propMenu = state.letterMenu = state.optionsMenu = state.supersetMenu = state.trackMenu = false;
     changed = true;
   }
@@ -7631,6 +8078,12 @@ document.addEventListener("click", (ev) => {
   if (changed) render();
 });
 document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && state.searchDay && state.view === "build" && !state.modal) {
+    ev.preventDefault();
+    if (!endSwap()) state.searchDay = null;
+    render();
+    return;
+  }
   if (ev.key === "Escape" && state.editor && state.view === "build" && !state.modal) {
     ev.preventDefault();
     discardEditor();

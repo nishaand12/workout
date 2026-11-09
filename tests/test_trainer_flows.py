@@ -258,9 +258,11 @@ class TrainerFlowTests(unittest.TestCase):
         del_res = self.client.delete(f"/api/records/{record['id']}")
         self.assertEqual(del_res.status_code, 200)
 
-        # Delete exercise
+        # The catalog is shared by every gym, so no one can delete from it.
         del_ex_res = self.client.delete(f"/api/exercises/{ex['id']}")
-        self.assertEqual(del_ex_res.status_code, 200)
+        self.assertEqual(del_ex_res.status_code, 405)
+        still = self.client.get("/api/exercises", params={"search": ex["name"]}).json()
+        self.assertTrue(any(row["id"] == ex["id"] for row in still))
 
     def test_password_reset_flow(self):
         # Register user
@@ -862,7 +864,7 @@ class TrainerFlowTests(unittest.TestCase):
             row = db.query(Exercise).filter(Exercise.id == ex["id"]).first()
             self.assertNotIn("completionOnly", crud._tagged_defaults(row, 3))
             row.completion_only = True
-            self.assertIn("Flags:completionOnly", crud._tagged_defaults(row, 3))
+            self.assertIn("Flags:dose2,completionOnly", crud._tagged_defaults(row, 3))
         finally:
             db.rollback()
             db.close()

@@ -59,7 +59,7 @@ vm.createContext(sandbox);
 const source = fs.readFileSync("app/static/js/build-order.js", "utf8") + "\n" + fs.readFileSync("app/static/js/wourkout.js", "utf8") + `
 globalThis.__lib = {
   state, blankLibraryRow, libraryExercisePayload, exerciseFields, fromCatalog, item, itemNotes,
-  workoutToDayItems, setTrack, trackControl, editorClick, searchPop, createChainFromDay,
+  workoutToDayItems, toggleTrack, trackControl, editorClick, searchPop, createChainFromDay,
   chainEditorCommit, editorPop, scriptLine, entryColumns, previewSheet, weekNoteHtml, blurWeekNote,
   setWeekNote, weekNoteOpen, exerciseDefaultsText, ensureDay, editModalHtml, mapEditFields, openEditor,
   syncFromGymContext, buildAthletes, calendarForAthlete, targetById, weekNoteTarget, programmedDayCount,
@@ -140,52 +140,107 @@ state.view = "build";
 }
 
 {
-  // Reps / Time (s) / Distance is a three-way switch, and distance survives a save and reload.
+  // Reps, Time (s), and Distance are separate switches. Each one that is on has its own row,
+  // and the mix survives a save and reload.
   const day = lib.ensureDay("2026-10-22");
-  const sprint = lib.item({ name: "Sprint", type: "lift", letter: "A", sets: 2, reps: ["40", "40"] });
+  const sprint = lib.item({ name: "Sprint", type: "lift", letter: "A", sets: 2, reps: ["3", "3"] });
   day.items.push(sprint);
   let control = lib.trackControl("2026-10-22", sprint);
   assert.ok(control.includes("Time (s)"));
-  assert.ok(control.includes("Distance"));
+  assert.ok(control.includes("Distance (m)"));
   assert.ok(!control.includes("Seconds"));
   assert.ok(control.includes("✓ Reps"));
+  assert.ok(!control.includes("✓ Distance"));
 
-  lib.setTrack("2026-10-22", sprint.id, "distance");
+  lib.toggleTrack("2026-10-22", sprint.id, "distance");
   assert.equal(sprint.trackDistance, true);
   assert.equal(sprint.trackTime, false);
-  assert.equal(sprint.trackReps, false);
+  assert.equal(sprint.trackReps, true);
+  sprint.distances = ["40", "40"];
   control = lib.trackControl("2026-10-22", sprint);
-  assert.ok(control.includes("✓ Distance"));
-  assert.ok(lib.itemNotes(sprint).includes("Flags:trackDistance"));
+  assert.ok(control.includes("✓ Reps"));
+  assert.ok(control.includes("✓ Distance (m)"));
+  assert.ok(lib.itemNotes(sprint).includes("Flags:dose2,trackDistance"));
+  assert.ok(lib.itemNotes(sprint).includes("Distances:40,40"));
   assert.ok(!lib.itemNotes(sprint).includes("noTrackReps"));
-  assert.ok(lib.scriptLine(sprint).includes("2 x 40 m"));
-  assert.deepEqual(lib.entryColumns(sprint)[0], ["r", "Distance (metres)"]);
-  assert.ok(lib.previewSheet(sprint, {}).includes("DISTANCE (METRES)"));
+  assert.equal(lib.scriptLine(sprint), "2 x 3 · 40 m");
+  assert.deepEqual(JSON.parse(JSON.stringify(lib.entryColumns(sprint).slice(0, 2))), [["r", "Reps"], ["distance", "Distance (m)"]]);
+  const sheet = lib.previewSheet(sprint, {});
+  assert.ok(sheet.includes("REPS"));
+  assert.ok(sheet.includes("DISTANCE (m)"));
 
   state.editor = { day: "2026-10-22", id: sprint.id };
   const editor = lib.editorPop("2026-10-22");
-  assert.ok(editor.includes("Distance (metres)"));
-  assert.ok(editor.includes('class="sec-suffix">metres<'));
+  assert.ok(editor.includes("Distance (m)"));
+  assert.ok(editor.includes('class="sec-suffix">m<'));
+  assert.ok(!editor.includes("metres"));
+  assert.ok(editor.includes('aria-label="Reps set 1"'));
+  assert.ok(editor.includes('aria-label="Distance (m) set 2"'));
   state.editor = null;
 
-  const reloaded = lib.workoutToDayItems({ exercises: [{
+  const reload = (it) => lib.workoutToDayItems({ exercises: [{
     id: 5, exercise_id: 9, exercise: { name: "Sprint", category: "Strength" }, superset_group: "A", order_index: 0,
-    prescribed_sets: 2, target_reps: "40,40", target_weight: "", notes: lib.itemNotes(sprint)
+    prescribed_sets: 2, target_reps: (it.reps || []).join(","), target_weight: "", notes: lib.itemNotes(it)
   }] })[0];
+  let reloaded = reload(sprint);
   assert.equal(reloaded.trackDistance, true);
   assert.equal(reloaded.trackTime, false);
-  assert.equal(reloaded.trackReps, false);
-  assert.deepEqual(reloaded.reps, ["40", "40"]);
+  assert.equal(reloaded.trackReps, true);
+  assert.deepEqual(reloaded.reps, ["3", "3"]);
+  assert.deepEqual(reloaded.distances, ["40", "40"]);
+  assert.ok(reloaded.props.indexOf("distance") < 0);
 
-  lib.setTrack("2026-10-22", sprint.id, "time");
+  // All three at once.
+  lib.toggleTrack("2026-10-22", sprint.id, "time");
+  sprint.times = ["6", "6"];
   assert.equal(sprint.trackTime, true);
+  assert.equal(sprint.trackDistance, true);
+  assert.equal(lib.scriptLine(sprint), "2 x 3 · 6s · 40 m");
+  assert.ok(lib.itemNotes(sprint).includes("Flags:dose2,trackTime,trackDistance"));
+  assert.ok(lib.itemNotes(sprint).includes("Times:6,6"));
+  reloaded = reload(sprint);
+  assert.deepEqual(reloaded.times, ["6", "6"]);
+  assert.equal(reloaded.trackTime && reloaded.trackDistance && reloaded.trackReps, true);
+
+  // Reps off: the first measure left carries the set count. The last one cannot be turned off.
+  lib.toggleTrack("2026-10-22", sprint.id, "reps");
+  lib.toggleTrack("2026-10-22", sprint.id, "distance");
+  assert.equal(sprint.trackReps, false);
   assert.equal(sprint.trackDistance, false);
-  assert.ok(lib.itemNotes(sprint).includes("Flags:trackTime"));
-  assert.ok(!lib.itemNotes(sprint).includes("trackDistance"));
-  lib.setTrack("2026-10-22", sprint.id, "reps");
-  assert.equal(sprint.trackReps, true);
-  assert.equal(sprint.trackTime, false);
-  assert.equal(sprint.trackDistance, false);
+  assert.equal(lib.scriptLine(sprint), "2 x 6s");
+  assert.ok(lib.itemNotes(sprint).includes("Flags:dose2,trackTime,noTrackReps"));
+  assert.ok(!lib.itemNotes(sprint).includes("Distances:"));
+  lib.toggleTrack("2026-10-22", sprint.id, "time");
+  assert.equal(sprint.trackTime, true);
+  reloaded = reload(sprint);
+  assert.equal(reloaded.trackReps, false);
+  assert.deepEqual(JSON.parse(JSON.stringify(lib.entryColumns(reloaded)[0])), ["time", "Time (s)"]);
+
+  // Days saved before this kept seconds or distance in the reps row. They load into the new rows.
+  const oldTime = lib.workoutToDayItems({ exercises: [{
+    id: 6, exercise_id: 9, exercise: { name: "Plank", category: "Strength" }, superset_group: "A", order_index: 0,
+    prescribed_sets: 2, target_reps: "30s,45", target_weight: "", notes: "Flags:trackTime"
+  }] })[0];
+  assert.equal(oldTime.trackTime, true);
+  assert.equal(oldTime.trackReps, false);
+  assert.deepEqual(oldTime.times, ["30", "45"]);
+  assert.equal(lib.scriptLine(oldTime), "30s, 45s");
+  const oldDistance = lib.workoutToDayItems({ exercises: [{
+    id: 7, exercise_id: 9, exercise: { name: "Sprint", category: "Strength" }, superset_group: "A", order_index: 0,
+    prescribed_sets: 2, target_reps: "40,40", target_weight: "", notes: "Flags:trackDistance"
+  }] })[0];
+  assert.equal(oldDistance.trackDistance, true);
+  assert.equal(oldDistance.trackReps, false);
+  assert.deepEqual(oldDistance.distances, ["40", "40"]);
+  assert.equal(lib.scriptLine(oldDistance), "2 x 40 m");
+  const oldProp = lib.workoutToDayItems({ exercises: [{
+    id: 8, exercise_id: 9, exercise: { name: "Sprint", category: "Strength" }, superset_group: "A", order_index: 0,
+    prescribed_sets: 3, target_reps: "2,2,2", target_weight: "", notes: "Distances:10,10,10\nProps:distance"
+  }] })[0];
+  assert.equal(oldProp.trackReps, true);
+  assert.equal(oldProp.trackDistance, true);
+  assert.deepEqual(oldProp.props, []);
+  assert.equal(lib.scriptLine(oldProp), "3 x 2 · 10 m");
 }
 
 {

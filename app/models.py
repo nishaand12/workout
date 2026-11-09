@@ -192,6 +192,8 @@ class Exercise(Base):
     default_pct = Column(String(50), default="")
     default_rest_rep = Column(String(50), default="")
     default_distance = Column(String(50), default="")
+    # Seconds per set. A lift tracks any mix of reps, time, and distance.
+    default_time = Column(String(50), default="")
     intensity_kind = Column(String(20), default="")
     intensity_value = Column(String(20), default="")
     default_stations = Column(Text, default="")
@@ -355,8 +357,24 @@ class WeekNote(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 class GymHiddenExercise(Base):
-    """A lift hidden on this gym's exercise list. The catalog itself stays shared."""
+    """Legacy gym-wide hidden list. Rows move to CoachHiddenExercise at startup."""
     __tablename__ = "gym_hidden_exercises"
 
     gym_id = Column(Integer, ForeignKey("gyms.id", ondelete="CASCADE"), primary_key=True)
     exercise_id = Column(Integer, ForeignKey("exercises.id", ondelete="CASCADE"), primary_key=True)
+
+
+class CoachHiddenExercise(Base):
+    """An exercise one coach has hidden from their own library. The catalog itself stays shared."""
+    __tablename__ = "coach_hidden_exercises"
+
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    exercise_id = Column(Integer, ForeignKey("exercises.id", ondelete="CASCADE"), primary_key=True)
+
+
+class CoachHiddenChain(Base):
+    """A chain one coach has hidden from their own library. Other coaches still see it."""
+    __tablename__ = "coach_hidden_chains"
+
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    chain_id = Column(Integer, ForeignKey("exercise_chains.id", ondelete="CASCADE"), primary_key=True)
