@@ -12,9 +12,9 @@ from zoneinfo import ZoneInfo
 import httpx
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import or_, desc, asc
+from sqlalchemy import and_, or_, desc, asc
 
-from app.models import Exercise, ExerciseChain, ExerciseChainMember, Workout, WorkoutExercise, WorkoutSession, SetLog, PersonalRecord, User, Group, WorkoutAssignment, Gym, JoinCode, GymItem, GymHiddenExercise, WeekNote, Calendar
+from app.models import Exercise, ExerciseChain, ExerciseChainMember, Workout, WorkoutExercise, WorkoutSession, SetLog, PersonalRecord, User, Group, WorkoutAssignment, Gym, JoinCode, GymItem, GymHiddenExercise, CoachHiddenExercise, CoachHiddenChain, WeekNote, Calendar
 from app import access
 from app.schemas import (
     ExerciseCreate, ExerciseUpdate, WorkoutCreate, WorkoutUpdate, PersonalRecordCreate,
@@ -420,7 +420,10 @@ def normalize_distance_unit(value: Optional[str]) -> str:
     return "m"
 
 
-def _intensity_number(kind: str, raw: str) -> str:
+_INTENSITY_RANGE = re.compile(r"^(\d+(?:\.\d+)?)\s*%?\s*(?:-|\u2013|\u2014|to)\s*(\d+(?:\.\d+)?)\s*%?$", re.IGNORECASE)
+
+
+def _intensity_single(kind: str, raw: str) -> str:
     text = str(raw or "").strip().rstrip("%").strip()
     if not text:
         raise HTTPException(status_code=400, detail="Enter an intensity number")
@@ -437,6 +440,21 @@ def _intensity_number(kind: str, raw: str) -> str:
     if number == int(number):
         return str(int(number))
     return str(number)
+
+
+def _intensity_number(kind: str, raw: str) -> str:
+    """One number, or a low-high range such as 5-7."""
+    text = str(raw or "").strip()
+    match = _INTENSITY_RANGE.match(text)
+    if not match:
+        return _intensity_single(kind, text)
+    low = _intensity_single(kind, match.group(1))
+    high = _intensity_single(kind, match.group(2))
+    if float(low) == float(high):
+        return low
+    if float(low) > float(high):
+        raise HTTPException(status_code=400, detail="Put the lower intensity first, like 5-7")
+    return low + "-" + high
 
 
 def _one_intensity(data: dict, existing_kind: str = "", existing_value: str = "") -> Tuple[str, str]:
@@ -531,15 +549,6 @@ def update_exercise(db: Session, exercise_id: int, exercise_in: ExerciseUpdate):
     db.commit()
     db.refresh(ex)
     return ex
-
-def delete_exercise(db: Session, exercise_id: int) -> bool:
-    ex = db.query(Exercise).filter(Exercise.id == exercise_id).first()
-    if not ex:
-        return False
-    db.delete(ex)
-    db.commit()
-    return True
-
 
 CHAIN_KINDS = ("Warm up", "Circuit", "Cooldown")
 
@@ -656,6 +665,9 @@ def _we_has_set_logs(db: Session, workout_exercise_id: int) -> bool:
 def _tagged_defaults(exercise: Exercise, sets: int) -> str:
     lines = []
     category = (exercise.category or "").lower()
+    # Circuits and questionnaires keep distance as a property. Every other exercise
+    # tracks any mix of reps, time, and distance, named in Flags.
+    dosed = "circuit" not in category and "question" not in category
     if "circuit" in category:
         if exercise.default_stations:
             lines.append(exercise.default_stations)
@@ -666,16 +678,30 @@ def _tagged_defaults(exercise: Exercise, sets: int) -> str:
         lines.append(exercise.default_notes)
     count = max(sets, 1)
     props = []
+    flags = []
 
     def add(key, label, value):
         if value is None or str(value) == "":
-            return
-        props.append(key)
+            return False
+        if key:
+            props.append(key)
         lines.append(label + ":" + ",".join([str(value)] * count))
+        return True
 
     add("rest", "Rests", exercise.default_rest or "")
     add("restRep", "RestReps", exercise.default_rest_rep or "")
-    add("distance", "Distances", exercise.default_distance or "")
+    if dosed:
+        timed = add("", "Times", exercise.default_time or "")
+        ranged = add("", "Distances", exercise.default_distance or "")
+        flags.append("dose2")
+        if timed:
+            flags.append("trackTime")
+        if ranged:
+            flags.append("trackDistance")
+        if (timed or ranged) and not str(exercise.default_reps or "").strip():
+            flags.append("noTrackReps")
+    else:
+        add("distance", "Distances", exercise.default_distance or "")
     add("tempo", "Tempos", exercise.default_tempo or "")
     add("velocity", "Velocities", exercise.default_velocity or "")
     add("power", "Powers", exercise.default_power or "")
@@ -687,7 +713,9 @@ def _tagged_defaults(exercise: Exercise, sets: int) -> str:
     if props:
         lines.append("Props:" + ",".join(props))
     if exercise.completion_only and "circuit" not in category:
-        lines.append("Flags:completionOnly")
+        flags.append("completionOnly")
+    if flags:
+        lines.append("Flags:" + ",".join(flags))
     return "\n".join(lines)
 
 
@@ -1238,6 +1266,7 @@ def _set_details(we, index: int) -> str:
         ("pct", "Pcts"),
         ("restRep", "RestReps"),
         ("distance", "Distances"),
+        ("time", "Times"),
         ("intensity", "Intensities"),
     ):
         values = _note_values(we.notes or "", label)
@@ -3360,27 +3389,238 @@ def delete_gym_item(db: Session, user: User, item_id: int) -> None:
 
 
 def hidden_exercise_ids(db: Session, user: User) -> List[int]:
-    if not user.gym_id:
-        return []
-    rows = db.query(GymHiddenExercise).filter(GymHiddenExercise.gym_id == user.gym_id).all()
+    rows = db.query(CoachHiddenExercise).filter(CoachHiddenExercise.user_id == user.id).all()
     return sorted(row.exercise_id for row in rows)
 
 
-def hide_exercise_for_gym(db: Session, user: User, exercise_id: int) -> dict:
+def hidden_chain_ids(db: Session, user: User) -> List[int]:
+    rows = db.query(CoachHiddenChain).filter(CoachHiddenChain.user_id == user.id).all()
+    return sorted(row.chain_id for row in rows)
+
+
+def _require_library_coach(user: User) -> None:
     access.require_gym(user)
     if not _staff_user(user):
         raise HTTPException(status_code=403, detail="Athlete accounts do not have coach tools.")
+
+
+def _hide_exercise_row(db: Session, user: User, exercise_id: int) -> None:
+    existing = db.query(CoachHiddenExercise).filter(
+        CoachHiddenExercise.user_id == user.id,
+        CoachHiddenExercise.exercise_id == exercise_id,
+    ).first()
+    if not existing:
+        db.add(CoachHiddenExercise(user_id=user.id, exercise_id=exercise_id))
+
+
+def _hide_chain_row(db: Session, user: User, chain_id: int) -> None:
+    existing = db.query(CoachHiddenChain).filter(
+        CoachHiddenChain.user_id == user.id,
+        CoachHiddenChain.chain_id == chain_id,
+    ).first()
+    if not existing:
+        db.add(CoachHiddenChain(user_id=user.id, chain_id=chain_id))
+
+
+def hide_exercise_for_coach(db: Session, user: User, exercise_id: int) -> dict:
+    """Hide an exercise in this coach's library only. Days that already use it keep it."""
+    _require_library_coach(user)
     exercise = db.query(Exercise).filter(Exercise.id == exercise_id).first()
     if not exercise:
         raise HTTPException(status_code=404, detail="Exercise not found.")
-    existing = db.query(GymHiddenExercise).filter(
-        GymHiddenExercise.gym_id == user.gym_id,
-        GymHiddenExercise.exercise_id == exercise_id,
-    ).first()
-    if not existing:
-        db.add(GymHiddenExercise(gym_id=user.gym_id, exercise_id=exercise_id))
-        db.commit()
+    _hide_exercise_row(db, user, exercise_id)
+    db.commit()
     return {"exercise_id": exercise_id}
+
+
+def unhide_exercise_for_coach(db: Session, user: User, exercise_id: int) -> dict:
+    _require_library_coach(user)
+    db.query(CoachHiddenExercise).filter(
+        CoachHiddenExercise.user_id == user.id,
+        CoachHiddenExercise.exercise_id == exercise_id,
+    ).delete()
+    db.commit()
+    return {"exercise_id": exercise_id}
+
+
+def hide_chain_for_coach(db: Session, user: User, chain_id: int) -> dict:
+    """Hide a chain in this coach's library only. Days that already use it keep their block."""
+    _require_library_coach(user)
+    chain = db.query(ExerciseChain).filter(ExerciseChain.id == chain_id).first()
+    if not chain:
+        raise HTTPException(status_code=404, detail="Chain not found.")
+    _hide_chain_row(db, user, chain_id)
+    db.commit()
+    return {"chain_id": chain_id}
+
+
+def unhide_chain_for_coach(db: Session, user: User, chain_id: int) -> dict:
+    _require_library_coach(user)
+    db.query(CoachHiddenChain).filter(
+        CoachHiddenChain.user_id == user.id,
+        CoachHiddenChain.chain_id == chain_id,
+    ).delete()
+    db.commit()
+    return {"chain_id": chain_id}
+
+
+def migrate_hidden_to_coaches(db: Session) -> int:
+    """Copy each gym-wide hidden exercise to every coach and admin in that gym, once."""
+    rows = db.query(GymHiddenExercise).all()
+    if not rows:
+        return 0
+    staff_by_gym = {}
+    moved = 0
+    for row in rows:
+        if row.gym_id not in staff_by_gym:
+            people = db.query(User).filter(User.gym_id == row.gym_id).all()
+            staff_by_gym[row.gym_id] = [person for person in people if _staff_user(person)]
+        for person in staff_by_gym[row.gym_id]:
+            _hide_exercise_row(db, person, row.exercise_id)
+            db.flush()
+            moved += 1
+        db.delete(row)
+    db.commit()
+    return moved
+
+
+def _coach_programming(db: Session, coach: User):
+    """Assignments in this coach's own programming: calendars they created, calendars their
+    athletes follow, and anything assigned straight to those athletes or to teams they lead."""
+    athlete_ids = set(access.athlete_ids_for(db, coach))
+    if access.is_athlete(coach):
+        athlete_ids.add(coach.id)
+    calendar_ids = {
+        row.id for row in db.query(Calendar.id).filter(Calendar.gym_id == coach.gym_id, Calendar.coach_id == coach.id).all()
+    }
+    if athlete_ids:
+        for row in db.query(User.calendar_id).filter(User.id.in_(athlete_ids), User.calendar_id.isnot(None)).all():
+            calendar_ids.add(row.calendar_id)
+    team_ids = {team.id for team in access.leads_teams(db, coach)}
+    clauses = []
+    if calendar_ids:
+        clauses.append(WorkoutAssignment.calendar_id.in_(calendar_ids))
+    if athlete_ids:
+        clauses.append(WorkoutAssignment.user_id.in_(athlete_ids))
+    if team_ids:
+        clauses.append(WorkoutAssignment.group_id.in_(team_ids))
+    if not clauses:
+        return [], set()
+    assignments = db.query(WorkoutAssignment).join(Workout, Workout.id == WorkoutAssignment.workout_id).filter(
+        or_(Workout.gym_id == coach.gym_id, Workout.gym_id.is_(None)),
+        or_(*clauses),
+    ).all()
+    return assignments, athlete_ids
+
+
+def _programming_rows(db: Session, coach: User, row_filter):
+    """Workout exercises matching row_filter inside this coach's programming, with who they reach."""
+    assignments, _ = _coach_programming(db, coach)
+    by_workout = {}
+    for assignment in assignments:
+        by_workout.setdefault(assignment.workout_id, []).append(assignment)
+    if not by_workout:
+        return [], set(), set()
+    rows = db.query(WorkoutExercise).filter(
+        WorkoutExercise.workout_id.in_(list(by_workout.keys())),
+        row_filter,
+    ).all()
+    workout_ids = {row.workout_id for row in rows}
+    reached = set()
+    calendar_ids = set()
+    group_ids = set()
+    for workout_id in workout_ids:
+        for assignment in by_workout.get(workout_id, []):
+            if assignment.user_id:
+                reached.add(assignment.user_id)
+            if assignment.calendar_id:
+                calendar_ids.add(assignment.calendar_id)
+            if assignment.group_id:
+                group_ids.add(assignment.group_id)
+    if calendar_ids:
+        for person in db.query(User.id).filter(User.calendar_id.in_(calendar_ids)).all():
+            reached.add(person.id)
+    if group_ids:
+        for person in db.query(User.id).filter(User.team_id.in_(group_ids)).all():
+            reached.add(person.id)
+    return rows, workout_ids, reached
+
+
+def _logged_set_count(db: Session, row_ids: List[int]) -> int:
+    if not row_ids:
+        return 0
+    return db.query(SetLog).filter(
+        SetLog.workout_exercise_id.in_(row_ids),
+        or_(SetLog.completed == True, SetLog.weight != 0, SetLog.reps != 0),
+    ).count()
+
+
+def _programming_use(db: Session, coach: User, row_filter) -> dict:
+    rows, workout_ids, reached = _programming_rows(db, coach, row_filter)
+    return {
+        "days": len(workout_ids),
+        "athletes": len(reached),
+        "logged_sets": _logged_set_count(db, [row.id for row in rows]),
+    }
+
+
+def _remove_from_programming(db: Session, coach: User, row_filter) -> dict:
+    rows, workout_ids, reached = _programming_rows(db, coach, row_filter)
+    result = {
+        "days": len(workout_ids),
+        "athletes": len(reached),
+        "logged_sets": _logged_set_count(db, [row.id for row in rows]),
+        "workout_ids": sorted(workout_ids),
+    }
+    for row in rows:
+        db.delete(row)
+    db.flush()
+    for workout_id in workout_ids:
+        left = db.query(WorkoutExercise.id).filter(WorkoutExercise.workout_id == workout_id).count()
+        if not left:
+            workout = db.query(Workout).filter(Workout.id == workout_id).first()
+            if workout:
+                workout.title = "Rest"
+    return result
+
+
+def exercise_programming_use(db: Session, coach: User, exercise_id: int) -> dict:
+    _require_library_coach(coach)
+    return _programming_use(db, coach, WorkoutExercise.exercise_id == exercise_id)
+
+
+def remove_exercise_from_programming(db: Session, coach: User, exercise_id: int) -> dict:
+    """Take an exercise off every day in this coach's programming, past and future, with the
+    sets athletes logged on it. PRs stay, and so does the shared exercise: other coaches keep it."""
+    _require_library_coach(coach)
+    exercise = db.query(Exercise).filter(Exercise.id == exercise_id).first()
+    if not exercise:
+        raise HTTPException(status_code=404, detail="Exercise not found.")
+    result = _remove_from_programming(db, coach, WorkoutExercise.exercise_id == exercise_id)
+    _hide_exercise_row(db, coach, exercise_id)
+    db.commit()
+    return result
+
+
+def _chain_rows_filter(chain_id: int):
+    return and_(WorkoutExercise.chain_id == chain_id, WorkoutExercise.chain_instance != "")
+
+
+def chain_programming_use(db: Session, coach: User, chain_id: int) -> dict:
+    _require_library_coach(coach)
+    return _programming_use(db, coach, _chain_rows_filter(chain_id))
+
+
+def remove_chain_from_programming(db: Session, coach: User, chain_id: int) -> dict:
+    """Take a chain's blocks off every day in this coach's programming, and hide the chain for them."""
+    _require_library_coach(coach)
+    chain = db.query(ExerciseChain).filter(ExerciseChain.id == chain_id).first()
+    if not chain:
+        raise HTTPException(status_code=404, detail="Chain not found.")
+    result = _remove_from_programming(db, coach, _chain_rows_filter(chain_id))
+    _hide_chain_row(db, coach, chain_id)
+    db.commit()
+    return result
 
 
 def get_gym_activity(db: Session, viewer: User) -> dict:
@@ -3615,6 +3855,7 @@ def gym_context(db: Session, user: User) -> dict:
         "workouts": gym_workout_summaries(db, user),
         "items": list_gym_items(db, user),
         "hidden_exercise_ids": hidden_exercise_ids(db, user),
+        "hidden_chain_ids": hidden_chain_ids(db, user),
         "calendars": list_calendars(db, user),
     }
 

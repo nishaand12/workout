@@ -18,6 +18,7 @@ class ExerciseBase(BaseModel):
     default_pct: Optional[str] = ""
     default_rest_rep: Optional[str] = ""
     default_distance: Optional[str] = ""
+    default_time: Optional[str] = ""
     intensity_kind: Optional[str] = ""
     intensity_value: Optional[str] = ""
     default_stations: Optional[str] = ""
@@ -44,6 +45,7 @@ class ExerciseUpdate(BaseModel):
     default_pct: Optional[str] = None
     default_rest_rep: Optional[str] = None
     default_distance: Optional[str] = None
+    default_time: Optional[str] = None
     intensity_kind: Optional[str] = None
     intensity_value: Optional[str] = None
     default_stations: Optional[str] = None
@@ -566,6 +568,18 @@ class GymItemUpdate(BaseModel):
 class HideExerciseRequest(BaseModel):
     exercise_id: int
 
+class HideChainRequest(BaseModel):
+    chain_id: int
+
+class ProgrammingUse(BaseModel):
+    """Where one coach's programming uses an exercise or a chain."""
+    days: int = 0
+    athletes: int = 0
+    logged_sets: int = 0
+
+class ProgrammingRemoved(ProgrammingUse):
+    workout_ids: List[int] = []
+
 class GymContext(BaseModel):
     gym_id: int
     gym_name: str
@@ -576,6 +590,7 @@ class GymContext(BaseModel):
     workouts: List[GymWorkoutSummary] = []
     items: List[GymSavedItem] = []
     hidden_exercise_ids: List[int] = []
+    hidden_chain_ids: List[int] = []
     calendars: List[CalendarResponse] = []
 
 class GymMemberCreate(BaseModel):
