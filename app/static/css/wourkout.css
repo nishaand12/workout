@@ -139,12 +139,19 @@ button { cursor: pointer; }
 }
 .day-top { display: flex; justify-content: space-between; align-items: center; color: #d7d7d7; font-size: 12px; font-weight: 700; letter-spacing: .04em; }
 .day-top .tools { display: flex; gap: 2px; }
-.week-label { color: var(--dim); font-size: 11px; margin-top: 2px; }
 .day-title {
   background: transparent; border: 0; color: #eee; font-size: 13px; font-weight: 600; padding: 1px 0 3px;
   width: 100%; text-align: left;
 }
 .day-title.placeholder { color: #8d8d8d; font-weight: 500; }
+/* The builder's title is a text box that reads as plain text until it is hovered or typed in. */
+input.day-title {
+  font-family: inherit; min-width: 0; margin: 2px 0 3px; padding: 1px 0; outline: 0; border-radius: 0;
+  border-bottom: 1px solid transparent; text-overflow: ellipsis;
+}
+input.day-title:hover { border-bottom-color: #4a4a4a; }
+input.day-title:focus { border-bottom-color: #7eb6ff; }
+input.day-title::placeholder { color: #8d8d8d; font-weight: 500; }
 .recur {
   display: inline-flex; align-items: center; gap: 6px; background: #2a2a2a; color: #ddd;
   border: 0; border-radius: 6px; padding: 2px 8px; font-size: 12px; margin-bottom: 3px;
@@ -246,9 +253,21 @@ button { cursor: pointer; }
 .chain-head .chain-trash:hover { color: #f87171; }
 .chain-head button { background: transparent; border: 0; color: #9ec0ef; font-size: 11px; padding: 0; }
 .chain-title { font-weight: 650; background: transparent; border: 0; color: inherit; padding: 0; cursor: pointer; text-align: left; }
-.chain-block.chain-selected { outline: 2px solid #7eb6ff; }
 .chain-block.is-collapsed { padding-bottom: 4px; }
 .chain-fold { background: transparent; border: 0; color: #9ec0ef; width: 16px; }
+/* On a calendar day a chain is one more exercise row: no frame, the same letter, name and line under it. */
+.day .chain-block, .day .chain-block.is-collapsed { border: 0; border-radius: 4px; margin: 0; padding: 0; background: transparent; }
+.day .chain-head { flex-wrap: nowrap; align-items: flex-start; padding: 2px; font-size: inherit; color: inherit; cursor: pointer; }
+.day .chain-head .ex-main { color: inherit; }
+.day .chain-head .chain-fold { flex: 0 0 auto; align-self: center; width: 18px; color: #9a9a9a; font-size: 14px; line-height: 1; }
+.day .chain-head .chain-fold:hover { color: #fff; }
+.day .chain-head .ex-tools { right: 19px; }
+.day .chain-block.chain-selected > .chain-head { background: #1d3358; }
+.day .chain-block.clip-hot { background: #16345c; }
+.day .chain-members { margin-left: 9px; padding-left: 9px; border-left: 2px solid #3a3a3a; }
+.editor.build-editor.chain-box .name { border-bottom: 0; }
+.chain-box-letters { flex-wrap: wrap; }
+.chain-box-letters .pill { min-width: 24px; justify-content: center; text-align: center; }
 .chain-field { display: inline-flex; align-items: center; gap: 4px; color: #bbb; font-size: 12px; min-width: 0; }
 .chain-field input { width: 72px; background: #1b1b1b; color: #eee; border: 1px solid #444; border-radius: 4px; padding: 3px 6px; }
 /* Notes take the rest of the row; an overlong note wraps the row instead of sliding the modal. */
@@ -457,7 +476,6 @@ button { cursor: pointer; }
 .sets input[type="checkbox"] { width: auto; }
 .light-page .sets input, .light-page .sets td { background: #fff; color: #222; border-color: #ccc; }
 
-.saved-pill { color: #8ee0a8; font-size: 11px; margin: -2px 0 6px; }
 
 .athlete-banner .ghost { color: white; border-color: #3d6b4e; }
 .toast {
