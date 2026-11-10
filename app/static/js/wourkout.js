@@ -1,8 +1,8 @@
 /* wourkout prototype — calendar builder and coach tools from the screen recordings. */
 const LETTERS = "ABCDEFGHIJ".split("");
 const LETTER_COLOR = {
-  A: "#3ddc84", B: "#3b82f6", C: "#a855f7", D: "#eab308", E: "#f59e0b",
-  F: "#ef4444", G: "#14b8a6", H: "#ec4899", I: "#84cc16", J: "#6366f1"
+  A: "#2fd66f", B: "#4da3ff", C: "#ff9838", D: "#f472d0", E: "#ffe14d",
+  F: "#ff5c5c", G: "#b58bff", H: "#2ad4d4", I: "#c8a27a", J: "#9aa5b1"
 };
 const PROP_LABEL = {
   load: "Load", rest: "Rest", restRep: "Rest/Rep", distance: "Distance",
@@ -304,7 +304,8 @@ const state = {
   buildPrepend: null,
   buildJumpWeek: "",
   playingVideo: "",
-  chainLetterFor: "",
+  chainBox: null,
+  titleEdit: null,
   weekNotes: {},
   weekNotesFolded: readFoldedWeeks(),
   undo: [],
@@ -522,10 +523,12 @@ function loadPhrase(loads, unit) {
   const suffix = unit ? " " + unitWord(unit) : "";
   return " · " + loads.map((x) => (x === "" || x == null ? "—" : String(x) + suffix)).join("/");
 }
-function dayHeading(day) {
-  if (!day) return "Add Workout Name";
-  if (!(day.items || []).length && (day.savedWorkoutId || day.title === "Rest")) return "Rest";
-  return day.title || "Add Workout Name";
+// The workout name is typed where it sits. A day with nothing on it reads Rest until it is named.
+function dayTitleInput(date, day) {
+  const empty = !(day.items || []).length;
+  const shown = day.title === "Rest" && empty ? "" : (day.title || "");
+  const hint = empty && (day.savedWorkoutId || day.title === "Rest") ? "Rest" : "Add Workout Name";
+  return `<input class="day-title" type="text" aria-label="Workout name" data-focus="title-${date}" autocomplete="off" maxlength="120" placeholder="${hint}" value="${esc(shown)}" onfocus="beginDayTitle('${date}')" oninput="typeDayTitle('${date}', this.value)" onkeydown="dayTitleKey(event, '${date}')" onblur="endDayTitle('${date}')">`;
 }
 function scriptLine(it, opts) {
   if (it.type === "note") {
@@ -591,6 +594,7 @@ function resizeSets(it, n) {
 }
 
 function closeFloats() {
+  state.chainBox = null;
   state.searchDay = null;
   state.swap = null;
   state.editor = null;
@@ -633,19 +637,25 @@ function render() {
   const toastHtml = state.toast ? `<div class="toast">${esc(state.toast)}</div>` : "";
   const pending = state.pendingFocus;
   if (pending) state.pendingFocus = "";
-  root.innerHTML = nav() + '<div class="shell">' + body() + "</div>" + toastHtml + modalHtml();
-  // The editor first: the swap search hangs off the exercise name inside it.
-  placeEditorPop();
-  placeSearchPop();
-  const focusKey = pending || focusId;
-  if (focusKey) {
-    const el = document.querySelector(`[data-focus="${focusKey}"]`);
-    if (el) {
-      el.focus();
-      if (!pending && selStart != null && el.setSelectionRange) {
-        try { el.setSelectionRange(selStart, selEnd == null ? selStart : selEnd); } catch (e) { /* ignore */ }
+  // Swapping the page out blurs the focused box; handlers check this so they do not read it as leaving.
+  render.busy = true;
+  try {
+    root.innerHTML = nav() + '<div class="shell">' + body() + "</div>" + toastHtml + modalHtml();
+    // The editor first: the swap search hangs off the exercise name inside it.
+    placeEditorPop();
+    placeSearchPop();
+    const focusKey = pending || focusId;
+    if (focusKey) {
+      const el = document.querySelector(`[data-focus="${focusKey}"]`);
+      if (el) {
+        el.focus();
+        if (!pending && selStart != null && el.setSelectionRange) {
+          try { el.setSelectionRange(selStart, selEnd == null ? selStart : selEnd); } catch (e) { /* ignore */ }
+        }
       }
     }
+  } finally {
+    render.busy = false;
   }
   restoreBuildScroll();
 }
@@ -695,9 +705,12 @@ function placeSearchPop() {
 
 function placeEditorPop() {
   const pop = document.querySelector(".editor.build-editor");
-  if (!pop || !state.editor) return;
-  const day = document.querySelector('.day[data-day="' + state.editor.day + '"]');
-  const row = day && day.querySelector('.ex[data-id="' + state.editor.id + '"]');
+  const box = state.editor ? null : state.chainBox;
+  if (!pop || !(state.editor || box)) return;
+  const day = document.querySelector('.day[data-day="' + (box ? box.date : state.editor.day) + '"]');
+  const row = !day ? null : box
+    ? Array.from(day.querySelectorAll("[data-chain-instance]")).find((el) => el.dataset.chainInstance === box.instance)
+    : day.querySelector('.ex:not(.chain-head)[data-id="' + state.editor.id + '"]');
   const anchor = row || day;
   if (!anchor) return;
   const margin = 8;
@@ -793,7 +806,6 @@ function parseNotes(notes, restSeconds) {
     intensityKind: taggedValue(lines, "IntensityKind"),
     props: splitTag(lines, "Props").filter(Boolean),
     flags: splitTag(lines, "Flags"),
-    seeded: splitTag(lines, "Seeded").filter(Boolean),
     additional
   };
 }
@@ -843,8 +855,6 @@ function itemNotes(it) {
   else if (it.completionOnly) flags.push("completionOnly");
   if (dosed && it.completionOnly && it.textOnly) flags.push("textOnly");
   if (flags.length) lines.push("Flags:" + flags.join(","));
-  const seeded = Object.keys(it.fieldSeed || {}).filter((key) => it.fieldSeed[key]);
-  if (seeded.length) lines.push("Seeded:" + seeded.join(","));
   if (it.intensityKind) lines.push("IntensityKind:" + it.intensityKind);
   const keys = {
     Rests: "rests", RestReps: "restReps", Distances: "distances", Intensities: "intensities",
@@ -914,7 +924,6 @@ function workoutToDayItems(workout) {
       trackVolume: flags.indexOf("trackVolume") >= 0,
       completionOnly,
       textOnly: type === "lift" && completionOnly && (flags.indexOf("textOnly") >= 0 || isTextOnlyCategory(cat)),
-      fieldSeed: Object.fromEntries((parsed.seeded || []).map((key) => [key, true])),
       exerciseId: we.exercise_id,
       videoUrl: (we.exercise && we.exercise.video_url) || "",
       chainId: we.chain_id || null,
@@ -948,10 +957,6 @@ function upgradeDose(it) {
     if (moved) {
       it.reps = Array(sets).fill("1");
       it.trackReps = false;
-      if (it.fieldSeed && it.fieldSeed.reps) {
-        it.fieldSeed[moved] = true;
-        delete it.fieldSeed.reps;
-      }
     }
     it.props = (it.props || []).filter((key) => key !== "distance");
     if (it.textOnly == null) {
@@ -967,6 +972,7 @@ function upgradeDose(it) {
 
 const autosaveTimers = {};
 const daySaveLock = {};
+const daySaveWaiting = {};
 const AUTOSAVE_MS = 500;
 
 function daySaveKey(athleteId, date) {
@@ -1043,12 +1049,25 @@ function scheduleAutosave(athleteId, date) {
     queueDaySave(athleteId, date, { explicit: false });
   }, AUTOSAVE_MS);
 }
+// One save per day runs at a time. A save still waiting its turn reads the day when it starts,
+// so further edits ride along with it instead of lining up a save each.
 function queueDaySave(athleteId, date, opts) {
   const key = daySaveKey(athleteId, date);
+  const waiting = daySaveWaiting[key];
+  if (waiting) {
+    if (opts.explicit) waiting.opts.explicit = true;
+    if (!opts.ifEdited) waiting.opts.ifEdited = false;
+    return waiting.run;
+  }
+  const entry = { opts: { explicit: !!opts.explicit, ifEdited: !!opts.ifEdited } };
   const prev = daySaveLock[key] || Promise.resolve();
-  const run = prev.then(() => saveDayNow(athleteId, date, opts)).catch((err) => { console.error(err); });
-  daySaveLock[key] = run;
-  return run;
+  entry.run = prev.then(() => {
+    if (daySaveWaiting[key] === entry) delete daySaveWaiting[key];
+    return saveDayNow(athleteId, date, entry.opts);
+  }).catch((err) => { console.error(err); });
+  daySaveWaiting[key] = entry;
+  daySaveLock[key] = entry.run;
+  return entry.run;
 }
 async function saveDayNow(athleteId, date, opts) {
   const day = (state.calendars[athleteId] || {})[date];
@@ -1058,6 +1077,8 @@ async function saveDayNow(athleteId, date, opts) {
     return;
   }
   if (!opts.explicit && !day.edited) return;
+  // Closing the editor on a day autosave already wrote has nothing left to send.
+  if (opts.ifEdited && !day.edited && day.savedWorkoutId) return;
   const seq = day.editSeq || 0;
   const ok = await publishDay(date, { quiet: !opts.explicit, athleteId });
   const after = (state.calendars[athleteId] || {})[date];
@@ -1116,15 +1137,21 @@ function applyDrafts(athleteId) {
     scheduleAutosave(athleteId, date);
   });
 }
+// A day saved without a name is stored as "Workout WED, NOV 11". In the builder that is still
+// an unnamed day, so the name box stays empty instead of filling with the stand-in.
+function builderTitle(workout) {
+  const title = String((workout && workout.title) || "").trim();
+  return /^Workout [A-Z]{3}, [A-Z]{3} \d{1,2}$/i.test(title) ? "" : title;
+}
 function mergeShellEdit(athleteId, date, local, entry) {
   const w = entry.workout;
   const serverItems = workoutToDayItems(w);
   const localItems = local.items || [];
   const cleared = !localItems.length && local.title === "Rest" && serverItems.length > 0;
   const added = localItems.filter((it) => !serverItems.some((row) => row.id === it.id));
-  const titleChanged = !!(local.title && local.title !== (w.title || ""));
+  const titleChanged = !!(local.title && local.title !== builderTitle(w));
   const day = blankDay(date, {
-    title: cleared ? "Rest" : ((added.length || titleChanged) && local.title ? local.title : (w.title || "Workout")),
+    title: cleared ? "Rest" : ((added.length || titleChanged) && local.title ? local.title : builderTitle(w)),
     weekLabel: w.description || local.weekLabel || weekName(date),
     items: cleared ? [] : serverItems.concat(added),
     savedFor: athleteId,
@@ -1175,7 +1202,6 @@ function daySignature(day) {
     textOnly: !!it.textOnly,
     requireResponse: !!it.requireResponse,
     videoUrl: it.videoUrl || "",
-    fieldSeed: it.fieldSeed || {},
     exerciseId: it.exerciseId || null,
     chainId: it.chainId || null,
     chainInstance: it.chainInstance || "",
@@ -1250,7 +1276,7 @@ async function loadCalendarSchedule(targetId) {
       }
       const w = entry.workout;
       calObj[date] = blankDay(date, {
-        title: w.title || "Workout",
+        title: builderTitle(w),
         weekLabel: w.description || weekName(date),
         items: workoutToDayItems(w),
         savedFor: targetId,
@@ -2073,7 +2099,7 @@ function buildView() {
   writeBuildQuery();
   const currentTarget = athlete();
   const saveLabel = currentTarget.isCalendar && currentTarget.athleteIds.length !== 1 ? "Save calendar" : "Save for athlete";
-  const floatingEditor = state.editor ? editorPop(state.editor.day) : "";
+  const floatingEditor = state.editor ? editorPop(state.editor.day) : chainBoxPop();
   return leftRail() + buildPanelHtml() + (state.preview ? previewHtml() : "") +
     `<section class="stage">
       <div class="subhead">
@@ -2305,9 +2331,7 @@ function dayCol(date) {
         <button class="iconbtn" title="Workout menu" onclick="openDayMenu('${date}', event)">⋯</button>
       </span>
     </div>
-    <div class="week-label">${esc(day.weekLabel || "")}</div>
-    <button type="button" class="day-title ${dayHeading(day) === "Add Workout Name" ? "placeholder" : ""}" onclick="editWorkoutDay('${date}', event)">${esc(dayHeading(day))}</button>
-    ${day.savedWorkoutId ? `<div class="saved-pill">Saved for ${esc((buildAthletes().find((a) => a.id === day.savedFor) || {}).name || "athlete")}</div>` : ""}
+    ${dayTitleInput(date, day)}
     <div class="row" style="margin-top:0">
       <input type="checkbox" title="Select all" ${sel.length && sel.length === day.items.length ? "checked" : ""} onclick="toggleAll('${date}', this.checked);event.stopPropagation()">
       ${header}
@@ -2345,36 +2369,75 @@ function chainIsOpen(head, audience) {
   if (!head) return false;
   return audience === "athlete" ? !!head.chainAthleteOpen : !!head.chainCoachOpen;
 }
+function chainSubline(group) {
+  const head = group[0];
+  const count = group.length + (group.length === 1 ? " exercise" : " exercises");
+  return head.chainKind ? head.chainKind + " · " + count : count;
+}
+function letterBadge(letter) {
+  return letter
+    ? `<span class="letter" style="background:${LETTER_COLOR[letter] || "#888"}">${esc(letter)}</span>`
+    : `<span class="letter" style="background:#444;color:#fff">–</span>`;
+}
+// A chain reads as one exercise row. The arrow lists its exercises; a click opens its box.
 function chainBlockHtml(date, day, group) {
   const head = group[0];
-  const instance = head.chainInstance;
+  const instance = esc(head.chainInstance);
   const open = chainIsOpen(head, "coach");
-  const selected = state.pick && state.pick.level === "chain" && state.pick.date === date && state.pick.instance === instance;
-  const hot = clipHotMatches(date, { level: "chain", instance });
-  const color = LETTER_COLOR[head.letter] || "#444";
-  const letter = `<button type="button" class="letter chain-letter" draggable="false" style="background:${color};color:${head.letter ? "#111" : "#fff"}" onclick="toggleChainLetter('${date}','${esc(instance)}', event)">${esc(head.letter || "–")}</button>`;
-  const menu = state.chainLetterFor === instance
-    ? `<div class="pop letter-pop" onclick="event.stopPropagation()">${LETTERS.map((L) => `<button type="button" class="opt" onclick="setChainLetter('${date}','${esc(instance)}','${L}')">${L}</button>`).join("")}<button type="button" class="opt" onclick="setChainLetter('${date}','${esc(instance)}','')">–</button></div>`
-    : "";
-  return `<div class="chain-block${selected ? " chain-selected" : ""}${hot ? " clip-hot" : ""}${open ? "" : " is-collapsed"}" draggable="true" data-chain-instance="${esc(instance)}" ondragstart="dragStart(event,'${date}','${head.id}')">
-    <div class="chain-head">
-      <button type="button" class="chain-fold" draggable="false" aria-label="${open ? "Collapse chain" : "Expand chain"}" onclick="toggleChainOpen('${date}','${esc(instance)}','coach', event)">${open ? "▾" : "▸"}</button>
-      ${letter}
-      <span class="chain-mark">Chain</span>
-      <button type="button" class="chain-title" draggable="false" onclick="selectChain('${date}','${esc(instance)}', event)">${esc(head.chainName || "Chain")}</button>
-      <span class="tag">${esc(head.chainKind || "")}</span>
-      <button type="button" draggable="false" onclick="openChainFromDay('${date}','${instance}');event.stopPropagation()">Edit chain</button>
-      <button type="button" draggable="false" onclick="breakChain('${date}','${instance}');event.stopPropagation()">Break apart</button>
-      <button type="button" class="chain-trash" draggable="false" title="Delete chain" aria-label="Delete chain" onclick="askDeleteChain('${date}','${instance}');event.stopPropagation()">🗑</button>
+  const selected = state.pick && state.pick.level === "chain" && state.pick.date === date && state.pick.instance === head.chainInstance;
+  const boxed = state.chainBox && state.chainBox.date === date && state.chainBox.instance === head.chainInstance;
+  const hot = clipHotMatches(date, { level: "chain", instance: head.chainInstance });
+  const name = head.chainName || "Chain";
+  const sub = chainSubline(group);
+  return `<div class="chain-block${selected ? " chain-selected" : ""}${hot ? " clip-hot" : ""}${open ? "" : " is-collapsed"}" draggable="true" data-chain-instance="${instance}" ondragstart="dragStart(event,'${date}','${head.id}')">
+    <div class="ex chain-head${boxed ? " editing" : ""}" data-id="${esc(head.id)}" onclick="selectChain('${date}','${instance}', event)">
+      ${letterBadge(head.letter)}
+      <button type="button" class="ex-main" draggable="false" title="${esc(name + "\n" + sub)}" aria-expanded="${boxed ? "true" : "false"}" onclick="selectChain('${date}','${instance}', event)">
+        <div class="ex-name">${esc(name)}</div>
+        <div class="ex-sub">${esc(sub)}</div>
+      </button>
+      <button type="button" class="chain-fold" draggable="false" title="${open ? "Hide exercises" : "Show exercises"}" aria-label="${open ? "Collapse chain" : "Expand chain"}" onclick="toggleChainOpen('${date}','${instance}','coach', event)">${open ? "▾" : "▸"}</button>
+      <span class="ex-tools">
+        <button type="button" class="handle" title="Drag">⋮⋮</button>
+        <button type="button" class="trash" draggable="false" title="Delete chain" aria-label="Delete chain" onclick="askDeleteChain('${date}','${instance}');event.stopPropagation()">🗑</button>
+      </span>
     </div>
-    ${menu}
-    ${open ? group.map((it) => exRow(date, day, it, { inChain: true })).join("") : ""}
+    ${open ? `<div class="chain-members">${group.map((it) => exRow(date, day, it, { inChain: true })).join("")}</div>` : ""}
   </div>`;
 }
+// The chain's edit box floats beside the day, the same way an exercise's editor does.
+function chainBoxPop() {
+  const box = state.chainBox;
+  if (!box) return "";
+  const group = ensureDay(box.date).items.filter((it) => it.chainInstance === box.instance);
+  if (!group.length) return "";
+  const head = group[0];
+  const date = box.date;
+  const instance = esc(box.instance);
+  const letters = LETTERS.concat([""]).map((L) => `<button type="button" class="pill${(head.letter || "") === L ? " on" : ""}" aria-pressed="${(head.letter || "") === L ? "true" : "false"}" aria-label="${L ? "Letter " + L : "No letter"}" onclick="setChainLetter('${date}','${instance}','${L}')">${L || "–"}</button>`).join("");
+  return `<div class="editor build-editor chain-box" style="width:min(352px, calc(100vw - 32px))" onclick="event.stopPropagation()">
+    <div class="editor-h">
+      ${letterBadge(head.letter)}
+      <span class="name">${esc(head.chainName || "Chain")}</span>
+      <button type="button" class="iconbtn" title="Delete chain" aria-label="Delete chain" onclick="askDeleteChain('${date}','${instance}')">🗑</button>
+      <button type="button" class="iconbtn" title="Close" onclick="closeChainBox()">✕</button>
+    </div>
+    <div class="hint">${esc(chainSubline(group))}</div>
+    <div class="row chain-box-letters">${letters}</div>
+    <div class="row editor-actions">
+      ${head.chainId ? `<button type="button" class="pill" onclick="openChainFromDay('${date}','${instance}')">Edit chain</button>` : ""}
+      <button type="button" class="pill" onclick="breakChain('${date}','${instance}')">Break apart</button>
+    </div>
+  </div>`;
+}
+function closeChainBox() {
+  if (!state.chainBox) return;
+  state.chainBox = null;
+  render();
+}
 function exRow(date, day, it, opts) {
-  const color = LETTER_COLOR[it.letter] || "#888";
   const inChain = opts && opts.inChain;
-  const letter = inChain ? "" : (it.letter ? `<span class="letter" style="background:${color}">${esc(it.letter)}</span>` : `<span class="letter" style="background:#444;color:#fff">–</span>`);
+  const letter = inChain ? "" : letterBadge(it.letter);
   const dragAttr = inChain ? "" : ` draggable="true" ondragstart="dragStart(event,'${date}','${it.id}')"`;
   const hot = clipHotMatches(date, { level: "exercise", id: it.id }) ? " clip-hot" : "";
   const editing = state.editor && state.editor.day === date && state.editor.id === it.id ? " editing" : "";
@@ -2395,6 +2458,7 @@ function exRow(date, day, it, opts) {
 
 function openSearch(date, ev) {
   if (ev) ev.stopPropagation();
+  state.chainBox = null;
   state.searchDay = date;
   state.searchQ = "";
   state.swap = null;
@@ -2608,6 +2672,7 @@ function breakChain(date, instance) {
   const members = day.items.filter((it) => it.chainInstance === instance);
   if (!members.length) return;
   snapshot();
+  state.chainBox = null;
   const letter = members[0].letter || "";
   members.forEach((it) => {
     it.chainId = null;
@@ -2795,8 +2860,7 @@ function saveEditor() {
   state.editor = null;
   state.modal = null;
   endSwap();
-  noteDayEdit(date);
-  queueDaySave(state.athleteId, date, { explicit: true });
+  queueDaySave(state.athleteId, date, { explicit: true, ifEdited: true });
   render();
 }
 function discardEditor() {
@@ -3045,7 +3109,7 @@ function propRow(date, it, key) {
     const shown = time ? raw.replace(/s$/i, "") : raw;
     const suffix = time ? `<span class="sec-suffix">s</span>` : dist ? `<span class="sec-suffix">${esc(distanceAbbr(displayDistanceUnit()))}</span>` : "";
     const hint = key === "intensity" ? ' placeholder="7 or 5-7"' : "";
-    return `<td><span class="set-val${time || dist ? " is-time" : ""}"><input aria-label="${label} set ${i + 1}" data-focus="${key}-${it.id}-${i}" data-set-field="${key}" autocomplete="off"${hint} value="${esc(shown)}" oninput="setCell('${date}','${it.id}','${key}',${i}, this.value)" onchange="commitSetCell('${date}','${it.id}','${key}',${i});renderSoon()" onkeydown="tabSetField(event,'${date}','${it.id}','${key}',${i})" onfocus="this.select()">${suffix}</span></td>`;
+    return `<td><span class="set-val${time || dist ? " is-time" : ""}"><input aria-label="${label} set ${i + 1}" data-focus="${key}-${it.id}-${i}" data-set-field="${key}" autocomplete="off"${hint} value="${esc(shown)}" oninput="setCell('${date}','${it.id}','${key}',${i}, this.value)" onchange="commitSetCell('${date}','${it.id}','${key}',${i});renderSoon()" onblur="commitSetCell('${date}','${it.id}','${key}',${i})" onkeydown="tabSetField(event,'${date}','${it.id}','${key}',${i})" onfocus="this.select()">${suffix}</span></td>`;
   }).join("");
   const kindPick = key === "intensity"
     ? `<select aria-label="Intensity kind" onchange="setIntensityKind('${date}','${it.id}', this.value)">${["RPE", "% of 1-rep max", "RIR"].map((opt) => `<option ${intensityChoice(it.intensityKind) === opt ? "selected" : ""}>${esc(opt)}</option>`).join("")}</select>`
@@ -3099,6 +3163,7 @@ function setLetter(date, id, letter) {
 function changeSets(date, id, d) {
   snapshot();
   const it = findItem(date, id);
+  it._set1Session = null;
   resizeSets(it, (it.sets || 1) + d);
   refreshFutureCopies(date);
   noteDayEdit(date);
@@ -3117,7 +3182,7 @@ function fillSetsFromFirst(date, id) {
   ["loads", "rests", "restReps", "distances", "times", "intensities", "tempos", "velocities", "powers", "pcts"].forEach((key) => {
     it[key] = fill(it[key] || []);
   });
-  it.touchedCells = {};
+  it._set1Session = null;
   refreshFutureCopies(date);
   noteDayEdit(date);
   render();
@@ -3141,25 +3206,28 @@ function setFieldOrder(it) {
   });
   return order;
 }
-function rememberUntouched(it, key) {
+// Set 1 leads. The sets that matched it when the coach started typing follow every keystroke;
+// a set that was given its own value keeps it. So 8/8/8 becomes 10/10/10, and 8/6/4 keeps its 6 and 4.
+function beginSet1Session(it, key) {
   const arr = setArray(it, key);
-  const baseline = arr.length ? String(arr[0] ?? "") : "";
-  const touched = it.touchedCells || (it.touchedCells = {});
+  const baseline = String(arr[0] ?? "");
   const n = it.sets || 1;
+  const follow = [];
   for (let j = 1; j < n; j++) {
-    if (String(arr[j] ?? "") !== baseline) touched[key + ":" + j] = true;
+    if (String(arr[j] ?? "") === baseline) follow.push(j);
   }
-  it._set1Session = { key, baseline };
+  it._set1Session = { key, follow };
 }
 function propagateSet1(it, key, value) {
+  const session = it._set1Session;
+  if (!session || session.key !== key) return;
   const arr = setArray(it, key);
-  const touched = it.touchedCells || {};
   const n = it.sets || 1;
-  for (let j = 1; j < n; j++) {
-    if (touched[key + ":" + j]) continue;
+  session.follow.forEach((j) => {
+    if (j >= n) return;
     while (arr.length <= j) arr.push("");
     arr[j] = value;
-  }
+  });
 }
 function paintSetFields(it, key) {
   const arr = setArray(it, key);
@@ -3170,25 +3238,11 @@ function paintSetFields(it, key) {
     el.value = arr[j] == null ? "" : String(arr[j]);
   }
 }
-function commitSet1Session(it) {
-  if (!it || !it._set1Session) return;
-  const session = it._set1Session;
-  it._set1Session = null;
-  if (!session.dirty) return;
-  const arr = setArray(it, session.key);
-  if (String(arr[0] ?? "") === session.baseline) return;
-  if (!it.fieldSeed) it.fieldSeed = {};
-  it.fieldSeed[session.key] = true;
-}
+// Leaving set 1 ends the run, so the next visit works out afresh which sets still match it.
 function commitSetCell(date, id, key, i) {
   const it = findItem(date, id);
   if (!it || i !== 0) return;
-  const before = JSON.stringify(it.fieldSeed || {});
-  commitSet1Session(it);
-  if (JSON.stringify(it.fieldSeed || {}) !== before) {
-    refreshFutureCopies(date);
-    noteDayEdit(date);
-  }
+  if (it._set1Session && it._set1Session.key === key) it._set1Session = null;
 }
 function tabSetField(ev, date, id, key, i) {
   if (!ev || ev.key !== "Tab" || ev.altKey || ev.metaKey || ev.ctrlKey) return;
@@ -3200,7 +3254,7 @@ function tabSetField(ev, date, id, key, i) {
   const dest = order[ev.shiftKey ? idx - 1 : idx + 1];
   if (!dest) return;
   ev.preventDefault();
-  if (i === 0) commitSet1Session(it);
+  if (i === 0) commitSetCell(date, id, key, 0);
   state.pendingFocus = dest.focus;
   render();
 }
@@ -3262,19 +3316,13 @@ function setCell(date, id, key, i, value) {
   if (key === "time") value = String(value == null ? "" : value).replace(/s$/i, "");
   const arr = setArray(it, key);
   while (arr.length <= i) arr.push("");
-  const seeded = !!(it.fieldSeed && it.fieldSeed[key]);
-  if (i > 0) {
-    if (!it.touchedCells) it.touchedCells = {};
-    it.touchedCells[key + ":" + i] = true;
-  }
-  if (i === 0 && !seeded) {
-    if (it._set1Session && it._set1Session.key !== key) commitSet1Session(it);
-    if (!it._set1Session || it._set1Session.key !== key) rememberUntouched(it, key);
+  if (i === 0) {
+    if (!it._set1Session || it._set1Session.key !== key) beginSet1Session(it, key);
     arr[0] = value;
-    it._set1Session.dirty = String(value) !== it._set1Session.baseline;
     propagateSet1(it, key, value);
     paintSetFields(it, key);
   } else {
+    if (it._set1Session && it._set1Session.key === key) it._set1Session = null;
     arr[i] = value;
   }
   refreshFutureCopies(date);
@@ -3400,24 +3448,52 @@ function openInfo(date, id) {
     onSave: () => saveInfo()
   });
 }
-function editWorkoutDay(date, ev) {
-  if (ev) ev.stopPropagation();
-  const day = ensureDay(date);
-  openEdit({
-    title: "Edit workout",
-    fields: [{ key: "title", label: "Workout name", value: day.title || "" }],
-    onSave: (values) => {
-      renameDay(date, values.title || "");
-      state.modal = null;
-      render();
-    }
-  });
-}
 function renameDay(date, value) {
   snapshot();
   ensureDay(date).title = value;
+  refreshFutureCopies(date);
   noteDayEdit(date);
   noteHist("Renamed workout");
+}
+// Typing in the title: one undo step per visit to the box, saved as it is typed.
+function beginDayTitle(date) {
+  state.focusDay = date;
+  if (state.titleEdit && state.titleEdit.date === date) return;
+  state.titleEdit = { date, before: ensureDay(date).title || "", snapped: false };
+}
+function typeDayTitle(date, value) {
+  const edit = state.titleEdit && state.titleEdit.date === date ? state.titleEdit : (state.titleEdit = { date, before: ensureDay(date).title || "", snapped: false });
+  if (!edit.snapped) { snapshot(); edit.snapped = true; }
+  ensureDay(date).title = String(value == null ? "" : value).slice(0, 120);
+  refreshFutureCopies(date);
+  noteDayEdit(date);
+}
+function dayTitleKey(ev, date) {
+  if (!ev) return;
+  if (ev.key === "Enter") { ev.preventDefault(); if (ev.target && ev.target.blur) ev.target.blur(); return; }
+  if (ev.key === "Escape") {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const edit = state.titleEdit;
+    if (edit && edit.date === date && edit.snapped) {
+      ensureDay(date).title = edit.before;
+      state.undo.pop();
+      edit.snapped = false;
+      refreshFutureCopies(date);
+      noteDayEdit(date);
+      if (ev.target) ev.target.value = edit.before === "Rest" && !(ensureDay(date).items || []).length ? "" : edit.before;
+    }
+    if (ev.target && ev.target.blur) ev.target.blur();
+  }
+}
+function endDayTitle(date) {
+  const edit = state.titleEdit;
+  if (render.busy || !edit || edit.date !== date) return;
+  state.titleEdit = null;
+  const day = ensureDay(date);
+  const trimmed = String(day.title || "").trim();
+  if (trimmed !== (day.title || "")) { day.title = trimmed; refreshFutureCopies(date); noteDayEdit(date); }
+  if (edit.snapped && trimmed !== edit.before) noteHist("Renamed workout");
 }
 
 function openDayMenu(date, ev) {
@@ -3649,6 +3725,9 @@ async function ensureUser(person, role) {
   return found;
 }
 async function ensureExercise(name, category) {
+  // The library is already loaded; only a name it does not hold needs the server.
+  const known = exerciseRecord(name);
+  if (known && known.id) return known;
   const list = await api("GET", "/api/exercises?search=" + encodeURIComponent(name));
   const exact = list.find((e) => e.name.toLowerCase() === name.toLowerCase());
   if (exact) return exact;
@@ -3685,7 +3764,7 @@ async function publishDay(date, opts = {}) {
   const person = targetById(athleteId);
   if (!person || person.id === "none") { if (!opts.quiet) toast("Create a calendar or athlete first"); return false; }
   if (!day) { if (!opts.quiet) toast("Pick a day before saving"); return false; }
-  if (!(day.items || []).length) day.title = "Rest";
+  if (!(day.items || []).length && !String(day.title || "").trim()) day.title = "Rest";
   const snapItems = JSON.parse(JSON.stringify(day.items || []));
   const snapTitle = day.title || ("Workout " + fmtDay(date));
   const snapWeek = day.weekLabel || "";
@@ -3750,9 +3829,11 @@ async function publishDay(date, opts = {}) {
       : ("/api/assignments?user_id=" + targetUserId + "&date=" + date);
     const existing = await api("GET", assignQuery);
     let workout;
-    if (existing.length) {
-      workout = await api("PUT", "/api/workouts/" + existing[0].workout_id, payload);
-      day.assignmentId = existing[0].id;
+    // The calendar shows the newest row for a date, so that is the one a save has to write to.
+    const current = existing.find((row) => row.id === day.assignmentId) || existing[existing.length - 1];
+    if (current) {
+      workout = await api("PUT", "/api/workouts/" + current.workout_id, payload);
+      day.assignmentId = current.id;
     } else {
       workout = await api("POST", "/api/workouts", payload);
       const assignPayload = {
@@ -3978,7 +4059,6 @@ function athleteDayCol(date) {
   const openAttr = day ? ` onclick="openAthleteDay('${date}')"` : "";
   return `<div class="day ${isRest ? "rest-day" : "read"} ${open}" data-day="${date}"${openAttr}>
     <div class="day-top"><span>${fmtDay(date)}</span></div>
-    <div class="week-label">${esc((day && day.weekLabel) || weekName(date))}</div>
     <div class="day-title ${isRest ? "placeholder" : ""}">${esc(isRest ? "Rest" : (day.title || "Workout"))}</div>
     <div>${items}</div>
   </div>`;
@@ -4229,6 +4309,7 @@ function clearOtherDaySelections(date) {
 function selectExercise(date, id, ev, opts) {
   if (ev) ev.stopPropagation();
   clearOtherDaySelections(date);
+  state.chainBox = null;
   state.pick = { level: "exercise", date };
   state.focusDay = date;
   ensureDay(date).items.forEach((it) => { if (it.id !== id) it.selected = false; });
@@ -4238,27 +4319,26 @@ function selectExercise(date, id, ev, opts) {
 }
 function selectChain(date, instance, ev) {
   if (ev) ev.stopPropagation();
+  if (state.editor && !closeEditor()) return;
+  const same = state.chainBox && state.chainBox.date === date && state.chainBox.instance === instance;
   clearRowSelection();
   state.pick = { level: "chain", date, instance };
   state.focusDay = date;
+  state.searchDay = state.swap = state.dayMenu = state.recurMenu = state.colorMenu = null;
+  state.chainBox = same ? null : { date, instance };
   render();
 }
 function selectDay(date, ev) {
   if (ev) ev.stopPropagation();
   clearRowSelection();
+  state.chainBox = null;
   state.pick = { level: "day", date };
   state.focusDay = date;
-  render();
-}
-function toggleChainLetter(date, instance, ev) {
-  if (ev) ev.stopPropagation();
-  state.chainLetterFor = state.chainLetterFor === instance ? "" : instance;
   render();
 }
 function setChainLetter(date, instance, letter) {
   snapshot();
   reorderChainForLetter(ensureDay(date).items, instance, letter);
-  state.chainLetterFor = "";
   refreshFutureCopies(date);
   noteDayEdit(date);
   render();
@@ -4388,6 +4468,7 @@ function askDelete(date, id) {
 function askDeleteChain(date, instance) {
   const members = ensureDay(date).items.filter((it) => it.chainInstance === instance);
   if (!members.length) return;
+  state.chainBox = null;
   state.modal = { type: "delete", date, ids: members.map((it) => it.id), chainName: members[0].chainName || "Chain" };
   render();
 }
@@ -4935,6 +5016,7 @@ function undo() {
   try { restored = JSON.parse(prev); } catch (err) { return; }
   state.calendars = restored;
   state.editor = null;
+  state.chainBox = null;
   markCalendarDiff(before, restored);
   toast("Undone");
   render();
@@ -5349,16 +5431,13 @@ function athleteScheduleHtml(date, items) {
       }
       const head = group[0];
       const open = chainIsOpen(head, "athlete");
-      const letter = head.letter ? `<span class="letter" style="background:${LETTER_COLOR[head.letter] || "#999"}">${esc(head.letter)}</span>` : "";
       const members = open ? group.map((row) => `<div class="ex"><div class="ex-main"><div class="ex-name">${esc(row.name)}</div><div class="ex-sub">${esc(scriptLine(row))}</div></div></div>`).join("") : "";
       html += `<div class="chain-block${open ? "" : " is-collapsed"}" onclick="event.stopPropagation()">
-        <div class="chain-head">${letter}<button type="button" class="chain-fold" onclick="toggleChainOpen('${date}','${esc(instance)}','athlete', event)">${open ? "▾" : "▸"}</button><button type="button" class="chain-title" onclick="toggleChainOpen('${date}','${esc(instance)}','athlete', event)">${esc(head.chainName || "Chain")}</button></div>
-        ${members}
+        <div class="ex chain-head" onclick="toggleChainOpen('${date}','${esc(instance)}','athlete', event)">${letterBadge(head.letter)}<div class="ex-main"><div class="ex-name">${esc(head.chainName || "Chain")}</div><div class="ex-sub">${esc(chainSubline(group))}</div></div><button type="button" class="chain-fold" aria-label="${open ? "Collapse chain" : "Expand chain"}" onclick="toggleChainOpen('${date}','${esc(instance)}','athlete', event)">${open ? "▾" : "▸"}</button></div>
+        ${open ? `<div class="chain-members">${members}</div>` : ""}
       </div>`;
     } else {
-      const color = LETTER_COLOR[it.letter] || "#888";
-      const letter = it.letter ? `<span class="letter" style="background:${color}">${esc(it.letter)}</span>` : `<span class="letter" style="background:#444;color:#fff">–</span>`;
-      html += `<div class="ex">${letter}<div class="ex-main"><div class="ex-name">${esc(it.name)}</div><div class="ex-sub">${esc(scriptLine(it))}</div></div></div>`;
+      html += `<div class="ex">${letterBadge(it.letter)}<div class="ex-main"><div class="ex-name">${esc(it.name)}</div><div class="ex-sub">${esc(scriptLine(it))}</div></div></div>`;
       index += 1;
     }
   }
@@ -6581,6 +6660,7 @@ function openChainFromDay(date, instance) {
   const members = day.items.filter((it) => it.chainInstance === instance);
   if (!members.length || !members[0].chainId) return;
   state.focusDay = date;
+  state.chainBox = null;
   state.modal = {
     type: "chain",
     source: "day",
@@ -8058,15 +8138,16 @@ function saveInfo() {
   state.modal = null;
   render();
 }
-window.addEventListener("resize", () => { if (state.editor) placeEditorPop(); if (state.searchDay) placeSearchPop(); });
-document.addEventListener("scroll", () => { if (state.editor) placeEditorPop(); if (state.searchDay) placeSearchPop(); }, true);
+window.addEventListener("resize", () => { if (state.editor || state.chainBox) placeEditorPop(); if (state.searchDay) placeSearchPop(); });
+document.addEventListener("scroll", () => { if (state.editor || state.chainBox) placeEditorPop(); if (state.searchDay) placeSearchPop(); }, true);
 document.addEventListener("click", (ev) => {
   if (state.editor && state.view === "build" && !ev.target.closest(".build-editor, .modal, .modal-back, .menu, .pop")) {
     closeEditor();
     return;
   }
-  if (ev.target.closest(".menu, .pop, .modal, .modal-back, .nav-anchor, .group-pop")) return;
   let changed = false;
+  if (state.chainBox && !ev.target.closest(".build-editor, .modal, .modal-back, .menu, .pop")) { state.chainBox = null; changed = true; }
+  if (ev.target.closest(".menu, .pop, .modal, .modal-back, .nav-anchor, .group-pop")) { if (changed) render(); return; }
   if (state.navMenu) { state.navMenu = null; changed = true; }
   if (state.dayMenu || state.recurMenu || state.propMenu || state.letterMenu || state.optionsMenu || state.supersetMenu || state.trackMenu || state.colorMenu || state.searchDay) {
     state.dayMenu = state.recurMenu = state.colorMenu = state.searchDay = state.swap = null;
@@ -8082,6 +8163,11 @@ document.addEventListener("keydown", (ev) => {
     ev.preventDefault();
     if (!endSwap()) state.searchDay = null;
     render();
+    return;
+  }
+  if (ev.key === "Escape" && state.chainBox && state.view === "build" && !state.modal) {
+    ev.preventDefault();
+    closeChainBox();
     return;
   }
   if (ev.key === "Escape" && state.editor && state.view === "build" && !state.modal) {

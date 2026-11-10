@@ -124,7 +124,9 @@ day.items.push(lib.item({
 const html = lib.dayExerciseHtml("2026-10-21", day);
 assert.equal((html.match(/chain-block/g) || []).length, 1);
 assert.ok(html.includes('data-chain-instance="'));
-assert.ok(html.includes("Break apart"));
+// The chain row carries no buttons of its own; Edit chain and Break apart live in its box.
+assert.ok(!html.includes("Break apart"));
+assert.ok(!html.includes("Edit chain"));
 assert.ok(html.includes("Ramp"));
 assert.ok(!html.slice(html.indexOf("chain-block"), html.indexOf("Station Circuit")).includes("Skip"));
 assert.ok(/class="chain-block[^"]*" draggable="true"[^>]*ondragstart="dragStart/.test(html));
