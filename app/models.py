@@ -203,6 +203,39 @@ class Exercise(Base):
 
     workout_links = relationship("WorkoutExercise", back_populates="exercise", cascade="all, delete-orphan")
     records = relationship("PersonalRecord", back_populates="exercise", cascade="all, delete-orphan")
+    # Only a Questionnaire holds these: the questions it asks, in order.
+    question_items = relationship(
+        "QuestionnaireItem",
+        cascade="all, delete-orphan",
+        order_by="QuestionnaireItem.order_index",
+        lazy="selectin",
+    )
+
+    @property
+    def questions(self):
+        return [item.question for item in self.question_items if item.question is not None]
+
+
+class Question(Base):
+    """One question a coach wrote. A questionnaire is a string of these."""
+    __tablename__ = "questions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    text = Column(Text, nullable=False)
+    answer_type = Column(String(16), nullable=False, default="scale")  # scale, yes_no, text
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class QuestionnaireItem(Base):
+    __tablename__ = "questionnaire_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    exercise_id = Column(Integer, ForeignKey("exercises.id", ondelete="CASCADE"), nullable=False, index=True)
+    question_id = Column(Integer, ForeignKey("questions.id", ondelete="CASCADE"), nullable=False, index=True)
+    order_index = Column(Integer, default=0, nullable=False)
+
+    question = relationship("Question", lazy="joined")
 
 class ExerciseChain(Base):
     """A saved library group. Not an A/B/C superset and not a stations/rounds circuit."""
@@ -229,6 +262,9 @@ class ExerciseChainMember(Base):
     order_index = Column(Integer, default=0, nullable=False)
     sets = Column(Integer, nullable=True)
     reps = Column(String(50), nullable=True)
+    # Seconds and distance per set. Naming any of reps, time, or distance picks what the member tracks.
+    time = Column(String(50), nullable=True)
+    distance = Column(String(50), nullable=True)
     notes = Column(Text, nullable=True)
 
     chain = relationship("ExerciseChain", back_populates="members")
@@ -353,6 +389,23 @@ class WeekNote(Base):
     calendar_id = Column(Integer, ForeignKey("calendars.id", ondelete="CASCADE"), nullable=True, index=True)
     week_start = Column(String(10), nullable=False, index=True)  # YYYY-MM-DD, a Sunday
     body = Column(Text, default="")
+    updated_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class Phase(Base):
+    """A named run of days on one calendar, such as a four-week strength phase. Coaches only."""
+    __tablename__ = "phases"
+
+    id = Column(Integer, primary_key=True, index=True)
+    gym_id = Column(Integer, ForeignKey("gyms.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    group_id = Column(Integer, ForeignKey("groups.id", ondelete="CASCADE"), nullable=True, index=True)
+    calendar_id = Column(Integer, ForeignKey("calendars.id", ondelete="CASCADE"), nullable=True, index=True)
+    name = Column(String(120), nullable=False)
+    notes = Column(Text, default="")
+    color = Column(String(16), default="")
+    start_date = Column(String(10), nullable=False, index=True)  # YYYY-MM-DD, inclusive
+    end_date = Column(String(10), nullable=False)  # YYYY-MM-DD, inclusive
     updated_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

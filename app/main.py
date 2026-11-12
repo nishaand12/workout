@@ -40,6 +40,7 @@ from app.schemas import (
     BulkAthleteUploadRequest, BulkAthleteUploadResponse, CalendarScheduleEntry,
     ChainResponse, ChainWrite, ChainEditRequest, ChainEditResponse, ChainFoldRequest,
     WeekNoteEntry, WeekNoteWrite, PersonalBest, SessionDurationWrite,
+    PhaseWrite, PhaseResponse, QuestionWrite, QuestionResponse, QuestionnaireWrite,
     CalendarCreate, CalendarUpdate, CalendarResponse,
 )
 from app import crud
@@ -186,6 +187,8 @@ def ensure_schema_migrations():
             ("sets", "INTEGER"),
             ("reps", "VARCHAR(50)"),
             ("notes", "TEXT"),
+            ("time", "VARCHAR(50)"),
+            ("distance", "VARCHAR(50)"),
         )
         for name, ddl in member_columns:
             if name not in mcols:
@@ -219,6 +222,7 @@ async def lifespan(app: FastAPI):
             crud.scrub_visible_brand(db)
             crud.migrate_to_calendars(db)
             crud.migrate_hidden_to_coaches(db)
+            crud.backfill_questionnaire_questions(db)
         finally:
             db.close()
     except Exception as exc:
@@ -402,6 +406,31 @@ def workout_exercise_logged_sets(
     if not _staff(current_user) or not current_user.gym_id or workout.gym_id != current_user.gym_id:
         raise HTTPException(status_code=403, detail="That workout is not visible to you.")
     return crud.workout_exercise_logged_sets(db, row_id)
+
+# Questions are written once and strung into questionnaires, the way exercises go into chains.
+@app.get("/api/questions", response_model=List[QuestionResponse])
+def list_questions(db: Session = Depends(get_db)):
+    return crud.list_questions(db)
+
+@app.post("/api/questions", response_model=QuestionResponse, status_code=status.HTTP_201_CREATED)
+def create_question(body: QuestionWrite, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    return crud.create_question(db, current_user, body)
+
+@app.put("/api/questions/{question_id}", response_model=QuestionResponse)
+def update_question(question_id: int, body: QuestionWrite, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    return crud.update_question(db, current_user, question_id, body)
+
+@app.delete("/api/questions/{question_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_question(question_id: int, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    crud.delete_question(db, current_user, question_id)
+
+@app.post("/api/questionnaires", response_model=ExerciseResponse, status_code=status.HTTP_201_CREATED)
+def create_questionnaire(body: QuestionnaireWrite, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    return crud.create_questionnaire(db, current_user, body)
+
+@app.put("/api/questionnaires/{exercise_id}", response_model=ExerciseResponse)
+def update_questionnaire(exercise_id: int, body: QuestionnaireWrite, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    return crud.update_questionnaire(db, current_user, exercise_id, body)
 
 @app.get("/api/chains", response_model=List[ChainResponse])
 def list_chains(db: Session = Depends(get_db)):
@@ -1275,6 +1304,29 @@ def save_week_note(
     current_user: crud.User = Depends(require_auth),
 ):
     return crud.save_week_note(db, current_user, body.user_id, body.group_id, body.week_start, body.body, calendar_id=body.calendar_id)
+
+# Phases: a named run of days on one calendar, such as a four-week strength phase.
+@app.get("/api/calendar/phases", response_model=List[PhaseResponse])
+def list_phases(
+    user_id: Optional[int] = Query(None),
+    group_id: Optional[int] = Query(None),
+    calendar_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: crud.User = Depends(require_auth),
+):
+    return crud.list_phases(db, current_user, user_id=user_id, group_id=group_id, calendar_id=calendar_id)
+
+@app.post("/api/calendar/phases", response_model=PhaseResponse, status_code=status.HTTP_201_CREATED)
+def create_phase(body: PhaseWrite, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    return crud.create_phase(db, current_user, body)
+
+@app.put("/api/calendar/phases/{phase_id}", response_model=PhaseResponse)
+def update_phase(phase_id: int, body: PhaseWrite, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    return crud.update_phase(db, current_user, phase_id, body)
+
+@app.delete("/api/calendar/phases/{phase_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_phase(phase_id: int, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    crud.delete_phase(db, current_user, phase_id)
 
 # -------------------------------------------------------------
 # Calendars: a named programme an athlete follows

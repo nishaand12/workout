@@ -12,9 +12,9 @@ from zoneinfo import ZoneInfo
 import httpx
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_, desc, asc
+from sqlalchemy import and_, or_, desc, asc, func
 
-from app.models import Exercise, ExerciseChain, ExerciseChainMember, Workout, WorkoutExercise, WorkoutSession, SetLog, PersonalRecord, User, Group, WorkoutAssignment, Gym, JoinCode, GymItem, GymHiddenExercise, CoachHiddenExercise, CoachHiddenChain, WeekNote, Calendar
+from app.models import Exercise, ExerciseChain, ExerciseChainMember, Workout, WorkoutExercise, WorkoutSession, SetLog, PersonalRecord, User, Group, WorkoutAssignment, Gym, JoinCode, GymItem, GymHiddenExercise, CoachHiddenExercise, CoachHiddenChain, WeekNote, Calendar, Phase, Question, QuestionnaireItem
 from app import access
 from app.schemas import (
     ExerciseCreate, ExerciseUpdate, WorkoutCreate, WorkoutUpdate, PersonalRecordCreate,
@@ -534,6 +534,9 @@ def create_exercise(db: Session, exercise_in: ExerciseCreate):
     payload = prepare_exercise_write(exercise_in.model_dump())
     exercise = Exercise(**payload)
     db.add(exercise)
+    db.flush()
+    if "question" in (exercise.category or "").lower():
+        _seed_questionnaire_items(db, exercise)
     db.commit()
     db.refresh(exercise)
     return exercise
@@ -613,6 +616,65 @@ def _blank_text(value):
     return text if text else None
 
 
+def _member_seconds(member):
+    text = _blank_text(_member_attr(member, "time"))
+    if text is None:
+        return None
+    return _blank_text(re.sub(r"s$", "", text, flags=re.IGNORECASE))
+
+
+def _member_dose(member, exercise: Optional[Exercise]):
+    """The reps, time, and distance a chain member names, or None when it names none of them
+    (or the exercise is not one that tracks them). Naming any of the three is the whole choice:
+    the member tracks exactly the ones filled in."""
+    category = ((exercise.category if exercise else "") or "").lower()
+    if category in ("note", "notes") or "circuit" in category or "question" in category:
+        return None
+    dose = {
+        "reps": _blank_text(_member_attr(member, "reps")),
+        "time": _member_seconds(member),
+        "distance": _blank_text(_member_attr(member, "distance")),
+    }
+    if all(value is None for value in dose.values()):
+        return None
+    return dose
+
+
+def _notes_with_dose(notes: str, sets: int, dose: dict) -> str:
+    """Rewrite the tagged lines that say what a placed exercise tracks."""
+    count = max(sets or 1, 1)
+    lines = []
+    flags = []
+    for line in (notes or "").split("\n"):
+        if line.startswith("Times:") or line.startswith("Distances:"):
+            continue
+        if line.startswith("Flags:"):
+            flags = [
+                flag for flag in line[len("Flags:"):].split(",")
+                if flag and flag not in ("dose2", "trackTime", "trackDistance", "noTrackReps", "trackReps")
+            ]
+            continue
+        if line.startswith("Props:"):
+            props = [prop for prop in line[len("Props:"):].split(",") if prop and prop != "distance"]
+            if props:
+                lines.append("Props:" + ",".join(props))
+            continue
+        lines.append(line)
+    if dose.get("time"):
+        lines.append("Times:" + ",".join([dose["time"]] * count))
+    if dose.get("distance"):
+        lines.append("Distances:" + ",".join([dose["distance"]] * count))
+    fresh = ["dose2"]
+    if dose.get("time"):
+        fresh.append("trackTime")
+    if dose.get("distance"):
+        fresh.append("trackDistance")
+    if not dose.get("reps"):
+        fresh.append("noTrackReps")
+    lines.append("Flags:" + ",".join(fresh + flags))
+    return "\n".join(line for line in lines if line)
+
+
 def _replace_chain_members(db: Session, chain: ExerciseChain, members) -> None:
     db.query(ExerciseChainMember).filter(ExerciseChainMember.chain_id == chain.id).delete()
     for index, member in enumerate(members or []):
@@ -623,6 +685,8 @@ def _replace_chain_members(db: Session, chain: ExerciseChain, members) -> None:
             order_index=index,
             sets=_blank_int(_member_attr(member, "sets")),
             reps=_blank_text(_member_attr(member, "reps")),
+            time=_member_seconds(member),
+            distance=_blank_text(_member_attr(member, "distance")),
             notes=_blank_text(_member_attr(member, "notes")),
         ))
 
@@ -746,6 +810,9 @@ def _new_chain_member(workout: Workout, exercise: Exercise, chain_id: int, insta
         if sets < 1:
             sets = 1
         reps = member_reps if member_reps is not None else (exercise.default_reps if exercise.default_reps is not None else "1")
+    dose = _member_dose(member, exercise)
+    if dose and dose["reps"] is None:
+        reps = "1"
     loads = ""
     if not note and exercise.default_load:
         loads = ",".join([str(exercise.default_load)] * sets)
@@ -764,7 +831,10 @@ def _new_chain_member(workout: Workout, exercise: Exercise, chain_id: int, insta
         target_reps=target_reps or ("" if note else "1"),
         target_weight=loads[:50],
         rest_seconds=rest_seconds,
-        notes=_placed_notes(exercise, max(sets, 1), _member_attr(member, "notes"), note),
+        notes=(
+            _notes_with_dose(_placed_notes(exercise, max(sets, 1), _member_attr(member, "notes"), note), sets, dose)
+            if dose else _placed_notes(exercise, max(sets, 1), _member_attr(member, "notes"), note)
+        ),
         is_ea=False,
         chain_id=chain_id,
         chain_instance=instance,
@@ -796,6 +866,9 @@ def _apply_explicit_member_prescription(we: WorkoutExercise, exercise: Exercise,
         we.target_reps = ",".join([member_reps] * count)[:50]
     if member_notes is not None:
         we.notes = _placed_notes(exercise, max(we.prescribed_sets or 1, 1), member_notes, note)
+    dose = _member_dose(member, exercise)
+    if dose:
+        we.notes = _notes_with_dose(we.notes or "", we.prescribed_sets or 1, dose)
     if not note:
         rep = ((we.target_reps or "").split(",")[0] or "")
         we.prescription_text = f"{we.prescribed_sets} X {rep}"[:100]
@@ -3114,6 +3187,7 @@ def delete_calendar(db: Session, viewer: User, calendar_id: int) -> None:
         names = ", ".join(u.name for u in followers[:5]) + (" and more" if len(followers) > 5 else "")
         raise HTTPException(status_code=409, detail=f"Move {names} to another calendar first.")
     db.query(WeekNote).filter(WeekNote.calendar_id == calendar.id).delete(synchronize_session="fetch")
+    db.query(Phase).filter(Phase.calendar_id == calendar.id).delete(synchronize_session="fetch")
     db.query(WorkoutAssignment).filter(WorkoutAssignment.calendar_id == calendar.id).delete(synchronize_session="fetch")
     db.delete(calendar)
     db.commit()
@@ -3129,6 +3203,7 @@ def _drop_orphan_calendar(db: Session, user: User) -> None:
     if others or not calendar:
         return
     db.query(WeekNote).filter(WeekNote.calendar_id == calendar.id).delete(synchronize_session="fetch")
+    db.query(Phase).filter(Phase.calendar_id == calendar.id).delete(synchronize_session="fetch")
     db.query(WorkoutAssignment).filter(WorkoutAssignment.calendar_id == calendar.id).delete(synchronize_session="fetch")
     db.delete(calendar)
 
@@ -3256,6 +3331,262 @@ def save_week_note(db: Session, viewer: User, user_id: Optional[int], group_id: 
     row.updated_by = viewer.id
     db.commit()
     return {"week_start": week_start, "body": row.body}
+
+
+PHASE_COLORS = ("#2f6fed", "#c2410c", "#15803d", "#7c3aed", "#b45309", "#0e7490", "#be185d", "#4d7c0f")
+
+
+def _phase_query(db: Session, viewer: User, user_id: Optional[int], group_id: Optional[int], calendar_id: Optional[int] = None):
+    """Phases sit on the same calendar a week note does, and only coaches see them."""
+    uid, gid, cid = _week_note_target(db, viewer, user_id, group_id, calendar_id)
+    query = db.query(Phase).filter(Phase.gym_id == viewer.gym_id)
+    if cid:
+        return query.filter(Phase.calendar_id == cid), uid, gid, cid
+    if gid:
+        return query.filter(Phase.group_id == gid, Phase.user_id.is_(None)), uid, gid, cid
+    return query.filter(Phase.user_id == uid, Phase.group_id.is_(None)), uid, gid, cid
+
+
+def list_phases(db: Session, viewer: User, user_id: Optional[int] = None, group_id: Optional[int] = None, calendar_id: Optional[int] = None) -> List[Phase]:
+    query, _, _, _ = _phase_query(db, viewer, user_id, group_id, calendar_id)
+    return query.order_by(Phase.start_date.asc(), Phase.id.asc()).all()
+
+
+def _phase_fields(db: Session, query, body, ignore_id: Optional[int] = None) -> dict:
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name the phase.")
+    for value in (body.start_date, body.end_date):
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value or ""):
+            raise HTTPException(status_code=400, detail="Phase dates must be YYYY-MM-DD.")
+        try:
+            datetime.strptime(value, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Phase dates must be real dates.")
+    start, end = sorted((body.start_date, body.end_date))
+    clash = query.filter(Phase.start_date <= end, Phase.end_date >= start)
+    if ignore_id is not None:
+        clash = clash.filter(Phase.id != ignore_id)
+    other = clash.order_by(Phase.start_date.asc()).first()
+    if other:
+        raise HTTPException(status_code=409, detail=f"Those days overlap {other.name}. A day sits in one phase at a time.")
+    color = (body.color or "").strip()
+    if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+        used = query.count()
+        color = PHASE_COLORS[used % len(PHASE_COLORS)]
+    return {"name": name[:120], "notes": body.notes or "", "color": color.lower(), "start_date": start, "end_date": end}
+
+
+def create_phase(db: Session, viewer: User, body) -> Phase:
+    query, uid, gid, cid = _phase_query(db, viewer, body.user_id, body.group_id, body.calendar_id)
+    fields = _phase_fields(db, query, body)
+    row = Phase(gym_id=viewer.gym_id, user_id=uid, group_id=gid, calendar_id=cid, updated_by=viewer.id, **fields)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def update_phase(db: Session, viewer: User, phase_id: int, body) -> Phase:
+    query, _, _, _ = _phase_query(db, viewer, body.user_id, body.group_id, body.calendar_id)
+    row = query.filter(Phase.id == phase_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Phase not found on that calendar.")
+    for key, value in _phase_fields(db, query, body, ignore_id=row.id).items():
+        setattr(row, key, value)
+    row.updated_by = viewer.id
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def delete_phase(db: Session, viewer: User, phase_id: int) -> None:
+    access.require_gym(viewer)
+    if not _staff_user(viewer):
+        raise HTTPException(status_code=403, detail="Phases are for coaches.")
+    row = db.query(Phase).filter(Phase.id == phase_id, Phase.gym_id == viewer.gym_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Phase not found.")
+    # The same check a read makes: a coach who cannot open the calendar cannot clear its phases.
+    # A phase on an athlete's own calendar carries both ids; the calendar is the one to check.
+    if row.calendar_id:
+        _week_note_target(db, viewer, None, None, row.calendar_id)
+    else:
+        _week_note_target(db, viewer, row.user_id, row.group_id, None)
+    db.delete(row)
+    db.commit()
+
+
+QUESTION_TYPES = ("scale", "yes_no", "text")
+DEFAULT_QUESTIONS = (
+    ("How did you sleep last night?", "scale"),
+    ("How is your body feeling today?", "scale"),
+    ("How excited are you to train today?", "scale"),
+    ("Anything specific we should know?", "text"),
+)
+
+
+def canonical_question_type(value: str) -> str:
+    text = re.sub(r"[^a-z0-9]+", "_", (value or "").strip().lower()).strip("_")
+    if text in ("scale", "1_10", "1_10_scale", "scale_1_10"):
+        return "scale"
+    if text in ("yes_no", "yesno", "yes_or_no"):
+        return "yes_no"
+    if text in ("text", "free_text", "freetext"):
+        return "text"
+    return ""
+
+
+def list_questions(db: Session) -> List[Question]:
+    return db.query(Question).order_by(Question.id.asc()).all()
+
+
+def _question_fields(body) -> dict:
+    text = " ".join((body.text or "").split())
+    kind = canonical_question_type(body.answer_type)
+    if not text:
+        raise HTTPException(status_code=400, detail="Write the question.")
+    if not kind:
+        raise HTTPException(status_code=400, detail="An answer is a 1-10 scale, yes or no, or free text.")
+    return {"text": text[:500], "answer_type": kind}
+
+
+def _require_staff(viewer: User, what: str) -> None:
+    if not _staff_user(viewer):
+        raise HTTPException(status_code=403, detail=f"Only a coach can {what}.")
+
+
+def create_question(db: Session, viewer: User, body) -> Question:
+    _require_staff(viewer, "write questions")
+    fields = _question_fields(body)
+    same = db.query(Question).filter(
+        func.lower(Question.text) == fields["text"].lower(), Question.answer_type == fields["answer_type"]
+    ).first()
+    if same:
+        return same
+    row = Question(created_by=viewer.id, **fields)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def update_question(db: Session, viewer: User, question_id: int, body) -> Question:
+    _require_staff(viewer, "edit questions")
+    row = db.query(Question).filter(Question.id == question_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Question not found.")
+    for key, value in _question_fields(body).items():
+        setattr(row, key, value)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def question_use(db: Session, question_id: int) -> int:
+    return db.query(QuestionnaireItem).filter(QuestionnaireItem.question_id == question_id).count()
+
+
+def delete_question(db: Session, viewer: User, question_id: int) -> None:
+    _require_staff(viewer, "delete questions")
+    row = db.query(Question).filter(Question.id == question_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Question not found.")
+    used = question_use(db, question_id)
+    if used:
+        raise HTTPException(
+            status_code=409,
+            detail=f"That question is in {used} questionnaire{'' if used == 1 else 's'}. Take it out of them first.",
+        )
+    db.delete(row)
+    db.commit()
+
+
+def _questionnaire_questions(db: Session, question_ids) -> List[int]:
+    ids = [int(qid) for qid in (question_ids or [])]
+    if not ids:
+        raise HTTPException(status_code=400, detail="Add a question to the questionnaire.")
+    if len(set(ids)) != len(ids):
+        raise HTTPException(status_code=400, detail="A questionnaire asks each question once.")
+    found = {row.id for row in db.query(Question.id).filter(Question.id.in_(ids)).all()}
+    if any(qid not in found for qid in ids):
+        raise HTTPException(status_code=400, detail="Questionnaires are built from questions you have created.")
+    return ids
+
+
+def _set_questionnaire_items(db: Session, exercise: Exercise, ids: List[int]) -> None:
+    db.query(QuestionnaireItem).filter(QuestionnaireItem.exercise_id == exercise.id).delete(synchronize_session="fetch")
+    db.flush()
+    for index, qid in enumerate(ids):
+        db.add(QuestionnaireItem(exercise_id=exercise.id, question_id=qid, order_index=index))
+
+
+def create_questionnaire(db: Session, viewer: User, body) -> Exercise:
+    _require_staff(viewer, "build questionnaires")
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name the questionnaire.")
+    if db.query(Exercise).filter(Exercise.name.ilike(name)).first():
+        raise HTTPException(status_code=400, detail="Something in the library already has that name.")
+    ids = _questionnaire_questions(db, body.question_ids)
+    exercise = Exercise(name=name, category="Questionnaire", default_sets=1, default_reps="1", completion_only=False)
+    db.add(exercise)
+    db.flush()
+    _set_questionnaire_items(db, exercise, ids)
+    db.commit()
+    db.expire(exercise)
+    return exercise
+
+
+def update_questionnaire(db: Session, viewer: User, exercise_id: int, body) -> Exercise:
+    _require_staff(viewer, "build questionnaires")
+    exercise = db.query(Exercise).filter(Exercise.id == exercise_id).first()
+    if not exercise or "question" not in (exercise.category or "").lower():
+        raise HTTPException(status_code=404, detail="Questionnaire not found.")
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name the questionnaire.")
+    if db.query(Exercise).filter(Exercise.name.ilike(name), Exercise.id != exercise.id).first():
+        raise HTTPException(status_code=400, detail="Something in the library already has that name.")
+    ids = _questionnaire_questions(db, body.question_ids)
+    exercise.name = name
+    _set_questionnaire_items(db, exercise, ids)
+    db.commit()
+    db.expire(exercise)
+    return exercise
+
+
+def _seed_questionnaire_items(db: Session, exercise: Exercise) -> None:
+    """Start a questionnaire that has no questions: its old prompt lines if it had any, else the standard four."""
+    lines = [" ".join(line.split()) for line in (exercise.default_notes or "").split("\n")]
+    wanted = [(line[:500], "text") for line in lines if line] or list(DEFAULT_QUESTIONS)
+    seen = set()
+    index = 0
+    for text, kind in wanted:
+        question = db.query(Question).filter(Question.text == text, Question.answer_type == kind).first()
+        if not question:
+            question = Question(text=text, answer_type=kind)
+            db.add(question)
+            db.flush()
+        if question.id in seen:
+            continue
+        seen.add(question.id)
+        db.add(QuestionnaireItem(exercise_id=exercise.id, question_id=question.id, order_index=index))
+        index += 1
+    db.flush()
+
+
+def backfill_questionnaire_questions(db: Session) -> None:
+    """Questionnaires used to be a fixed list of prompts. Give each one real questions; safe to run again."""
+    rows = db.query(Exercise).filter(Exercise.category.ilike("%question%")).all()
+    changed = False
+    for exercise in rows:
+        if exercise.question_items:
+            continue
+        _seed_questionnaire_items(db, exercise)
+        changed = True
+    if changed:
+        db.commit()
 
 
 def session_for_writer(db: Session, viewer: User, session_id: int) -> WorkoutSession:

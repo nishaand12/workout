@@ -54,9 +54,24 @@ class ExerciseUpdate(BaseModel):
     rir: Optional[str] = None
     pct_1rm: Optional[str] = None
 
+class QuestionWrite(BaseModel):
+    text: str
+    answer_type: str = "scale"
+
+class QuestionResponse(BaseModel):
+    id: int
+    text: str
+    answer_type: str = "scale"
+    model_config = ConfigDict(from_attributes=True)
+
+class QuestionnaireWrite(BaseModel):
+    name: str
+    question_ids: List[int] = []
+
 class ExerciseResponse(ExerciseBase):
     id: int
     created_at: datetime
+    questions: List[QuestionResponse] = []
     model_config = ConfigDict(from_attributes=True)
 
 # Workout Exercise Schemas
@@ -93,6 +108,8 @@ class ChainMemberInput(BaseModel):
     exercise_id: int
     sets: Optional[int] = None
     reps: Optional[str] = None
+    time: Optional[str] = None
+    distance: Optional[str] = None
     notes: Optional[str] = None
 
 class ChainWrite(BaseModel):
@@ -121,6 +138,8 @@ class ChainMemberResponse(BaseModel):
     order_index: int
     sets: Optional[int] = None
     reps: Optional[str] = None
+    time: Optional[str] = None
+    distance: Optional[str] = None
     notes: Optional[str] = None
     exercise: ChainMemberExercise
     model_config = ConfigDict(from_attributes=True)
@@ -626,6 +645,25 @@ class CalendarScheduleEntry(BaseModel):
 class WeekNoteEntry(BaseModel):
     week_start: str
     body: str = ""
+
+class PhaseWrite(BaseModel):
+    user_id: Optional[int] = None
+    group_id: Optional[int] = None
+    calendar_id: Optional[int] = None
+    name: str
+    notes: str = ""
+    color: str = ""
+    start_date: str
+    end_date: str
+
+class PhaseResponse(BaseModel):
+    id: int
+    name: str
+    notes: str = ""
+    color: str = ""
+    start_date: str
+    end_date: str
+    model_config = ConfigDict(from_attributes=True)
 
 class WeekNoteWrite(BaseModel):
     user_id: Optional[int] = None
