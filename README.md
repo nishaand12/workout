@@ -29,6 +29,15 @@ When running locally, access the app from any device on your Tailnet (e.g., iPho
   * A calendar is a named programme of dated workouts. Every athlete starts on a personal calendar named after them; a coach can move any athlete onto a shared calendar from Manage Calendars, Manage Users, or the Athletes tab.
   * An athlete follows exactly one calendar at a time and sees it live, so an edit to the calendar reaches everyone on it. Set logs stay per athlete.
   * A calendar can be renamed or deleted once nobody follows it.
+* **Programming builder (phases):**
+  * From the Build calendar's left rail, drag across a small calendar of empty day boxes to group days or weeks into a phase, then name it, colour it, and add notes.
+  * A phase tints the week banners it covers and shows its notes above each of those weeks' own notes. Phases are per calendar and coaches only.
+* **Chains:**
+  * Clicking a chain on a day opens every exercise in it, with sets and reps, time, or distance editable in place for that day.
+  * A saved chain can set reps, time, or distance per exercise.
+* **Questions and questionnaires:**
+  * Write a question once and pick how it is answered: a 1-10 scale, yes/no, or free text.
+  * A questionnaire is a string of those questions, built the way a chain is built from exercises. Athletes answer each one in Workout Entry.
 * **Workout Assignment Manager:**
   * Assign workouts to a calendar or 1-on-1 to individual athletes on specific calendar dates.
   * Add custom coaching instructions and session notes.

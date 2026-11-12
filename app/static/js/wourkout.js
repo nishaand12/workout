@@ -108,6 +108,22 @@ const QUESTIONS = [
 const SPRINT_DETAIL = "Complete 1 round - Light Skip - 20 meters\nSide Shuffle - 20 meters\nLight Skip - 20 meters\nKaraokes - 20 meters\nBackwards Run - 20 meters\nAcceleration - 20-30 meters";
 const MOBILITY_DETAIL = "5 reps - Inchworm\n10 reps - Alt. Calf raises\nKnee Extension Isometric - 4x35s Dynamic Mobility (lower)";
 
+// A question is { id, text, type }. type is scale (1-10), yes_no, or text. Days saved before
+// questions had answers hold plain strings: those read as prompts with nothing to answer.
+const ANSWER_TYPES = [["scale", "1-10 scale"], ["yes_no", "Yes / No"], ["text", "Free text"]];
+function answerTypeLabel(type) {
+  const row = ANSWER_TYPES.find((entry) => entry[0] === type);
+  return row ? row[1] : "";
+}
+function questionObjects(list) {
+  return (list || []).map((q) => {
+    if (q && typeof q === "object") return { id: q.id || null, text: String(q.text || ""), type: q.answer_type || q.type || "" };
+    return { id: null, text: String(q == null ? "" : q), type: "" };
+  }).filter((q) => q.text);
+}
+function itemQuestions(it) {
+  return questionObjects((it && it.questions) || []);
+}
 function exerciseRecord(name) {
   const key = String(name || "").toLowerCase();
   return state.serverExercises.find((e) => String(e.name || "").toLowerCase() === key) || null;
@@ -185,7 +201,7 @@ function fromCatalog(entry) {
   if (entry.type === "questionnaire") {
     return item({
       name: entry.name, type: "questionnaire", letter: "A", sets: 1, reps: [1],
-      questions: QUESTIONS.slice(), requireResponse: true, trackReps: false,
+      questions: questionObjects(record ? (record.questions || []) : QUESTIONS), requireResponse: true, trackReps: false,
       videoUrl: defaults && defaults.videoUrl ? defaults.videoUrl : ""
     });
   }
@@ -307,6 +323,10 @@ const state = {
   chainBox: null,
   titleEdit: null,
   weekNotes: {},
+  questionBank: [],
+  phases: {},
+  phaseDraft: null,
+  phaseMiniStart: null,
   weekNotesFolded: readFoldedWeeks(),
   undo: [],
   history: [],
@@ -621,6 +641,8 @@ function render() {
   const focusId = active && active.dataset ? active.dataset.focus : null;
   const selStart = active && active.selectionStart;
   const selEnd = active && active.selectionEnd;
+  const phaseScroll = document.querySelector('.build-panel[data-panel="phases"] .bp-scroll');
+  const phaseScrollTop = phaseScroll ? phaseScroll.scrollTop : 0;
   document.querySelectorAll("body > .search-pop").forEach((el) => el.remove());
   if (!state.auth || !state.auth.isAuthenticated) {
     root.className = "light";
@@ -644,6 +666,10 @@ function render() {
     // The editor first: the swap search hangs off the exercise name inside it.
     placeEditorPop();
     placeSearchPop();
+    if (phaseScrollTop) {
+      const panel = document.querySelector('.build-panel[data-panel="phases"] .bp-scroll');
+      if (panel) panel.scrollTop = phaseScrollTop;
+    }
     const focusKey = pending || focusId;
     if (focusKey) {
       const el = document.querySelector(`[data-focus="${focusKey}"]`);
@@ -913,7 +939,9 @@ function workoutToDayItems(workout) {
       note: type === "circuit"
         ? parsed.additional
         : (parsed.plainLines.join("\n") || (type === "note" ? ((we.exercise && we.exercise.default_notes) || "") : "")),
-      questions: type === "questionnaire" ? (parsed.plainLines.length ? parsed.plainLines : QUESTIONS.slice()) : [],
+      questions: type === "questionnaire"
+        ? questionObjects(we.exercise && (we.exercise.questions || []).length ? we.exercise.questions : (parsed.plainLines.length ? parsed.plainLines : QUESTIONS))
+        : [],
       trackTime,
       trackDistance,
       trackReps: dose2
@@ -1253,6 +1281,7 @@ async function loadCalendarSchedule(targetId) {
     return;
   }
   loadWeekNotes(targetId, query);
+  loadPhases(targetId, query);
   const gen = (loadCalendarSchedule.gen[targetId] = (loadCalendarSchedule.gen[targetId] || 0) + 1);
   const started = Date.now();
   state.calendarLoading[targetId] = true;
@@ -1333,7 +1362,7 @@ function readFoldedWeeks() {
 function weekNoteOpen(week, targetId = state.athleteId) {
   const key = targetId + "|" + week;
   if (key in state.weekNotesFolded) return !state.weekNotesFolded[key];
-  return !!weekNote(week, targetId).trim();
+  return !!weekNote(week, targetId).trim() || weekPhaseNotes(week, targetId).length > 0;
 }
 function toggleWeekNote(week, ev) {
   if (ev) ev.stopPropagation();
@@ -1367,6 +1396,8 @@ function blurWeekNote(week) {
     const again = document.querySelector(`[data-focus="week-note-${week}"]`);
     if (again && document.activeElement === again) return;
     if (state.athleteId !== targetId || !weekNoteOpen(week, targetId)) return;
+    // A week showing its phase's notes stays open; only the coach folds it.
+    if (weekPhaseNotes(week, targetId).length) return;
     state.weekNotesFolded[targetId + "|" + week] = true;
     try { localStorage.setItem("wourkout_week_notes_folded", JSON.stringify(state.weekNotesFolded)); } catch (err) { /* per-viewer only */ }
     render();
@@ -1387,10 +1418,16 @@ async function saveWeekNote(targetId, week) {
 function weekNoteHtml(week) {
   const text = weekNote(week);
   const open = weekNoteOpen(week);
-  const preview = text.trim().split("\n")[0];
-  const toggle = `<button type="button" class="week-note-toggle" aria-expanded="${open ? "true" : "false"}" onclick="toggleWeekNote('${week}', event)">${open ? "▾ Notes" : text.trim() ? "▸ Notes" : "+ Notes"}</button>`;
+  const phaseNotes = weekPhaseNotes(week);
+  const preview = (text.trim() || (phaseNotes[0] ? phaseNotes[0].name + ": " + phaseNotes[0].notes.trim() : "")).split("\n")[0];
+  const toggle = `<button type="button" class="week-note-toggle" aria-expanded="${open ? "true" : "false"}" onclick="toggleWeekNote('${week}', event)">${open ? "▾ Notes" : (text.trim() || phaseNotes.length) ? "▸ Notes" : "+ Notes"}</button>`;
   if (!open) return `${toggle}${preview ? `<span class="week-note-preview">${esc(preview)}</span>` : ""}`;
-  return `${toggle}<span class="week-note-private">Coaches only</span>
+  // The phase's notes sit above the week's own. They are edited once, in the Programming builder.
+  const fromPhase = phaseNotes.map((p) => `<div class="phase-note" style="border-left-color:${esc(p.color)}" onclick="event.stopPropagation()">
+      <div class="phase-note-h"><b>${esc(p.name)}</b><span>Phase notes</span><button type="button" class="week-note-toggle" onclick="openPhase(${p.id}, event)">Edit</button></div>
+      <div class="phase-note-body">${esc(p.notes.trim())}</div>
+    </div>`).join("");
+  return `${toggle}<span class="week-note-private">Coaches only</span>${fromPhase}
     <textarea class="week-note" data-focus="week-note-${week}" rows="${Math.min(8, Math.max(2, text.split("\n").length))}" placeholder="Programming notes for this week. Athletes never see these." oninput="setWeekNote('${week}', this.value)" onblur="blurWeekNote('${week}')" onclick="event.stopPropagation()">${esc(text)}</textarea>`;
 }
 
@@ -1771,7 +1808,8 @@ function goTool(view) {
 const BUILD_PANELS = [
   ["library", "▤", "Exercise library"],
   ["prs", "★", "PRs & goals"],
-  ["history", "↺", "Action history"]
+  ["history", "↺", "Action history"],
+  ["phases", "▦", "Programming builder"]
 ];
 function leftRail() {
   return `<aside class="rail">
@@ -1783,6 +1821,8 @@ function toggleBuildPanel(key) {
   state.panelQ = "";
   if (state.buildPanel) state.preview = null;
   if (state.buildPanel === "library" && !state.serverExercises.length) loadExercises();
+  if (state.buildPanel !== "phases") state.phaseDraft = null;
+  else state.phaseMiniStart = null;
   render();
 }
 function buildPanelHtml() {
@@ -1791,8 +1831,9 @@ function buildPanelHtml() {
   let inner = "";
   if (panel[0] === "library") inner = libraryPanelHtml();
   else if (panel[0] === "prs") inner = prsPanelHtml();
+  else if (panel[0] === "phases") inner = phasesPanelHtml();
   else inner = historyPanelHtml();
-  return `<aside class="build-panel" aria-label="${panel[2]}">
+  return `<aside class="build-panel" data-panel="${panel[0]}" aria-label="${panel[2]}">
     <div class="bp-head"><strong>${panel[2]}</strong><button type="button" class="iconbtn" aria-label="Close panel" onclick="toggleBuildPanel('${panel[0]}')">✕</button></div>
     ${inner}
   </aside>`;
@@ -1907,6 +1948,295 @@ function historyPanelHtml() {
   return `<div class="bp-tools"><button type="button" class="ghost" ${state.undo.length ? "" : "disabled"} onclick="undo()">↺ Undo last change</button>
       <div class="bp-note">${state.undo.length} change${state.undo.length === 1 ? "" : "s"} can be undone.</div></div>
     <div class="bp-scroll">${rows || `<div class="bp-empty">No actions yet.</div>`}</div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Programming builder: phases. A phase is a named run of days on one calendar,
+// such as a four-week strength phase. It colours the week banners it covers and
+// its notes show above each of those weeks' own notes. Coaches only.
+// ---------------------------------------------------------------------------
+const PHASE_COLORS = ["#2f6fed", "#c2410c", "#15803d", "#7c3aed", "#b45309", "#0e7490", "#be185d", "#4d7c0f"];
+const PHASE_MINI_WEEKS = 16;
+function phasesFor(targetId = state.athleteId) {
+  return state.phases[targetId] || [];
+}
+async function loadPhases(targetId, query) {
+  try {
+    const rows = await api("GET", "/api/calendar/phases" + query);
+    state.phases[targetId] = rows || [];
+    if (state.view === "build" && state.athleteId === targetId) render();
+  } catch (err) {
+    console.error("Failed to load phases:", err);
+  }
+}
+function phaseOn(date, targetId = state.athleteId) {
+  return phasesFor(targetId).find((p) => p.start_date <= date && date <= p.end_date) || null;
+}
+// The phases a week touches, in date order.
+function weekPhases(week, targetId = state.athleteId) {
+  const end = addDays(week, 6);
+  return phasesFor(targetId).filter((p) => p.start_date <= end && p.end_date >= week);
+}
+function weekPhaseNotes(week, targetId = state.athleteId) {
+  return weekPhases(week, targetId).filter((p) => String(p.notes || "").trim());
+}
+function phaseDate(date) {
+  const d = new Date(date + "T12:00:00");
+  const mon = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const year = String(d.getFullYear()) === APP_TODAY.slice(0, 4) ? "" : ", " + d.getFullYear();
+  return mon[d.getMonth()] + " " + d.getDate() + year;
+}
+function daysBetween(a, b) {
+  return Math.round((new Date(b + "T12:00:00") - new Date(a + "T12:00:00")) / 86400000);
+}
+function phaseWeekCount(p) {
+  return daysBetween(sundayOf(p.start_date), sundayOf(p.end_date)) / 7 + 1;
+}
+function phaseLength(start, end) {
+  const days = daysBetween(start, end) + 1;
+  if (days % 7 === 0) return (days / 7) + " week" + (days === 7 ? "" : "s");
+  if (days < 7) return days + " day" + (days === 1 ? "" : "s");
+  const weeks = Math.floor(days / 7);
+  return weeks + " week" + (weeks === 1 ? "" : "s") + ", " + (days % 7) + " day" + (days % 7 === 1 ? "" : "s");
+}
+function phaseTint(color, alpha) {
+  const hex = /^#[0-9a-f]{6}$/i.test(color || "") ? color : PHASE_COLORS[0];
+  const n = parseInt(hex.slice(1), 16);
+  return "rgba(" + ((n >> 16) & 255) + "," + ((n >> 8) & 255) + "," + (n & 255) + "," + alpha + ")";
+}
+// The week banner takes its phase's colour. A week split between phases is split the same way.
+function phaseBannerStyle(week) {
+  if (!weekPhases(week).length) return "";
+  const stops = [];
+  for (let i = 0; i < 7; i++) {
+    const p = phaseOn(addDays(week, i));
+    const color = p ? phaseTint(p.color, 0.38) : "transparent";
+    stops.push(color + " " + (i / 7 * 100).toFixed(2) + "% " + ((i + 1) / 7 * 100).toFixed(2) + "%");
+  }
+  return "background:linear-gradient(90deg," + stops.join(",") + ")";
+}
+function phaseTagsHtml(week) {
+  return weekPhases(week).map((p) => {
+    const total = phaseWeekCount(p);
+    const nth = daysBetween(sundayOf(p.start_date), week) / 7 + 1;
+    const where = total > 1 ? " · wk " + nth + "/" + total : "";
+    return `<button type="button" class="phase-tag" style="background:${esc(p.color)}" title="${esc(p.name + ": " + phaseDate(p.start_date) + " to " + phaseDate(p.end_date))}" onclick="openPhase(${p.id}, event)">${esc(p.name + where)}</button>`;
+  }).join("");
+}
+function phaseMiniStart() {
+  return state.phaseMiniStart || sundayOf(state.weekStart || APP_TODAY);
+}
+function shiftPhaseMini(weeks) {
+  state.phaseMiniStart = addDays(phaseMiniStart(), weeks * 7);
+  render();
+}
+function nextPhaseColor() {
+  const used = phasesFor().map((p) => p.color);
+  return PHASE_COLORS.find((c) => used.indexOf(c) < 0) || PHASE_COLORS[phasesFor().length % PHASE_COLORS.length];
+}
+function openPhase(id, ev) {
+  if (ev) ev.stopPropagation();
+  const p = phasesFor().find((row) => row.id === id);
+  if (!p) return;
+  state.buildPanel = "phases";
+  state.preview = null;
+  state.phaseDraft = { id: p.id, name: p.name, notes: p.notes || "", color: p.color, start: p.start_date, end: p.end_date };
+  const first = phaseMiniStart();
+  if (p.start_date < first || p.start_date > addDays(first, PHASE_MINI_WEEKS * 7 - 1)) state.phaseMiniStart = sundayOf(p.start_date);
+  state.pendingFocus = "phase-name";
+  render();
+}
+function cancelPhaseDraft() {
+  state.phaseDraft = null;
+  render();
+}
+function setPhaseColor(color) {
+  if (!state.phaseDraft) return;
+  state.phaseDraft.color = color;
+  render();
+}
+// Dragging across the little calendar picks the days. Nothing re-renders mid-drag:
+// the boxes are painted in place, and the range lands in the draft on release.
+let phaseDrag = null;
+function phaseCellAt(ev) {
+  const el = document.elementFromPoint(ev.clientX, ev.clientY);
+  const cell = el && el.closest ? el.closest(".ph-cell") : null;
+  return cell ? cell.dataset.date : "";
+}
+function paintPhaseDrag() {
+  if (!phaseDrag) return;
+  const from = phaseDrag.anchor < phaseDrag.head ? phaseDrag.anchor : phaseDrag.head;
+  const to = phaseDrag.anchor < phaseDrag.head ? phaseDrag.head : phaseDrag.anchor;
+  document.querySelectorAll(".ph-cell").forEach((cell) => {
+    cell.classList.toggle("sel", cell.dataset.date >= from && cell.dataset.date <= to);
+  });
+}
+function phaseDragStart(ev) {
+  if (ev.button != null && ev.button !== 0) return;
+  const date = phaseCellAt(ev);
+  if (!date) return;
+  ev.preventDefault();
+  phaseDrag = { anchor: date, head: date, moved: false };
+  paintPhaseDrag();
+  document.addEventListener("pointermove", phaseDragMove);
+  document.addEventListener("pointerup", phaseDragEnd);
+  document.addEventListener("pointercancel", phaseDragEnd);
+}
+function phaseDragMove(ev) {
+  if (!phaseDrag) return;
+  const date = phaseCellAt(ev);
+  if (!date || date === phaseDrag.head) return;
+  phaseDrag.head = date;
+  phaseDrag.moved = true;
+  paintPhaseDrag();
+}
+function phaseDragEnd() {
+  document.removeEventListener("pointermove", phaseDragMove);
+  document.removeEventListener("pointerup", phaseDragEnd);
+  document.removeEventListener("pointercancel", phaseDragEnd);
+  const drag = phaseDrag;
+  phaseDrag = null;
+  if (!drag) return;
+  pickPhaseRange(drag.anchor, drag.head, drag.moved);
+}
+function pickPhaseRange(a, b, dragged) {
+  const start = a < b ? a : b;
+  const end = a < b ? b : a;
+  const draft = state.phaseDraft;
+  // A plain click on a day that already has a phase opens that phase.
+  const under = !dragged ? phaseOn(start) : null;
+  if (under && (!draft || draft.id !== under.id)) { openPhase(under.id); return; }
+  if (draft) {
+    draft.start = start;
+    draft.end = end;
+  } else {
+    state.phaseDraft = { id: null, name: "", notes: "", color: nextPhaseColor(), start, end };
+  }
+  state.pendingFocus = "phase-name";
+  render();
+}
+function phaseClash(draft) {
+  return phasesFor().find((p) => p.id !== draft.id && p.start_date <= draft.end && p.end_date >= draft.start) || null;
+}
+async function savePhaseDraft() {
+  const draft = state.phaseDraft;
+  if (!draft) return;
+  const name = String(draft.name || "").trim();
+  if (!name) { toast("Name the phase"); state.pendingFocus = "phase-name"; render(); return; }
+  const clash = phaseClash(draft);
+  if (clash) { toast("Those days overlap " + clash.name); return; }
+  const target = weekNoteTarget(state.athleteId);
+  if (!target) { toast("Pick a calendar first"); return; }
+  const targetId = state.athleteId;
+  const body = Object.assign({ name, notes: draft.notes || "", color: draft.color || "", start_date: draft.start, end_date: draft.end }, target);
+  try {
+    const saved = draft.id
+      ? await api("PUT", "/api/calendar/phases/" + draft.id, body)
+      : await api("POST", "/api/calendar/phases", body);
+    const rows = phasesFor(targetId).filter((p) => p.id !== saved.id).concat([saved]);
+    rows.sort((x, y) => (x.start_date < y.start_date ? -1 : x.start_date > y.start_date ? 1 : x.id - y.id));
+    state.phases[targetId] = rows;
+    if (state.phaseDraft === draft) state.phaseDraft = null;
+    toast(draft.id ? "Phase updated" : "Phase added");
+  } catch (err) {
+    toast(err.message || "Could not save that phase");
+  }
+  render();
+}
+function askDeletePhase(id) {
+  const p = phasesFor().find((row) => row.id === id);
+  if (!p) return;
+  state.modal = {
+    type: "confirm",
+    title: `Delete ${p.name}?`,
+    body: "The phase, its colour, and its notes go. Workouts and each week's own notes stay as they are.",
+    confirmLabel: "Delete phase",
+    onConfirm: () => deletePhase(id)
+  };
+  render();
+}
+async function deletePhase(id) {
+  const targetId = state.athleteId;
+  state.modal = null;
+  try {
+    await api("DELETE", "/api/calendar/phases/" + id);
+    state.phases[targetId] = phasesFor(targetId).filter((p) => p.id !== id);
+    if (state.phaseDraft && state.phaseDraft.id === id) state.phaseDraft = null;
+    toast("Phase deleted");
+  } catch (err) {
+    toast(err.message || "Could not delete that phase");
+  }
+  render();
+}
+function phaseMiniHtml() {
+  const first = phaseMiniStart();
+  const draft = state.phaseDraft;
+  const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  let rows = "";
+  for (let w = 0; w < PHASE_MINI_WEEKS; w++) {
+    const week = addDays(first, w * 7);
+    const d = new Date(week + "T12:00:00");
+    let cells = "";
+    for (let i = 0; i < 7; i++) {
+      const date = addDays(week, i);
+      const p = phaseOn(date);
+      const mine = p && draft && draft.id === p.id;
+      const picked = draft && date >= draft.start && date <= draft.end;
+      const classes = "ph-cell" + (picked ? " sel" : "") + (date === APP_TODAY ? " today" : "") + (p && !mine ? " taken" : "");
+      const fill = p && !mine ? ` style="background:${phaseTint(p.color, 0.7)}"` : "";
+      const label = fmtDay(date) + (p ? ", " + p.name : "");
+      cells += `<button type="button" class="${classes}" data-date="${date}"${fill} title="${esc(label)}" aria-label="${esc(label)}" aria-pressed="${picked ? "true" : "false"}"></button>`;
+    }
+    rows += `<div class="ph-week"><span class="ph-week-l">${MON[d.getMonth()]} ${d.getDate()}</span>${cells}</div>`;
+  }
+  const head = ["S", "M", "T", "W", "T", "F", "S"].map((c) => `<span>${c}</span>`).join("");
+  return `<div class="ph-grid" style="${draft ? "--ph-pick:" + esc(draft.color) : ""}" onpointerdown="phaseDragStart(event)">
+    <div class="ph-week ph-head"><span class="ph-week-l"></span>${head}</div>${rows}</div>`;
+}
+function phaseFormHtml() {
+  const draft = state.phaseDraft;
+  if (!draft) return `<div class="bp-note ph-hint">Drag across the boxes to pick the days or weeks a phase covers. Each row is a week.</div>`;
+  const clash = phaseClash(draft);
+  const swatches = PHASE_COLORS.map((c) => `<button type="button" class="ph-swatch${draft.color === c ? " on" : ""}" style="background:${c}" aria-label="Colour ${c}" aria-pressed="${draft.color === c ? "true" : "false"}" onclick="setPhaseColor('${c}')"></button>`).join("");
+  return `<form class="ph-form" onsubmit="savePhaseDraft(); return false;">
+    <div class="ph-range"><b>${esc(phaseDate(draft.start))} – ${esc(phaseDate(draft.end))}</b><span>${esc(phaseLength(draft.start, draft.end))}</span></div>
+    ${clash ? `<div class="ph-warn">These days overlap ${esc(clash.name)}. Drag a range that is free.</div>` : ""}
+    <label>Phase name<input type="text" data-focus="phase-name" maxlength="120" autocomplete="off" placeholder="4 week strength phase" value="${esc(draft.name)}" oninput="state.phaseDraft.name=this.value"></label>
+    <div class="ph-swatches" role="group" aria-label="Phase colour">${swatches}</div>
+    <label>Phase notes<textarea data-focus="phase-notes" rows="4" placeholder="Goals, loading, what to watch. These show above the weekly notes of every week in the phase." oninput="state.phaseDraft.notes=this.value">${esc(draft.notes)}</textarea></label>
+    <div class="ph-actions">
+      <button type="submit" class="ph-save">${draft.id ? "Save phase" : "Add phase"}</button>
+      <button type="button" class="ghost" onclick="cancelPhaseDraft()">Cancel</button>
+      ${draft.id ? `<button type="button" class="ghost ph-del" onclick="askDeletePhase(${draft.id})">Delete</button>` : ""}
+    </div>
+  </form>`;
+}
+function phasesPanelHtml() {
+  const target = weekNoteTarget(state.athleteId);
+  if (!target) return `<div class="bp-scroll"><div class="bp-empty">Pick a calendar to plan its phases.</div></div>`;
+  const first = phaseMiniStart();
+  const last = addDays(first, PHASE_MINI_WEEKS * 7 - 1);
+  const draft = state.phaseDraft;
+  const list = phasesFor().map((p) => `<div class="bp-row ph-row${draft && draft.id === p.id ? " open" : ""}">
+      <button type="button" class="bp-main" onclick="openPhase(${p.id}, event)">
+        <b><i class="ph-dot" style="background:${esc(p.color)}"></i>${esc(p.name)}</b>
+        <small>${esc(phaseDate(p.start_date))} – ${esc(phaseDate(p.end_date))} · ${esc(phaseLength(p.start_date, p.end_date))}</small>
+      </button>
+    </div>`).join("");
+  return `<div class="bp-tools">
+      <div class="bp-note">Group weeks into phases. A phase colours its week banners in the calendar and its notes show above each week's notes. Athletes never see phases.</div>
+      <div class="ph-nav">
+        <button type="button" class="ghost" aria-label="Earlier weeks" onclick="shiftPhaseMini(-4)">‹</button>
+        <span>${esc(phaseDate(first))} – ${esc(phaseDate(last))}</span>
+        <button type="button" class="ghost" aria-label="Later weeks" onclick="shiftPhaseMini(4)">›</button>
+      </div>
+    </div>
+    <div class="bp-scroll">
+      ${phaseMiniHtml()}
+      ${phaseFormHtml()}
+      <div class="bp-group">Phases</div>
+      ${list || `<div class="bp-empty">No phases on this calendar yet.</div>`}
+    </div>`;
 }
 
 function body() {
@@ -2094,7 +2424,8 @@ function buildView() {
     let cols = "";
     for (let i = 0; i < 7; i++) cols += dayCol(addDays(start, i));
     const banner = start === todayWeek ? "This week" : weekName(start);
-    weeksHtml += `<div class="week${current}" data-week="${start}"><div class="week-banner"><span class="week-name">${esc(banner)}</span>${weekNoteHtml(start)}</div>${cols}</div>`;
+    const tint = phaseBannerStyle(start);
+    weeksHtml += `<div class="week${current}" data-week="${start}"><div class="week-banner${tint ? " in-phase" : ""}"${tint ? ` style="${tint}"` : ""}><span class="week-name">${esc(banner)}</span>${phaseTagsHtml(start)}${weekNoteHtml(start)}</div>${cols}</div>`;
   }
   writeBuildQuery();
   const currentTarget = athlete();
@@ -2279,6 +2610,7 @@ function switchAthlete(id) {
   state.athleteId = id;
   state.athleteMenu = false;
   state.editor = null;
+  state.phaseDraft = null;
   writeBuildQuery();
   render();
   loadCalendarSchedule(id);
@@ -2406,6 +2738,37 @@ function chainBlockHtml(date, day, group) {
   </div>`;
 }
 // The chain's edit box floats beside the day, the same way an exercise's editor does.
+// Each exercise in the chain has its sets and its reps, time, and distance right here.
+// Edits change this day only; "Edit chain" is still how the saved chain changes.
+function chainMemberEditHtml(date, it, index) {
+  const name = `<div class="chain-edit-h">
+      <span class="chain-edit-n">${index + 1}</span>
+      <button type="button" class="chain-edit-name" title="Open the full editor for ${esc(it.name)}" onclick="openEditor('${date}','${it.id}', event)">${esc(it.name)}</button>
+    </div>`;
+  if (it.type === "note" || isTextOnlyItem(it)) {
+    return `<section class="chain-edit" data-chain-member="${esc(it.id)}">${name}
+      <textarea aria-label="Text for ${esc(it.name)}" data-focus="note-${it.id}" rows="2" oninput="setField('${date}','${it.id}','note', this.value)" onchange="renderSoon()">${esc(it.note || "")}</textarea>
+    </section>`;
+  }
+  if (it.type !== "lift" && it.type !== "circuit") {
+    return `<section class="chain-edit" data-chain-member="${esc(it.id)}">${name}<div class="hint">${esc(scriptLine(it))}</div></section>`;
+  }
+  const label = it.type === "circuit" ? "Rounds" : "Sets";
+  const stepper = `<span class="sets-label">${label}</span><div class="stepper">
+      <button type="button" aria-label="Fewer ${label.toLowerCase()} for ${esc(it.name)}" onclick="changeSets('${date}','${it.id}',-1)">−</button><b>${it.sets}</b>
+      <button type="button" aria-label="More ${label.toLowerCase()} for ${esc(it.name)}" onclick="changeSets('${date}','${it.id}',1)">+</button>
+    </div>`;
+  if (it.type === "circuit") {
+    return `<section class="chain-edit" data-chain-member="${esc(it.id)}">${name}
+      <div class="row chain-edit-sets">${stepper}</div>
+      <div class="hint">${esc(scriptLine(it))}</div>
+    </section>`;
+  }
+  return `<section class="chain-edit" data-chain-member="${esc(it.id)}">${name}
+    <div class="row chain-edit-sets">${stepper}${trackControl(date, it)}</div>
+    <div class="prop-scroll">${workTable(date, it)}</div>
+  </section>`;
+}
 function chainBoxPop() {
   const box = state.chainBox;
   if (!box) return "";
@@ -2415,15 +2778,17 @@ function chainBoxPop() {
   const date = box.date;
   const instance = esc(box.instance);
   const letters = LETTERS.concat([""]).map((L) => `<button type="button" class="pill${(head.letter || "") === L ? " on" : ""}" aria-pressed="${(head.letter || "") === L ? "true" : "false"}" aria-label="${L ? "Letter " + L : "No letter"}" onclick="setChainLetter('${date}','${instance}','${L}')">${L || "–"}</button>`).join("");
-  return `<div class="editor build-editor chain-box" style="width:min(352px, calc(100vw - 32px))" onclick="event.stopPropagation()">
+  const width = group.reduce((most, it) => Math.max(most, (it.type || "lift") === "lift" && !isTextOnlyItem(it) ? editorFrameWidth(it) : 400), 400);
+  return `<div class="editor build-editor chain-box" style="width:min(${width}px, calc(100vw - 32px))" onclick="editorClick(event)">
     <div class="editor-h">
       ${letterBadge(head.letter)}
       <span class="name">${esc(head.chainName || "Chain")}</span>
       <button type="button" class="iconbtn" title="Delete chain" aria-label="Delete chain" onclick="askDeleteChain('${date}','${instance}')">🗑</button>
       <button type="button" class="iconbtn" title="Close" onclick="closeChainBox()">✕</button>
     </div>
-    <div class="hint">${esc(chainSubline(group))}</div>
+    <div class="hint">${esc(chainSubline(group))} · changes here apply to this day only</div>
     <div class="row chain-box-letters">${letters}</div>
+    <div class="chain-edit-list">${group.map((it, index) => chainMemberEditHtml(date, it, index)).join("")}</div>
     <div class="row editor-actions">
       ${head.chainId ? `<button type="button" class="pill" onclick="openChainFromDay('${date}','${instance}')">Edit chain</button>` : ""}
       <button type="button" class="pill" onclick="breakChain('${date}','${instance}')">Break apart</button>
@@ -2432,7 +2797,9 @@ function chainBoxPop() {
 }
 function closeChainBox() {
   if (!state.chainBox) return;
+  const date = state.chainBox.date;
   state.chainBox = null;
+  queueDaySave(state.athleteId, date, { explicit: true, ifEdited: true });
   render();
 }
 function exRow(date, day, it, opts) {
@@ -2587,6 +2954,23 @@ function chainText(value) {
   if (value == null) return "";
   return String(value).trim();
 }
+// A member that names any of reps, time, or distance tracks exactly the ones it names.
+function applyChainDose(it, member) {
+  if (!it || !member || (it.type || "lift") !== "lift" || isTextOnlyItem(it)) return;
+  const reps = chainText(member.reps);
+  const time = chainText(member.time).replace(/s$/i, "");
+  const distance = chainText(member.distance);
+  if (reps === "" && time === "" && distance === "") return;
+  const n = it.sets || 1;
+  it.dose = 2;
+  it.trackReps = reps !== "";
+  it.trackTime = time !== "";
+  it.trackDistance = distance !== "";
+  if (reps !== "") it.reps = Array(n).fill(reps);
+  it.times = Array(n).fill(time);
+  it.distances = Array(n).fill(distance);
+  it.props = (it.props || []).filter((key) => key !== "distance");
+}
 function applyChainMemberFields(it, member, letter) {
   const setsText = chainText(member && member.sets);
   const repsText = chainText(member && member.reps);
@@ -2604,6 +2988,7 @@ function applyChainMemberFields(it, member, letter) {
     if (!isNaN(parsed)) resizeSets(it, Math.max(1, Math.min(10, parsed)));
   }
   if (repsText !== "") it.reps = Array(it.sets || 1).fill(repsText);
+  applyChainDose(it, member);
   if (notesGiven) it.note = String(member.notes);
   else if (it.type !== "circuit") {
     const defaults = libraryDefaultsFrom(exerciseRecord(it.name));
@@ -2621,6 +3006,7 @@ function applyExplicitChainFields(it, member) {
     if (!isNaN(parsed)) resizeSets(it, Math.max(1, Math.min(10, parsed)));
   }
   if (repsText !== "" && it.type !== "note") it.reps = Array(it.sets || 1).fill(repsText);
+  applyChainDose(it, member);
   if (notesGiven) it.note = String(member.notes);
   return it;
 }
@@ -3012,7 +3398,8 @@ function editorPop(date) {
   }
   if (it.type === "questionnaire") {
     return `<div class="editor build-editor" ${frame} onclick="editorClick(event)">${head}
-      ${it.questions.map((q, i) => `<div class="q">${i + 1}. ${esc(q)}</div>`).join("")}
+      ${itemQuestions(it).map((q, i) => `<div class="q">${i + 1}. ${esc(q.text)}${q.type ? ` <span class="q-kind">${esc(answerTypeLabel(q.type))}</span>` : ""}</div>`).join("") || `<div class="hint">No questions in this questionnaire yet.</div>`}
+      ${exerciseRecord(it.name) ? `<div class="row editor-actions"><button type="button" class="pill" onclick="openQuestionnaireEditor(${exerciseRecord(it.name).id})">Edit questionnaire</button></div>` : ""}
       <label class="chk" style="color:#ddd"><input type="checkbox" ${it.requireResponse ? "checked" : ""} onchange="itRequire('${date}','${it.id}', this.checked)"> Require Response</label>
       <div class="hint">All questionnaire items must be fully completed before showing workout.</div>
     </div>`;
@@ -4170,8 +4557,10 @@ function hydrateEntryLogs(date, aid, day) {
     state.logs[key] = {
       cells,
       hydrated: true,
-      entered: it.type === "circuit" ? circuitEntered : {},
-      done: it.type === "circuit" ? setIsComplete(it, circuitEntered) : (isTextOnlyItem(it) ? !!circuitLog.completed : false)
+      entered: it.type === "circuit" || it.type === "questionnaire" ? circuitEntered : {},
+      done: it.type === "circuit"
+        ? setIsComplete(it, circuitEntered)
+        : (isTextOnlyItem(it) || it.type === "questionnaire" ? !!circuitLog.completed : false)
     };
   });
 }
@@ -4940,7 +5329,7 @@ function previewSheet(it, log) {
     return `<div class="preview-copy">${esc(it.note || "")}</div>`;
   }
   if (it.type === "questionnaire") {
-    const qs = (it.questions || []).map((q, i) => `<div class="q">${i + 1}. ${esc(q)}</div>`).join("") || '<div class="hint">No questions</div>';
+    const qs = itemQuestions(it).map((q, i) => `<div class="q">${i + 1}. ${esc(q.text)}${q.type ? ` <span class="q-kind">${esc(answerTypeLabel(q.type))}</span>` : ""}</div>`).join("") || '<div class="hint">No questions</div>';
     return qs + button;
   }
   if (it.type === "circuit" || isTextOnlyItem(it) || it.type === "video" || it.type === "rest") {
@@ -5443,6 +5832,51 @@ function athleteScheduleHtml(date, items) {
   }
   return html;
 }
+// Each question takes its own kind of answer. The questionnaire is complete once every one has an answer.
+function questionKey(q, index) {
+  return q.id ? "q" + q.id : "p" + index;
+}
+function questionnaireDone(it, entered) {
+  const qs = itemQuestions(it);
+  if (!qs.some((q) => q.type)) return false;
+  return qs.every((q, i) => !q.type || String((entered || {})[questionKey(q, i)] == null ? "" : (entered || {})[questionKey(q, i)]).trim() !== "");
+}
+function questionnaireEntryHtml(aid, date, it) {
+  const key = aid + ":" + date + ":" + it.id;
+  const log = state.logs[key] || {};
+  const entered = log.entered || {};
+  const qs = itemQuestions(it);
+  const typed = qs.some((q) => q.type);
+  const done = !!log.done;
+  const call = (qk, value) => `answerQuestion('${key}','${qk}',${value},'${date}','${it.id}',${it.weId || 0})`;
+  const rows = qs.map((q, i) => {
+    const qk = questionKey(q, i);
+    const value = entered[qk] == null ? "" : String(entered[qk]);
+    const choice = (label) => `<button type="button" class="${value === String(label) ? "on" : ""}" aria-pressed="${value === String(label) ? "true" : "false"}" onclick="${call(qk, "'" + label + "'")}">${label}</button>`;
+    let answer = "";
+    if (q.type === "scale") answer = `<div class="q-choices q-scale" role="group" aria-label="${esc(q.text)}: 1 to 10">${[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(choice).join("")}</div>`;
+    else if (q.type === "yes_no") answer = `<div class="q-choices" role="group" aria-label="${esc(q.text)}">${choice("Yes")}${choice("No")}</div>`;
+    else if (q.type === "text") answer = `<textarea rows="2" aria-label="${esc(q.text)}" data-focus="ans-${it.id}-${qk}" placeholder="Type your answer" onchange="${call(qk, "this.value")}">${esc(value)}</textarea>`;
+    return `<div class="q-item"><div class="q-text">${i + 1}. ${esc(q.text)}</div>${answer}</div>`;
+  }).join("") || `<div class="hint">No questions.</div>`;
+  const foot = typed
+    ? (done ? `<div class="q-status done">✓ Complete</div>` : `<div class="hint">Answer every question to complete this.</div>`)
+    : `<button type="button" class="complete${done ? " done" : ""}" aria-pressed="${done ? "true" : "false"}" onclick="toggleExerciseComplete('${key}','${date}','${it.id}',${it.weId || 0})">${done ? "✓ Completed" : "✓ Complete"}</button>`;
+  return `<div class="circuit-entry q-entry">${athletePlayerHtml(it)}${rows}${foot}</div>`;
+}
+function answerQuestion(key, qk, value, date, itemId, weId) {
+  const log = state.logs[key] || (state.logs[key] = { cells: {}, hydrated: true, entered: {} });
+  log.hydrated = true;
+  log.entered = Object.assign({}, log.entered || {});
+  log.entered[qk] = value;
+  const it = entryItemById(date, itemId);
+  log.done = !!(it && questionnaireDone(it, log.entered));
+  if (weId && state.openSession && (state.role === "athlete" || state.coachSessionFor)) {
+    logAthleteSet(weId, 1, "", null, { athlete: log.entered, completed: log.done });
+    return;
+  }
+  render();
+}
 function circuitEntryHtml(aid, date, it) {
   const key = aid + ":" + date + ":" + it.id;
   const log = state.logs[key] || {};
@@ -5497,6 +5931,7 @@ function entryItem(aid, date, it) {
   const key = aid + ":" + date + ":" + it.id;
   if (it.type === "note") return entryShell(aid, date, it, `<div class="preview-copy">${esc(it.note || "")}</div>`);
   if (it.type === "circuit") return entryShell(aid, date, it, circuitEntryHtml(aid, date, it));
+  if (it.type === "questionnaire") return entryShell(aid, date, it, questionnaireEntryHtml(aid, date, it));
   if (isTextOnlyItem(it)) {
     const done = !!(state.logs[key] && state.logs[key].done);
     return entryShell(aid, date, it, `<div class="circuit-entry">
@@ -5518,9 +5953,7 @@ function entryItem(aid, date, it) {
     }).join("");
     return `<tr class="${done ? "set-done" : ""}"><td class="set-n">${i + 1}</td>${inputs}<td class="set-tick"><input aria-label="Done set ${i + 1}" type="checkbox" ${done ? "checked" : ""} onchange="logCell('${key}',${i},'done',this.checked,'${date}','${it.id}',${it.weId || 0})"></td></tr>`;
   }).join("");
-  const table = it.type === "questionnaire"
-    ? (it.questions || []).map((q) => `<label class="chk"><input type="checkbox" onchange="logCheck('${key}', this.checked)"> ${esc(q)}</label>`).join("")
-    : `<table class="sets"><tr><th>Set</th>${fields.map((field) => `<th>${field[1]}</th>`).join("")}<th>Done</th></tr>${rows}</table>`;
+  const table = `<table class="sets"><tr><th>Set</th>${fields.map((field) => `<th>${field[1]}</th>`).join("")}<th>Done</th></tr>${rows}</table>`;
   const safeName = String(it.name || "Exercise").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
   return entryShell(aid, date, it, `${athletePlayerHtml(it)}${table}<button class="complete" type="button" onclick="markDone('${key}','${safeName}',${it.weId || 0},${it.sets || 1})">Complete</button>`);
 }
@@ -6540,6 +6973,10 @@ function exerciseDefaultsText(l) {
   const category = canonicalCategory(l.category || "Strength");
   if (category === "Notes" || isTextOnlyCategory(category)) return "";
   if (category === "Circuit") return l.default_sets ? l.default_sets + " round" + (+l.default_sets === 1 ? "" : "s") : "";
+  if (category === "Questionnaire") {
+    const count = (l.questions || []).length;
+    return count + " question" + (count === 1 ? "" : "s");
+  }
   const sets = l.default_sets || "";
   const parts = [];
   if (l.default_reps) parts.push(String(l.default_reps));
@@ -6564,7 +7001,7 @@ function liftsView() {
     ].join(" ");
     const actions = l.hidden
       ? `<button class="btn btn-ghost btn-sm" type="button" onclick="unhideExercise(${l.id})">Unhide</button>`
-      : `<button class="btn btn-ghost btn-sm" type="button" onclick="editExercise(${l.id})">Edit</button><button class="btn btn-ghost btn-sm" type="button" title="Take it out of your library. Days that use it keep it." onclick="hideExercise(${l.id})">Hide</button>`;
+      : `<button class="btn btn-ghost btn-sm" type="button" onclick="${canonicalCategory(l.category || "") === "Questionnaire" ? "openQuestionnaireEditor" : "editExercise"}(${l.id})">Edit</button><button class="btn btn-ghost btn-sm" type="button" title="Take it out of your library. Days that use it keep it." onclick="hideExercise(${l.id})">Hide</button>`;
     return `<tr class="${l.hidden ? "is-hidden" : ""}">
       <td class="strong">${esc(l.name)}</td>
       <td><span class="ui-badge">${esc(categoryLabel(l.category))}</span></td>
@@ -6575,7 +7012,7 @@ function liftsView() {
   }).join("");
   return `<section class="stage ui-page"><div class="ui-wrap">
     ${uiHead("Coach tools", "Exercise library", `${total} exercise${total === 1 ? "" : "s"} in your library. Defaults here fill in when an exercise is added to a calendar.`,
-      `<button class="btn btn-secondary" type="button" onclick="openChainEditor()">New chain</button>`)}
+      `<button class="btn btn-secondary" type="button" onclick="openQuestionnaireEditor()">New questionnaire</button><button class="btn btn-secondary" type="button" onclick="openChainEditor()">New chain</button>`)}
     <section class="ui-card">
       <div class="ui-card-body ui-inline">
         <div class="ui-search"><input class="input" placeholder="Search exercises and chains" aria-label="Search exercises" data-focus="lift-q" value="${esc(state.liftQ)}" oninput="state.liftQ=this.value;render()"></div>
@@ -6596,7 +7033,260 @@ function liftsView() {
       </table></div>
     </section>
     ${chainLibraryHtml()}
+    ${questionLibraryHtml()}
   </div></section>`;
+}
+// Questions are written once here, then strung into questionnaires the way exercises go into chains.
+function questionUse(id) {
+  return (state.serverExercises || []).filter((row) => (row.questions || []).some((q) => q.id === id));
+}
+function questionLibraryHtml() {
+  if (state.managing !== "All" && state.managing !== "Questionnaire") return "";
+  const q = state.liftQ.toLowerCase();
+  const rows = (state.questionBank || []).filter((row) => !q || row.text.toLowerCase().includes(q));
+  const body = rows.map((row) => {
+    const used = questionUse(row.id);
+    return `<tr>
+      <td class="strong">${esc(row.text)}</td>
+      <td><span class="ui-badge">${esc(answerTypeLabel(row.answer_type))}</span></td>
+      <td class="muted hide-sm">${used.length ? esc(used.map((ex) => ex.name).join(", ")) : "—"}</td>
+      <td class="row-actions"><button class="btn btn-ghost btn-sm" type="button" onclick="openQuestionEditor(${row.id})">Edit</button><button class="btn btn-ghost btn-sm btn-danger" type="button" onclick="askDeleteQuestion(${row.id})">Delete</button></td>
+    </tr>`;
+  }).join("");
+  return `<section class="ui-card question-library">
+    <div class="ui-card-head">
+      <div><h2 class="ui-card-title">Questions <span class="count">${rows.length}</span></h2>
+      <p class="ui-card-sub">Write a question once, pick how it is answered, then build questionnaires from the questions you have.</p></div>
+      <div class="ui-inline"><button class="btn btn-secondary btn-sm" type="button" onclick="openQuestionEditor()">New question</button><button class="btn btn-secondary btn-sm" type="button" onclick="openQuestionnaireEditor()">New questionnaire</button></div>
+    </div>
+    <div class="ui-table-wrap"><table class="ui-table">
+      <thead><tr><th>Question</th><th>Answer</th><th class="hide-sm">Used in</th><th></th></tr></thead>
+      <tbody>${body || `<tr><td colspan="4"><div class="ui-empty"><b>No questions yet</b>Create one, then add it to a questionnaire.</div></td></tr>`}</tbody>
+    </table></div>
+  </section>`;
+}
+async function loadQuestions() {
+  try {
+    state.questionBank = await api("GET", "/api/questions");
+  } catch (err) {
+    console.error(err);
+  }
+}
+// Days already on screen pick up a questionnaire's current questions.
+function refreshQuestionnaireItems() {
+  Object.keys(state.calendars || {}).forEach((who) => {
+    Object.keys(state.calendars[who] || {}).forEach((date) => {
+      ((state.calendars[who][date] || {}).items || []).forEach((it) => {
+        if (it.type !== "questionnaire") return;
+        const record = (it.exerciseId && state.serverExercises.find((row) => row.id === it.exerciseId)) || exerciseRecord(it.name);
+        if (record && (record.questions || []).length) it.questions = questionObjects(record.questions);
+      });
+    });
+  });
+}
+function openQuestionnaireEditor(exerciseId) {
+  const record = exerciseId ? state.serverExercises.find((row) => row.id === exerciseId) : null;
+  state.modal = {
+    type: "questionnaire",
+    exerciseId: record ? record.id : null,
+    name: record ? record.name : "",
+    pickQ: "",
+    questions: record ? (record.questions || []).map((q) => ({ id: q.id, text: q.text, answer_type: q.answer_type })) : []
+  };
+  state.pendingFocus = record ? "" : "questionnaire-name";
+  if (!state.questionBank.length) loadQuestions().then(render);
+  render();
+}
+function addQuestionnaireQuestion(questionId) {
+  const m = state.modal;
+  if (!m || m.type !== "questionnaire") return;
+  const row = (state.questionBank || []).find((q) => q.id === questionId);
+  if (!row) return;
+  if (m.questions.some((q) => q.id === row.id)) { toast("That question is already in this questionnaire"); return; }
+  m.questions.push({ id: row.id, text: row.text, answer_type: row.answer_type });
+  m.pickQ = "";
+  state.pendingFocus = "questionnaire-pick";
+  render();
+}
+function moveQuestionnaireQuestion(index, dir) {
+  const m = state.modal;
+  if (!m || m.type !== "questionnaire") return;
+  const next = index + dir;
+  if (next < 0 || next >= m.questions.length) return;
+  const row = m.questions.splice(index, 1)[0];
+  m.questions.splice(next, 0, row);
+  render();
+}
+function removeQuestionnaireQuestion(index) {
+  const m = state.modal;
+  if (!m || m.type !== "questionnaire") return;
+  m.questions.splice(index, 1);
+  render();
+}
+async function saveQuestionnaire() {
+  const m = state.modal;
+  if (!m || m.type !== "questionnaire") return;
+  const name = String(m.name || "").trim();
+  if (!name) { toast("Name the questionnaire"); return; }
+  if (!m.questions.length) { toast("Add a question to the questionnaire"); return; }
+  const body = { name, question_ids: m.questions.map((q) => q.id) };
+  try {
+    const saved = m.exerciseId
+      ? await api("PUT", "/api/questionnaires/" + m.exerciseId, body)
+      : await api("POST", "/api/questionnaires", body);
+    const before = m.exerciseId ? state.serverExercises.find((row) => row.id === m.exerciseId) : null;
+    const previousName = before ? before.name : "";
+    if (before) saved.hidden = before.hidden;
+    rememberCreatedExercise(saved);
+    if (previousName && previousName !== saved.name) {
+      syncCatalogExercise(saved, previousName);
+      renameLocalExercise(previousName, saved.name);
+    }
+    refreshQuestionnaireItems();
+    state.modal = null;
+    toast(m.exerciseId ? "Questionnaire updated" : "Questionnaire saved");
+  } catch (err) {
+    toast(err.message || "Could not save that questionnaire");
+  }
+  render();
+}
+// A renamed questionnaire keeps its place on the days already showing it.
+function renameLocalExercise(from, to) {
+  const key = String(from || "").toLowerCase();
+  Object.keys(state.calendars || {}).forEach((who) => {
+    Object.keys(state.calendars[who] || {}).forEach((date) => {
+      ((state.calendars[who][date] || {}).items || []).forEach((it) => {
+        if (String(it.name || "").toLowerCase() === key) it.name = to;
+      });
+    });
+  });
+}
+function openQuestionEditor(questionId, parent) {
+  const row = questionId ? (state.questionBank || []).find((q) => q.id === questionId) : null;
+  state.modal = {
+    type: "question",
+    questionId: row ? row.id : null,
+    text: row ? row.text : ((parent && String(parent.pickQ || "").trim()) || ""),
+    answer_type: row ? row.answer_type : "scale",
+    parent: parent || null
+  };
+  state.pendingFocus = "question-text";
+  render();
+}
+function createQuestionForQuestionnaire() {
+  const m = state.modal;
+  if (!m || m.type !== "questionnaire") return;
+  openQuestionEditor(null, m);
+}
+function closeQuestionEditor() {
+  const m = state.modal;
+  state.modal = (m && m.parent) || null;
+  if (state.modal) state.pendingFocus = "questionnaire-pick";
+  render();
+}
+async function saveQuestion() {
+  const m = state.modal;
+  if (!m || m.type !== "question") return;
+  const text = String(m.text || "").trim();
+  if (!text) { toast("Write the question"); return; }
+  try {
+    const body = { text, answer_type: m.answer_type };
+    const saved = m.questionId
+      ? await api("PUT", "/api/questions/" + m.questionId, body)
+      : await api("POST", "/api/questions", body);
+    const index = state.questionBank.findIndex((q) => q.id === saved.id);
+    if (index >= 0) state.questionBank[index] = saved;
+    else state.questionBank.push(saved);
+    // Every questionnaire asking this question shows the new wording.
+    (state.serverExercises || []).forEach((row) => {
+      row.questions = (row.questions || []).map((q) => (q.id === saved.id ? saved : q));
+    });
+    refreshQuestionnaireItems();
+    if (m.parent) {
+      const mine = m.parent.questions.find((q) => q.id === saved.id);
+      if (mine) Object.assign(mine, { text: saved.text, answer_type: saved.answer_type });
+      else m.parent.questions.push({ id: saved.id, text: saved.text, answer_type: saved.answer_type });
+      m.parent.pickQ = "";
+      state.modal = m.parent;
+      state.pendingFocus = "questionnaire-pick";
+      toast("Question added to the questionnaire");
+    } else {
+      state.modal = null;
+      toast(m.questionId ? "Question updated" : "Question saved");
+    }
+  } catch (err) {
+    toast(err.message || "Could not save that question");
+  }
+  render();
+}
+function askDeleteQuestion(id) {
+  const row = (state.questionBank || []).find((q) => q.id === id);
+  if (!row) return;
+  const used = questionUse(id);
+  if (used.length) {
+    toast("Take it out of " + used.map((ex) => ex.name).join(", ") + " first");
+    return;
+  }
+  state.modal = {
+    type: "confirm",
+    title: "Delete this question?",
+    body: row.text,
+    confirmLabel: "Delete question",
+    onConfirm: () => deleteQuestion(id)
+  };
+  render();
+}
+async function deleteQuestion(id) {
+  state.modal = null;
+  try {
+    await api("DELETE", "/api/questions/" + id);
+    state.questionBank = state.questionBank.filter((q) => q.id !== id);
+    toast("Question deleted");
+  } catch (err) {
+    toast(err.message || "Could not delete that question");
+  }
+  render();
+}
+function questionnaireEditorHtml(m) {
+  const q = String(m.pickQ || "").trim().toLowerCase();
+  const chosen = {};
+  m.questions.forEach((row) => { chosen[row.id] = true; });
+  const matches = (state.questionBank || []).filter((row) => !chosen[row.id] && (!q || row.text.toLowerCase().includes(q)));
+  const options = matches.slice(0, 6);
+  const members = m.questions.map((row, index) => `<div class="chain-member">
+      <span>${index + 1}. ${esc(row.text)} <span class="q-kind">${esc(answerTypeLabel(row.answer_type))}</span></span>
+      <button type="button" aria-label="Move question ${index + 1} up" onclick="moveQuestionnaireQuestion(${index}, -1)">Up</button>
+      <button type="button" aria-label="Move question ${index + 1} down" onclick="moveQuestionnaireQuestion(${index}, 1)">Down</button>
+      <button type="button" aria-label="Remove question ${index + 1}" onclick="removeQuestionnaireQuestion(${index})">Remove</button>
+    </div>`).join("");
+  const rows = options.map((row) => `<button type="button" class="opt" onclick="addQuestionnaireQuestion(${row.id})"><span class="opt-name">${esc(row.text)}</span><span class="tag">${esc(answerTypeLabel(row.answer_type))}</span></button>`).join("");
+  const more = matches.length > options.length ? `<div class="hint">${matches.length - options.length} more. Keep typing to narrow it down.</div>` : "";
+  return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render()}"><div class="modal edit-modal chain-modal" onclick="event.stopPropagation()">
+    <h3>${m.exerciseId ? "Edit questionnaire" : "New questionnaire"}</h3>
+    <div class="sub">A questionnaire is a string of questions you have created, asked in this order. Changes reach every day that uses it.</div>
+    <label class="edit-field"><span>Name</span><input class="field" data-focus="questionnaire-name" value="${esc(m.name || "")}" oninput="state.modal.name=this.value"></label>
+    <div class="chain-members">${members || `<p class="hint">No questions in this questionnaire yet.</p>`}</div>
+    <div class="chain-pick">
+      <label class="edit-field"><span>Add a question</span><input class="field" type="text" autocomplete="off" data-focus="questionnaire-pick" placeholder="Search your questions" aria-label="Search questions to add to the questionnaire" value="${esc(m.pickQ || "")}" oninput="state.modal.pickQ=this.value;render()"></label>
+      <div class="chain-pick-results">
+        ${rows || `<div class="hint">${(state.questionBank || []).length ? "No other question matches that." : "No questions yet. Create your first one."}</div>`}
+        ${more}
+        <button type="button" class="opt create-row" onclick="createQuestionForQuestionnaire()">+ Create new question${q ? ` “${esc(String(m.pickQ).trim())}”` : ""}</button>
+      </div>
+    </div>
+    <button class="full save" type="button" onclick="saveQuestionnaire()">Save questionnaire</button>
+    <button class="full" type="button" onclick="state.modal=null;render()">Cancel</button>
+  </div></div>`;
+}
+function questionEditorHtml(m) {
+  return `<div class="modal-back" onclick="if(event.target===this){closeQuestionEditor()}"><div class="modal edit-modal chain-modal" onclick="event.stopPropagation()">
+    <h3>${m.questionId ? "Edit question" : "New question"}</h3>
+    <div class="sub">${m.parent ? "Saved to your questions, then added to this questionnaire." : "Saved to your questions. Add it to a questionnaire to ask it."}</div>
+    <label class="edit-field"><span>Question</span><input class="field" data-focus="question-text" maxlength="500" placeholder="How did you sleep last night?" value="${esc(m.text || "")}" oninput="state.modal.text=this.value" onkeydown="if(event.key==='Enter'){event.preventDefault();saveQuestion()}"></label>
+    <label class="edit-field"><span>Answer</span><select class="field" aria-label="Answer type" onchange="state.modal.answer_type=this.value">${ANSWER_TYPES.map(([value, label]) => `<option value="${value}" ${m.answer_type === value ? "selected" : ""}>${label}</option>`).join("")}</select></label>
+    <button class="full save" type="button" onclick="saveQuestion()">Save question</button>
+    <button class="full" type="button" onclick="closeQuestionEditor()">${m.parent ? "Back" : "Cancel"}</button>
+  </div></div>`;
 }
 function chainLibraryHtml() {
   const q = state.liftQ.toLowerCase();
@@ -6684,6 +7374,8 @@ function openChainFromDay(date, instance) {
         name: it.name,
         sets: fromTemplate.sets,
         reps: fromTemplate.reps,
+        time: fromTemplate.time,
+        distance: fromTemplate.distance,
         notes: fromTemplate.notes
       });
     })
@@ -6907,7 +7599,8 @@ async function loadExercises() {
     state.serverExercises = list;
     markHiddenExercises();
     list.forEach((e) => syncCatalogExercise(e));
-    await loadChains();
+    refreshQuestionnaireItems();
+    await Promise.all([loadChains(), loadQuestions()]);
     render();
   } catch (err) { console.error(err); }
 }
@@ -7994,6 +8687,8 @@ function chainMemberDraft(member) {
     name: member.name || exercise.name || "Exercise",
     sets: member.sets == null || member.sets === "" ? "" : String(member.sets),
     reps: member.reps || "",
+    time: member.time || "",
+    distance: member.distance || "",
     notes: member.notes || ""
   };
 }
@@ -8005,6 +8700,8 @@ function chainMemberPayload(mem) {
     name: mem.name,
     sets: sets === "" || isNaN(parsed) ? null : parsed,
     reps: chainText(mem && mem.reps),
+    time: chainText(mem && mem.time).replace(/s$/i, ""),
+    distance: chainText(mem && mem.distance),
     notes: mem && mem.notes != null ? String(mem.notes) : ""
   };
 }
@@ -8025,6 +8722,8 @@ function chainEditorHtml(m) {
       <button type="button" onclick="removeChainMember(${index})">Remove</button>
       <label class="chain-field">Sets <input aria-label="Sets for ${esc(mem.name)}" value="${esc(mem.sets || "")}" oninput="setChainMemberField(${index}, 'sets', this.value)"></label>
       <label class="chain-field">Reps <input aria-label="Reps for ${esc(mem.name)}" value="${esc(mem.reps || "")}" oninput="setChainMemberField(${index}, 'reps', this.value)"></label>
+      <label class="chain-field">Time (s) <input aria-label="Time in seconds for ${esc(mem.name)}" inputmode="decimal" value="${esc(mem.time || "")}" oninput="setChainMemberField(${index}, 'time', this.value)"></label>
+      <label class="chain-field">Distance (${esc(distanceAbbr(displayDistanceUnit()))}) <input aria-label="Distance for ${esc(mem.name)}" inputmode="decimal" value="${esc(mem.distance || "")}" oninput="setChainMemberField(${index}, 'distance', this.value)"></label>
       <label class="chain-field chain-notes">Notes <input aria-label="Notes for ${esc(mem.name)}" value="${esc(mem.notes || "")}" oninput="setChainMemberField(${index}, 'notes', this.value)"></label>
     </div>`).join("");
   const rows = options.map((row) => `<button type="button" class="opt" onclick="addChainMember(${row.id})"><span class="opt-name">${esc(row.name)}</span>${videoMark(row.video_url)}<span class="tag">${esc(categoryLabel(row.category))}</span></button>`).join("");
@@ -8032,6 +8731,7 @@ function chainEditorHtml(m) {
   return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render()}"><div class="modal edit-modal chain-modal" onclick="event.stopPropagation()">
     <h3>${m.chainId ? "Edit chain" : "New chain"}</h3>
     <div class="sub">A chain groups library exercises. It has its own name and no video. Saving an existing chain asks which days change.</div>
+    <div class="hint">Fill in reps, time, or distance for an exercise and it tracks exactly the ones you fill. Leave all three blank to use the exercise's own defaults.</div>
     <label class="edit-field"><span>Name</span><input class="field" data-focus="chain-name" value="${esc(m.name || "")}" oninput="state.modal.name=this.value"></label>
     <label class="edit-field"><span>Kind</span><select class="field" onchange="state.modal.kind=this.value">${kinds.map((kind) => `<option ${m.kind === kind ? "selected" : ""}>${esc(kind)}</option>`).join("")}</select></label>
     <div class="chain-members">${members || `<p class="hint">No exercises in this chain yet. The same exercise can be added twice.</p>`}</div>
@@ -8068,6 +8768,8 @@ function modalHtml() {
   if (!m) return "";
   if (m.type === "edit") return editModalHtml(m);
   if (m.type === "chain") return chainEditorHtml(m);
+  if (m.type === "questionnaire") return questionnaireEditorHtml(m);
+  if (m.type === "question") return questionEditorHtml(m);
   if (m.type === "chain-scope") return chainScopeHtml(m);
   if (m.type === "editor-name") {
     return `<div class="modal-back"><div class="modal" onclick="event.stopPropagation()"><h3>Name this exercise</h3><input class="field" data-focus="editor-name" aria-label="Exercise name" value="${esc(m.name || "")}" oninput="state.modal.name=this.value"><button class="full save" type="button" onclick="acceptEditorName()">Save</button><button class="full" type="button" onclick="dismissEditorName()">Cancel</button></div></div>`;
