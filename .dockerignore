@@ -1,0 +1,13 @@
+# Kept out of the container image: none of this is needed at runtime.
+.git
+.github
+.venv
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+tests/
+*.mp4
+README.md
+Dockerfile
+.dockerignore

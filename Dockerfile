@@ -6,11 +6,9 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PORT=8000
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    libpq-dev \
-    && rm -rf /var/lib/apt/lists/*
+# No compiler or system libraries are needed: every dependency in
+# requirements.txt ships a prebuilt wheel (psycopg and psycopg2 use their
+# "binary" packages, which bundle libpq).
 
 # Install python dependencies
 COPY requirements.txt .
