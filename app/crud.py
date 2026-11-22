@@ -59,6 +59,22 @@ def create_access_token(user_id: int, role: str = "athlete", expires_hours: Opti
     signature = hmac.new(settings.JWT_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
     return f"{payload_b64}.{signature}"
 
+def session_hours(user) -> int:
+    """How long a sign-in lasts. Only an athlete-only account gets the long session."""
+    roles = set(getattr(user, "roles", None) or [])
+    role = getattr(user, "role", "") or ""
+    if role == "student":
+        role = "athlete"
+    if role:
+        roles.add(role)
+    roles = {"athlete" if r == "student" else r for r in roles}
+    if roles == {"athlete"}:
+        return max(1, settings.ATHLETE_SESSION_DAYS) * 24
+    return settings.ACCESS_TOKEN_EXPIRE_HOURS
+
+def create_session_token(user) -> str:
+    return create_access_token(user.id, user.role, expires_hours=session_hours(user))
+
 def decode_access_token(token: str) -> Optional[dict]:
     try:
         parts = token.split(".")
