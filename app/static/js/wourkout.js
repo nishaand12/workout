@@ -687,6 +687,11 @@ function render() {
     root.innerHTML = renderLoginGate() + (state.toast ? `<div class="toast">${esc(state.toast)}</div>` : "") + modalHtml();
     return;
   }
+  if (state.auth.returnToApp && state.auth.user && !state.auth.user.needs_onboarding) {
+    root.className = "light";
+    root.innerHTML = appSignInDoneHtml();
+    return;
+  }
   if (state.auth.user && state.auth.user.needs_onboarding) {
     root.className = "light";
     root.innerHTML = renderCodeGate() + (state.toast ? `<div class="toast">${esc(state.toast)}</div>` : "") + modalHtml();
@@ -9996,6 +10001,7 @@ async function handleGoogleLogin() {
   state.auth.error = "";
   if (window.supabaseClient) {
     try {
+      noteAppSignIn();
       const { error } = await window.supabaseClient.auth.signInWithOAuth({
         provider: "google",
         options: {
@@ -10057,8 +10063,10 @@ async function syncSupabaseSession(accessToken) {
       access_token: accessToken,
       role: state.auth.roleChoice || "athlete"
     });
+    const sheet = inAppSignInSheet();
     await enterApp(data);
-    toast("Welcome, " + (data.user.name || data.user.username));
+    if (sheet) state.auth.returnToApp = true;
+    else toast("Welcome, " + (data.user.name || data.user.username));
   } catch (err) {
     state.auth.error = err.message || "Failed to sync with Supabase session";
   } finally {
@@ -10130,6 +10138,8 @@ async function handleResetPassword(e) {
 function handleLogout(reason) {
   localStorage.removeItem("wourkout_token");
   localStorage.removeItem("wourkout_token_at");
+  localStorage.removeItem(APP_SIGN_IN_KEY);
+  state.auth.returnToApp = false;
   state.auth.token = null;
   state.auth.user = null;
   state.auth.isAuthenticated = false;
@@ -10176,32 +10186,102 @@ async function initAuth() {
     }
   }
 
-  // Check stored JWT token
+  await resumeStoredSession();
+  render();
+  watchForAppSignIn();
+}
+// Sign in with the token this device already holds, if it has one.
+async function resumeStoredSession() {
   const token = localStorage.getItem("wourkout_token");
-  if (token) {
-    state.auth.token = token;
-    try {
-      const me = await api("GET", "/api/auth/me");
-      state.auth.isAuthenticated = true;
-      renewSession();
-      land(me);
-      if (!me.needs_onboarding) {
-        if (state.role === "athlete") {
-          await loadMySchedule();
-          await loadOwnJournal();
-        } else {
-          await loadGymContext();
-          applyBuildQuery();
-        }
+  if (!token) return false;
+  state.auth.token = token;
+  try {
+    const me = await api("GET", "/api/auth/me");
+    state.auth.isAuthenticated = true;
+    renewSession();
+    land(me);
+    if (!me.needs_onboarding) {
+      if (state.role === "athlete") {
+        await loadMySchedule();
+        await loadOwnJournal();
+      } else {
+        await loadGymContext();
+        applyBuildQuery();
       }
-    } catch (err) {
-      console.warn("Session expired or invalid:", err);
-      localStorage.removeItem("wourkout_token");
-      state.auth.token = null;
-      state.auth.user = null;
-      state.auth.isAuthenticated = false;
     }
+    return true;
+  } catch (err) {
+    console.warn("Session expired or invalid:", err);
+    localStorage.removeItem("wourkout_token");
+    state.auth.token = null;
+    state.auth.user = null;
+    state.auth.isAuthenticated = false;
+    return false;
   }
+}
+// Google sign-in from the home screen app. An iPhone shows Google in a sheet over the app and
+// finishes the sign-in inside that sheet, leaving the app underneath on its sign-in screen.
+// The app notes that it sent the athlete off to Google, the sheet then tells them to close it,
+// and the app picks up the finished sign-in from the storage the two share.
+const APP_SIGN_IN_KEY = "wourkout_app_sign_in";
+const APP_SIGN_IN_WINDOW_MS = 15 * 60 * 1000;
+function appSignInPending() {
+  try {
+    const at = +localStorage.getItem(APP_SIGN_IN_KEY) || 0;
+    return at > 0 && Date.now() - at < APP_SIGN_IN_WINDOW_MS;
+  } catch (e) { return false; }
+}
+function noteAppSignIn() {
+  if (!isInstalledApp()) return;
+  try { localStorage.setItem(APP_SIGN_IN_KEY, String(Date.now())); } catch (e) { /* ignore */ }
+  watchForAppSignIn();
+}
+async function adoptAppSignIn() {
+  if (adoptAppSignIn.busy || !isInstalledApp()) return false;
+  if (state.auth.isAuthenticated) return false;
+  let token = null;
+  try { token = localStorage.getItem("wourkout_token"); } catch (e) { return false; }
+  if (!token) return false;
+  adoptAppSignIn.busy = true;
+  try {
+    const ok = await resumeStoredSession();
+    if (ok) {
+      try { localStorage.removeItem(APP_SIGN_IN_KEY); } catch (e) { /* ignore */ }
+      state.auth.error = "";
+    }
+    render();
+    return ok;
+  } finally {
+    adoptAppSignIn.busy = false;
+  }
+}
+function watchForAppSignIn() {
+  if (watchForAppSignIn.timer || !isInstalledApp() || state.auth.isAuthenticated || !appSignInPending()) return;
+  watchForAppSignIn.timer = setInterval(() => {
+    if (state.auth.isAuthenticated || !appSignInPending()) {
+      clearInterval(watchForAppSignIn.timer);
+      watchForAppSignIn.timer = null;
+      return;
+    }
+    adoptAppSignIn();
+  }, 1500);
+}
+// True in the sheet: the sign-in was started from the home screen app, and this is not it.
+function inAppSignInSheet() {
+  return !isInstalledApp() && appSignInPending();
+}
+function appSignInDoneHtml() {
+  return `<div class="auth-gate"><div class="auth-card app-return">
+    <div class="auth-logo">w<span>ourkout</span></div>
+    <div class="app-return-tick" aria-hidden="true">✓</div>
+    <h2>You are signed in</h2>
+    <p>Close this window to go back to the app: tap <b>✕</b> or <b>Done</b> in the top corner.</p>
+    <button type="button" class="auth-link" onclick="stayInSignInSheet()">Keep using this window instead</button>
+  </div></div>`;
+}
+function stayInSignInSheet() {
+  try { localStorage.removeItem(APP_SIGN_IN_KEY); } catch (e) { /* ignore */ }
+  state.auth.returnToApp = false;
   render();
 }
 
@@ -10218,8 +10298,13 @@ window.addEventListener("beforeinstallprompt", (ev) => {
   if (state.modal && state.modal.type === "install") render();
 });
 window.addEventListener("appinstalled", () => { installPromptEvent = null; });
+window.stayInSignInSheet = stayInSignInSheet;
+window.addEventListener("storage", (ev) => { if (!ev.key || ev.key === "wourkout_token") adoptAppSignIn(); });
+window.addEventListener("focus", () => adoptAppSignIn());
+window.addEventListener("pageshow", () => adoptAppSignIn());
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") { appHiddenAt = Date.now(); return; }
+  adoptAppSignIn();
   appResumed();
 });
 window.addItem = addItem;

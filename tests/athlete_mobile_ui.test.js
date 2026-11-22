@@ -59,7 +59,7 @@ vm.createContext(sandbox);
 
 const source = fs.readFileSync("app/static/js/build-order.js", "utf8") + "\n" + fs.readFileSync("app/static/js/wourkout.js", "utf8") + `
 globalThis.__lib = {
-  nav, mineView, athleteTabsHtml, installBannerHtml, installHelpHtml, openInstallHelp, dismissInstallBanner, devicePlatform, renewSession, weekRangeLabel, drawerHtml, modalHtml, entryItem, athleteDayCol, sundayOf, addDays, APP_TODAY, setMineMode, shiftMine, mineToday, mineDayStatus, mineMonthHtml, shiftMonth, mineMode, todayIso, dateInZone,
+  nav, mineView, athleteTabsHtml, installBannerHtml, installHelpHtml, openInstallHelp, dismissInstallBanner, devicePlatform, renewSession, weekRangeLabel, drawerHtml, modalHtml, entryItem, athleteDayCol, sundayOf, addDays, APP_TODAY, setMineMode, shiftMine, mineToday, mineDayStatus, mineMonthHtml, shiftMonth, mineMode, todayIso, dateInZone, noteAppSignIn, adoptAppSignIn, inAppSignInSheet, appSignInPending, syncSupabaseSession, appSignInDoneHtml, stayInSignInSheet, handleLogout,
   state, item, ensureDay, addChainToDay, selectChain, chainBoxPop, closeChainBox, toggleTrack, setCell, changeSets,
   doseKeys, scriptLine, chainEditorHtml, openChainEditor, chainMemberPayload, itemNotes: typeof itemNotes === "function" ? itemNotes : null,
   weekPhases, phaseBannerStyle, phaseTagsHtml, weekNoteHtml, weekNoteOpen, phasesPanelHtml, pickPhaseRange, savePhaseDraft,
@@ -232,6 +232,54 @@ state.gymContext = { athletes: [], calendars: [] };
   sandbox.Intl.DateTimeFormat = fake;
   try { assert.equal(lib.todayIso(evening), "2026-11-22"); } finally { sandbox.Intl.DateTimeFormat = real; }
   assert.ok(/^\d{4}-\d{2}-\d{2}$/.test(lib.APP_TODAY));
+}
+
+// Google sign-in from the home screen app finishes in a sheet. The sheet says to close it and
+// the app underneath picks the sign-in up.
+{
+  const me = { id: 7, role: "athlete", name: "Avery Athlete", username: "avery" };
+  sandbox.__setApi(async (method, url) => {
+    calls.push({ method, url });
+    if (url === "/api/auth/sync-supabase") return { access_token: "google-token", user: me };
+    if (url === "/api/auth/me") return me;
+    if (url === "/api/auth/refresh") return { access_token: "google-token", user: me };
+    return [];
+  });
+  lib.handleLogout();
+  store.data = {};
+
+  // In the app: leaving for Google is noted.
+  sandbox.navigator.standalone = true;
+  lib.noteAppSignIn();
+  assert.ok(lib.appSignInPending());
+  assert.equal(lib.inAppSignInSheet(), false, "the app itself is not the sheet");
+  assert.equal(await lib.adoptAppSignIn(), false, "nothing to pick up yet");
+
+  // In the sheet: same storage, not the installed app.
+  sandbox.navigator.standalone = false;
+  assert.equal(lib.inAppSignInSheet(), true);
+  await lib.syncSupabaseSession("supabase-token");
+  assert.equal(store.data.wourkout_token, "google-token");
+  assert.equal(state.auth.returnToApp, true);
+  assert.ok(lib.appSignInDoneHtml().includes("Close this window"));
+
+  // Back in the app, still on its sign-in screen.
+  sandbox.navigator.standalone = true;
+  state.auth.isAuthenticated = false;
+  state.auth.user = null;
+  state.auth.token = null;
+  state.auth.returnToApp = false;
+  assert.equal(await lib.adoptAppSignIn(), true);
+  assert.equal(state.auth.isAuthenticated, true);
+  assert.equal(state.auth.user.id, 7);
+  assert.equal(lib.appSignInPending(), false, "the note is cleared once used");
+
+  // An ordinary browser sign-in is not told to close anything.
+  sandbox.navigator.standalone = false;
+  lib.handleLogout();
+  await lib.syncSupabaseSession("supabase-token");
+  assert.ok(!state.auth.returnToApp);
+  assert.equal(await lib.adoptAppSignIn(), false, "only the installed app picks up a sign-in");
 }
 
 console.log("athlete mobile ui tests passed");
