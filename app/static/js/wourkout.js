@@ -520,8 +520,23 @@ function doseArray(it, key) {
   while (arr.length < sets) arr.push(arr.length ? arr[arr.length - 1] : "");
   return arr;
 }
+// A lone "A" typed into reps, time, or distance becomes as many, as long, or as far as possible.
+const EFFORT_FILL = { reps: "AMAP", time: "ALAP", distance: "AFAP" };
+function isEffortWord(value) {
+  return /^A[MLF]AP\b/i.test(String(value == null ? "" : value).trim());
+}
+function effortFill(ev, el, key) {
+  if (!el) return "";
+  const word = EFFORT_FILL[key];
+  const deleting = ev && /^(delete|history)/.test(ev.inputType || "");
+  if (word && !deleting && /^a$/i.test(el.value.trim())) el.value = word;
+  const wrap = el.closest ? el.closest(".set-val") : null;
+  if (wrap) wrap.classList.toggle("is-effort", isEffortWord(el.value));
+  return el.value;
+}
 function doseMark(key, value) {
   const raw = String(value == null || value === "" ? (key === "reps" ? "1" : "0") : value);
+  if (isEffortWord(raw)) return raw;
   if (key === "time") return raw.replace(/s$/i, "") + "s";
   if (key === "distance") return raw + " " + distanceAbbr(displayDistanceUnit());
   return raw;
@@ -643,6 +658,9 @@ function render() {
   const selEnd = active && active.selectionEnd;
   const phaseScroll = document.querySelector('.build-panel[data-panel="phases"] .bp-scroll');
   const phaseScrollTop = phaseScroll ? phaseScroll.scrollTop : 0;
+  const chainScroll = document.querySelector(".editor.chain-box");
+  const chainScrollKey = chainScroll ? chainScroll.dataset.chainBox : "";
+  const chainScrollTop = chainScroll ? chainScroll.scrollTop : 0;
   document.querySelectorAll("body > .search-pop").forEach((el) => el.remove());
   if (!state.auth || !state.auth.isAuthenticated) {
     root.className = "light";
@@ -666,6 +684,10 @@ function render() {
     // The editor first: the swap search hangs off the exercise name inside it.
     placeEditorPop();
     placeSearchPop();
+    if (chainScrollTop) {
+      const chainBox = document.querySelector(".editor.chain-box");
+      if (chainBox && chainBox.dataset.chainBox === chainScrollKey) chainBox.scrollTop = chainScrollTop;
+    }
     if (phaseScrollTop) {
       const panel = document.querySelector('.build-panel[data-panel="phases"] .bp-scroll');
       if (panel) panel.scrollTop = phaseScrollTop;
@@ -745,6 +767,8 @@ function placeEditorPop() {
   const minTop = (header ? header.getBoundingClientRect().bottom : 0) + margin;
   const vw = window.innerWidth;
   const vh = window.innerHeight;
+  // A long chain scrolls inside its box, which never grows past the window.
+  if (box) pop.style.maxHeight = Math.max(160, vh - minTop - margin) + "px";
   const pw = pop.offsetWidth;
   const ph = pop.offsetHeight;
   const column = (day || anchor).getBoundingClientRect();
@@ -2004,6 +2028,9 @@ function phaseTint(color, alpha) {
   const n = parseInt(hex.slice(1), 16);
   return "rgba(" + ((n >> 16) & 255) + "," + ((n >> 8) & 255) + "," + (n & 255) + "," + alpha + ")";
 }
+function phaseEdge(color) {
+  return /^#[0-9a-f]{6}$/i.test(color || "") ? color : PHASE_COLORS[0];
+}
 // The week banner takes its phase's colour. A week split between phases is split the same way.
 function phaseBannerStyle(week) {
   if (!weekPhases(week).length) return "";
@@ -2438,7 +2465,7 @@ function buildView() {
           <div class="crumbs">Calendars / ${esc(currentTarget.name)}</div>
           <div class="athlete-pick">
             <button type="button" class="athlete-name" id="build-athlete" onclick="toggleAthleteMenu(event)">${esc(currentTarget.name)} ▾</button>
-            ${state.athleteMenu ? `<div class="menu athlete-menu" id="build-athlete-menu">${buildAthletes().map((a) => `<button type="button" class="${a.id === state.athleteId ? "on" : ""}" onclick="switchAthlete('${esc(a.id)}')">${a.id === state.athleteId ? "✓ " : ""}${esc(a.name)}</button>`).join("")}</div>` : ""}
+            ${state.athleteMenu ? `<div class="menu athlete-menu" id="build-athlete-menu">${buildAthletes().map((a) => `<button type="button" class="${a.id === state.athleteId ? "on" : ""}" onclick="switchAthlete('${esc(a.id)}')">${a.id === state.athleteId ? "✓ " : ""}${esc(a.name)}</button>`).join("")}${state.role === "coach" ? `<button type="button" class="athlete-menu-new" onclick="openNewCalendar(event)">+ Create new calendar</button>` : ""}</div>` : ""}
           </div>
         </div>
         <div class="sub-actions">
@@ -2656,7 +2683,10 @@ function dayCol(date) {
     : `<button class="recur" onclick="openRecur('${date}', event)">${recurLabel}</button>`;
   const daySelected = state.pick && state.pick.level === "day" && state.pick.date === date;
   const dayHot = clipHotMatches(date, { level: "day" });
-  return `<div class="day ${focused}${daySelected ? " day-selected" : ""}${dayHot ? " clip-hot" : ""}" data-day="${date}" style="border-left:3px solid ${day.color || "#3b82f6"}" onmouseenter="state.hoverDay='${date}'" onclick="state.focusDay='${date}';render()" ondragover="dragOver(event)" ondrop="dropOn(event,'${date}',null)">
+  // A day inside a phase wears the phase's colour on its edge and its outline.
+  const phase = phaseOn(date);
+  const edge = phase ? phaseEdge(phase.color) : "";
+  return `<div class="day ${focused}${daySelected ? " day-selected" : ""}${dayHot ? " clip-hot" : ""}${edge ? " in-phase" : ""}" data-day="${date}" style="border-left:3px solid ${edge || day.color || "#3b82f6"}${edge ? ";--day-accent:" + edge : ""}" onmouseenter="state.hoverDay='${date}'" onclick="state.focusDay='${date}';render()" ondragover="dragOver(event)" ondrop="dropOn(event,'${date}',null)">
     <div class="day-top"><button type="button" class="day-date" onclick="selectDay('${date}', event)">${fmtDay(date)}</button>
       <span class="tools">
         <button class="iconbtn" title="Copy Workout" onclick="openCopy('${date}','workout')">⧉</button>
@@ -2779,7 +2809,7 @@ function chainBoxPop() {
   const instance = esc(box.instance);
   const letters = LETTERS.concat([""]).map((L) => `<button type="button" class="pill${(head.letter || "") === L ? " on" : ""}" aria-pressed="${(head.letter || "") === L ? "true" : "false"}" aria-label="${L ? "Letter " + L : "No letter"}" onclick="setChainLetter('${date}','${instance}','${L}')">${L || "–"}</button>`).join("");
   const width = group.reduce((most, it) => Math.max(most, (it.type || "lift") === "lift" && !isTextOnlyItem(it) ? editorFrameWidth(it) : 400), 400);
-  return `<div class="editor build-editor chain-box" style="width:min(${width}px, calc(100vw - 32px))" onclick="editorClick(event)">
+  return `<div class="editor build-editor chain-box" data-chain-box="${esc(date)}|${instance}" style="width:min(${width}px, calc(100vw - 32px))" onclick="editorClick(event)">
     <div class="editor-h">
       ${letterBadge(head.letter)}
       <span class="name">${esc(head.chainName || "Chain")}</span>
@@ -3496,7 +3526,7 @@ function propRow(date, it, key) {
     const shown = time ? raw.replace(/s$/i, "") : raw;
     const suffix = time ? `<span class="sec-suffix">s</span>` : dist ? `<span class="sec-suffix">${esc(distanceAbbr(displayDistanceUnit()))}</span>` : "";
     const hint = key === "intensity" ? ' placeholder="7 or 5-7"' : "";
-    return `<td><span class="set-val${time || dist ? " is-time" : ""}"><input aria-label="${label} set ${i + 1}" data-focus="${key}-${it.id}-${i}" data-set-field="${key}" autocomplete="off"${hint} value="${esc(shown)}" oninput="setCell('${date}','${it.id}','${key}',${i}, this.value)" onchange="commitSetCell('${date}','${it.id}','${key}',${i});renderSoon()" onblur="commitSetCell('${date}','${it.id}','${key}',${i})" onkeydown="tabSetField(event,'${date}','${it.id}','${key}',${i})" onfocus="this.select()">${suffix}</span></td>`;
+    return `<td><span class="set-val${time || dist ? " is-time" : ""}${(time || dist) && isEffortWord(shown) ? " is-effort" : ""}"><input aria-label="${label} set ${i + 1}" data-focus="${key}-${it.id}-${i}" data-set-field="${key}" autocomplete="off"${hint} value="${esc(shown)}" oninput="setCell('${date}','${it.id}','${key}',${i}, effortFill(event, this, '${key}'))" onchange="commitSetCell('${date}','${it.id}','${key}',${i});renderSoon()" onblur="commitSetCell('${date}','${it.id}','${key}',${i})" onkeydown="tabSetField(event,'${date}','${it.id}','${key}',${i})" onfocus="this.select()">${suffix}</span></td>`;
   }).join("");
   const kindPick = key === "intensity"
     ? `<select aria-label="Intensity kind" onchange="setIntensityKind('${date}','${it.id}', this.value)">${["RPE", "% of 1-rep max", "RIR"].map((opt) => `<option ${intensityChoice(it.intensityKind) === opt ? "selected" : ""}>${esc(opt)}</option>`).join("")}</select>`
@@ -3623,6 +3653,8 @@ function paintSetFields(it, key) {
     const el = document.querySelector('[data-focus="' + key + "-" + it.id + "-" + j + '"]');
     if (!el || document.activeElement === el) continue;
     el.value = arr[j] == null ? "" : String(arr[j]);
+    const wrap = el.closest ? el.closest(".set-val") : null;
+    if (wrap) wrap.classList.toggle("is-effort", isEffortWord(el.value));
   }
 }
 // Leaving set 1 ends the run, so the next visit works out afresh which sets still match it.
@@ -3832,6 +3864,7 @@ function openInfo(date, id) {
     date,
     id,
     fields: [{ key: "text", label: "Additional info", value: it.note || "", multiline: true, maxlength: 255 }],
+    focus: "text",
     onSave: () => saveInfo()
   });
 }
@@ -7931,6 +7964,37 @@ async function addCalendar() {
   }
   render();
 }
+// From the Build tab's calendar menu: name a calendar, then land on it ready to program.
+function openNewCalendar(ev) {
+  if (ev) ev.stopPropagation();
+  state.athleteMenu = false;
+  openEdit({
+    title: "Create new calendar",
+    hint: "A blank calendar. Add athletes to it from Calendars.",
+    fields: [{ key: "name", label: "Calendar name", value: "", placeholder: "e.g. Fall hockey block", maxlength: 255 }],
+    focus: "name",
+    onSave: (values) => createCalendarFromBuild(values.name)
+  });
+}
+async function createCalendarFromBuild(rawName) {
+  const name = String(rawName || "").trim();
+  if (!name) { toast("Name the calendar"); state.pendingFocus = "edit-name"; render(); return; }
+  if (createCalendarFromBuild.busy) return;
+  createCalendarFromBuild.busy = true;
+  try {
+    const made = await api("POST", "/api/calendars", { name });
+    await loadGymContext();
+    state.modal = null;
+    toast("Calendar created");
+    if (made && made.id != null && buildAthletes().some((a) => a.id === "cal:" + made.id)) switchAthlete("cal:" + made.id);
+    else render();
+  } catch (err) {
+    toast(err.message || "Could not create that calendar");
+    render();
+  } finally {
+    createCalendarFromBuild.busy = false;
+  }
+}
 // Rename a calendar and tick exactly who follows it.
 function editCalendar(id) {
   const target = buildAthletes().find((a) => a.id === id);
@@ -8610,7 +8674,15 @@ function openEdit(opts) {
     liveCategory: !!opts.liveCategory,
     parent: opts.parent || null
   };
+  if (opts.focus) state.pendingFocus = "edit-" + opts.focus;
   render();
+  if (opts.focus) {
+    // The caret lands after whatever is already written.
+    const el = document.querySelector('[data-focus="edit-' + opts.focus + '"]');
+    if (el && el.setSelectionRange) {
+      try { el.setSelectionRange(el.value.length, el.value.length); } catch (e) { /* ignore */ }
+    }
+  }
 }
 function setEditField(key, value) {
   const m = state.modal;
@@ -8674,7 +8746,7 @@ function editModalHtml(m) {
       const bounds = f.min != null ? ` min="${esc(f.min)}"` : "";
       const maxBound = f.max != null ? ` max="${esc(f.max)}"` : "";
       const placeholder = f.placeholder ? ` placeholder="${esc(f.placeholder)}"` : "";
-      control = `<input class="field" type="${esc(f.type || "text")}" data-edit-key="${key}" data-focus="edit-${key}" value="${esc(f.value)}"${max}${bounds}${maxBound}${placeholder} oninput="setEditField('${key}', this.value)">`;
+      control = `<input class="field" type="${esc(f.type || "text")}" data-edit-key="${key}" data-focus="edit-${key}" value="${esc(f.value)}"${max}${bounds}${maxBound}${placeholder}${(m.fields || []).length === 1 ? ` onkeydown="if(event.key==='Enter'){event.preventDefault();saveEdit()}"` : ""} oninput="setEditField('${key}', this.value)">`;
     }
     return `<label class="edit-field${span}"><span>${esc(f.label)}</span>${control}${f.hint ? `<div class="hint">${esc(f.hint)}</div>` : ""}</label>`;
   }).join("");
@@ -8721,9 +8793,9 @@ function chainEditorHtml(m) {
       <button type="button" onclick="moveChainMember(${index}, 1)">Down</button>
       <button type="button" onclick="removeChainMember(${index})">Remove</button>
       <label class="chain-field">Sets <input aria-label="Sets for ${esc(mem.name)}" value="${esc(mem.sets || "")}" oninput="setChainMemberField(${index}, 'sets', this.value)"></label>
-      <label class="chain-field">Reps <input aria-label="Reps for ${esc(mem.name)}" value="${esc(mem.reps || "")}" oninput="setChainMemberField(${index}, 'reps', this.value)"></label>
-      <label class="chain-field">Time (s) <input aria-label="Time in seconds for ${esc(mem.name)}" inputmode="decimal" value="${esc(mem.time || "")}" oninput="setChainMemberField(${index}, 'time', this.value)"></label>
-      <label class="chain-field">Distance (${esc(distanceAbbr(displayDistanceUnit()))}) <input aria-label="Distance for ${esc(mem.name)}" inputmode="decimal" value="${esc(mem.distance || "")}" oninput="setChainMemberField(${index}, 'distance', this.value)"></label>
+      <label class="chain-field">Reps <input aria-label="Reps for ${esc(mem.name)}" value="${esc(mem.reps || "")}" oninput="setChainMemberField(${index}, 'reps', effortFill(event, this, 'reps'))"></label>
+      <label class="chain-field">Time (s) <input aria-label="Time in seconds for ${esc(mem.name)}" value="${esc(mem.time || "")}" oninput="setChainMemberField(${index}, 'time', effortFill(event, this, 'time'))"></label>
+      <label class="chain-field">Distance (${esc(distanceAbbr(displayDistanceUnit()))}) <input aria-label="Distance for ${esc(mem.name)}" value="${esc(mem.distance || "")}" oninput="setChainMemberField(${index}, 'distance', effortFill(event, this, 'distance'))"></label>
       <label class="chain-field chain-notes">Notes <input aria-label="Notes for ${esc(mem.name)}" value="${esc(mem.notes || "")}" oninput="setChainMemberField(${index}, 'notes', this.value)"></label>
     </div>`).join("");
   const rows = options.map((row) => `<button type="button" class="opt" onclick="addChainMember(${row.id})"><span class="opt-name">${esc(row.name)}</span>${videoMark(row.video_url)}<span class="tag">${esc(categoryLabel(row.category))}</span></button>`).join("");
@@ -8942,6 +9014,8 @@ window.cycleSuperset = cycleSuperset;
 window.duplicateItem = duplicateItem;
 window.editDetail = editDetail;
 window.openInfo = openInfo;
+window.effortFill = effortFill;
+window.openNewCalendar = openNewCalendar;
 window.renameDay = renameDay;
 window.openDayMenu = openDayMenu;
 window.openRecur = openRecur;
