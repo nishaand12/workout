@@ -92,6 +92,15 @@ class AthleteSessionTests(unittest.TestCase):
         self.assertIn("viewport-fit=cover", index)
 
 
+class EasternDateTests(unittest.TestCase):
+    def test_a_late_evening_utc_stamp_is_still_the_same_eastern_day(self):
+        from datetime import datetime
+        # 02:30 UTC on the 23rd is 9:30 pm on the 22nd in Toronto.
+        self.assertEqual(crud.eastern_date_iso(datetime(2026, 11, 23, 2, 30)), "2026-11-22")
+        self.assertEqual(crud.eastern_date_iso(datetime(2026, 11, 23, 15, 0)), "2026-11-23")
+        self.assertEqual(crud.eastern_date_iso(None), "")
+
+
 class AthleteMobileUiScriptTests(unittest.TestCase):
     def test_node_suite(self):
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

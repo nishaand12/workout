@@ -247,7 +247,27 @@ function blankDay(date, extra = {}) {
   };
 }
 
-const APP_TODAY = new Date().toISOString().slice(0, 10);
+// Today is the date where the person is, read from their device's time zone. A device that
+// will not say which zone it is in is treated as being on Eastern time (Toronto).
+const FALLBACK_TIME_ZONE = "America/Toronto";
+function dateInZone(when, timeZone) {
+  const parts = {};
+  new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" })
+    .formatToParts(when).forEach((part) => { parts[part.type] = part.value; });
+  if (!/^\d{4}$/.test(parts.year || "") || !parts.month || !parts.day) throw new Error("no date");
+  return parts.year + "-" + parts.month + "-" + parts.day;
+}
+function todayIso(when) {
+  const now = when || new Date();
+  try {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (zone) return dateInZone(now, zone);
+  } catch (e) { /* fall through to Eastern */ }
+  try { return dateInZone(now, FALLBACK_TIME_ZONE); } catch (e) { /* no zone data at all */ }
+  const pad = (n) => String(n).padStart(2, "0");
+  return now.getFullYear() + "-" + pad(now.getMonth() + 1) + "-" + pad(now.getDate());
+}
+const APP_TODAY = todayIso();
 
 function weekName(date) {
   const start = sundayOf(date);
@@ -1851,7 +1871,7 @@ async function renewSession() {
 let appHiddenAt = 0;
 function appResumed() {
   if (!state.auth || !state.auth.isAuthenticated) return;
-  if (new Date().toISOString().slice(0, 10) !== APP_TODAY) { window.location.reload(); return; }
+  if (todayIso() !== APP_TODAY) { window.location.reload(); return; }
   renewSession();
   const away = appHiddenAt ? Date.now() - appHiddenAt : 0;
   if (state.role === "athlete" && state.view === "mine" && away > 5 * 60 * 1000) {

@@ -6,7 +6,7 @@ import logging
 import os
 import re
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 from zoneinfo import ZoneInfo
 import httpx
@@ -583,8 +583,19 @@ def canonical_chain_kind(value: str) -> str:
     return ""
 
 
+# The server does not know where each person is, so its own dates are Eastern time (Toronto).
+EASTERN = ZoneInfo("America/Toronto")
+
 def eastern_today_iso() -> str:
-    return datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+    return datetime.now(EASTERN).date().isoformat()
+
+def eastern_date_iso(stamp) -> str:
+    """The Eastern calendar date of a stored timestamp. Stored timestamps are naive UTC."""
+    if not stamp:
+        return ""
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return stamp.astimezone(EASTERN).date().isoformat()
 
 
 def _chain_member_ids(members) -> List[int]:
@@ -3664,7 +3675,7 @@ def personal_bests(db: Session, viewer: User, user_id: Optional[int] = None) -> 
             "exercise_name": exercise.name,
             "weight": log.weight,
             "reps": reps,
-            "date": workout.calendar_date or (logged.strftime("%Y-%m-%d") if logged else ""),
+            "date": workout.calendar_date or eastern_date_iso(logged),
             "load_unit": "lbs" if str(person.load_unit or "").lower() == "lbs" else "kg",
         }
     return sorted(best.values(), key=lambda row: (row["user_name"].lower(), row["exercise_name"].lower()))
@@ -4035,7 +4046,7 @@ def get_gym_activity(db: Session, viewer: User) -> dict:
             "workout_title": w.title if w else "Workout",
             "user_id": s.user_id,
             "user_name": u.name if u else "Athlete",
-            "date": s.start_time.strftime("%Y-%m-%d") if s.start_time else "",
+            "date": eastern_date_iso(s.start_time),
             "completed": bool(s.completed),
             "athlete_note": s.athlete_note or "",
             "coach_note": s.notes or "",

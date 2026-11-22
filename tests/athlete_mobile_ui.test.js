@@ -59,7 +59,7 @@ vm.createContext(sandbox);
 
 const source = fs.readFileSync("app/static/js/build-order.js", "utf8") + "\n" + fs.readFileSync("app/static/js/wourkout.js", "utf8") + `
 globalThis.__lib = {
-  nav, mineView, athleteTabsHtml, installBannerHtml, installHelpHtml, openInstallHelp, dismissInstallBanner, devicePlatform, renewSession, weekRangeLabel, drawerHtml, modalHtml, entryItem, athleteDayCol, sundayOf, addDays, APP_TODAY,
+  nav, mineView, athleteTabsHtml, installBannerHtml, installHelpHtml, openInstallHelp, dismissInstallBanner, devicePlatform, renewSession, weekRangeLabel, drawerHtml, modalHtml, entryItem, athleteDayCol, sundayOf, addDays, APP_TODAY, todayIso, dateInZone,
   state, item, ensureDay, addChainToDay, selectChain, chainBoxPop, closeChainBox, toggleTrack, setCell, changeSets,
   doseKeys, scriptLine, chainEditorHtml, openChainEditor, chainMemberPayload, itemNotes: typeof itemNotes === "function" ? itemNotes : null,
   weekPhases, phaseBannerStyle, phaseTagsHtml, weekNoteHtml, weekNoteOpen, phasesPanelHtml, pickPhaseRange, savePhaseDraft,
@@ -159,6 +159,23 @@ state.gymContext = { athletes: [], calendars: [] };
   store.data.wourkout_token_at = "0";
   await lib.renewSession();
   assert.equal(calls.filter((c) => c.url === "/api/auth/refresh").length, 2, "signed out: nothing to renew");
+}
+
+// Today is the date where the person is, not the date in UTC.
+{
+  const evening = new Date("2026-11-23T02:30:00Z"); // 9:30 pm on the 22nd in Toronto
+  assert.equal(lib.dateInZone(evening, "America/Toronto"), "2026-11-22");
+  assert.equal(lib.dateInZone(evening, "America/Vancouver"), "2026-11-22");
+  assert.equal(lib.dateInZone(evening, "Europe/London"), "2026-11-23");
+  assert.equal(lib.dateInZone(evening, "Asia/Tokyo"), "2026-11-23");
+  const deviceZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  assert.equal(lib.todayIso(evening), lib.dateInZone(evening, deviceZone));
+  // A device that will not name its zone is treated as Eastern.
+  const real = Intl.DateTimeFormat;
+  const fake = function (locale, opts) { return opts ? new real(locale, opts) : { resolvedOptions: () => ({}) }; };
+  sandbox.Intl.DateTimeFormat = fake;
+  try { assert.equal(lib.todayIso(evening), "2026-11-22"); } finally { sandbox.Intl.DateTimeFormat = real; }
+  assert.ok(/^\d{4}-\d{2}-\d{2}$/.test(lib.APP_TODAY));
 }
 
 console.log("athlete mobile ui tests passed");
