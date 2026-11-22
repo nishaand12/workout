@@ -101,6 +101,46 @@ class EasternDateTests(unittest.TestCase):
         self.assertEqual(crud.eastern_date_iso(None), "")
 
 
+class WorkoutProgressTests(unittest.TestCase):
+    """The month view's done, started, and not started come from the sets ticked done."""
+
+    @staticmethod
+    def row(row_id, sets=3, category="Strength", notes=""):
+        from types import SimpleNamespace as NS
+        return NS(id=row_id, prescribed_sets=sets, notes=notes, exercise=NS(category=category))
+
+    @staticmethod
+    def session(*logs):
+        from types import SimpleNamespace as NS
+        return NS(set_logs=[NS(workout_exercise_id=we, set_number=n, completed=done) for we, n, done in logs])
+
+    def progress(self, rows, session):
+        from types import SimpleNamespace as NS
+        return crud.workout_progress(NS(exercises=rows), session)
+
+    def test_nothing_logged(self):
+        rows = [self.row(1), self.row(2)]
+        self.assertEqual(self.progress(rows, None), {"items_total": 2, "items_done": 0, "started": False})
+        self.assertEqual(self.progress(rows, self.session((1, 1, False))), {"items_total": 2, "items_done": 0, "started": False})
+
+    def test_partly_and_fully_logged(self):
+        rows = [self.row(1, sets=2), self.row(2, sets=1)]
+        part = self.progress(rows, self.session((1, 1, True)))
+        self.assertEqual(part, {"items_total": 2, "items_done": 0, "started": True})
+        full = self.progress(rows, self.session((1, 1, True), (1, 2, True), (2, 1, True)))
+        self.assertEqual(full, {"items_total": 2, "items_done": 2, "started": True})
+
+    def test_notes_do_not_count_and_one_tick_finishes_a_circuit_or_text_block(self):
+        rows = [
+            self.row(1, category="Note"),
+            self.row(2, sets=4, category="Circuit"),
+            self.row(3, sets=3, category="Warm up", notes="Do this\nFlags:dose2,completionOnly,textOnly"),
+            self.row(4, sets=2, category="Questionnaire"),
+        ]
+        got = self.progress(rows, self.session((2, 1, True), (3, 1, True), (4, 1, True)))
+        self.assertEqual(got, {"items_total": 3, "items_done": 3, "started": True})
+
+
 class AthleteMobileUiScriptTests(unittest.TestCase):
     def test_node_suite(self):
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

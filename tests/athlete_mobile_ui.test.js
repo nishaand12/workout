@@ -59,7 +59,7 @@ vm.createContext(sandbox);
 
 const source = fs.readFileSync("app/static/js/build-order.js", "utf8") + "\n" + fs.readFileSync("app/static/js/wourkout.js", "utf8") + `
 globalThis.__lib = {
-  nav, mineView, athleteTabsHtml, installBannerHtml, installHelpHtml, openInstallHelp, dismissInstallBanner, devicePlatform, renewSession, weekRangeLabel, drawerHtml, modalHtml, entryItem, athleteDayCol, sundayOf, addDays, APP_TODAY, todayIso, dateInZone,
+  nav, mineView, athleteTabsHtml, installBannerHtml, installHelpHtml, openInstallHelp, dismissInstallBanner, devicePlatform, renewSession, weekRangeLabel, drawerHtml, modalHtml, entryItem, athleteDayCol, sundayOf, addDays, APP_TODAY, setMineMode, shiftMine, mineToday, mineDayStatus, mineMonthHtml, shiftMonth, mineMode, todayIso, dateInZone, noteAppSignIn, adoptAppSignIn, inAppSignInSheet, appSignInPending, syncSupabaseSession, appSignInDoneHtml, stayInSignInSheet, handleLogout,
   state, item, ensureDay, addChainToDay, selectChain, chainBoxPop, closeChainBox, toggleTrack, setCell, changeSets,
   doseKeys, scriptLine, chainEditorHtml, openChainEditor, chainMemberPayload, itemNotes: typeof itemNotes === "function" ? itemNotes : null,
   weekPhases, phaseBannerStyle, phaseTagsHtml, weekNoteHtml, weekNoteOpen, phasesPanelHtml, pickPhaseRange, savePhaseDraft,
@@ -110,12 +110,68 @@ state.gymContext = { athletes: [], calendars: [] };
 {
   const html = lib.mineView();
   assert.ok(html.includes("mine-page"));
-  assert.ok(html.includes('<div class="week-head">This week</div>'));
+  assert.ok(html.includes('<div class="athlete-name">This week</div>'));
   assert.equal((html.match(/class="today-chip"/g) || []).length, 1);
   assert.ok(lib.athleteDayCol(lib.APP_TODAY).includes("is-today"));
   assert.ok(lib.athleteDayCol(lib.addDays(lib.APP_TODAY, -1)).includes("is-past"));
   assert.equal(lib.weekRangeLabel("2026-11-22"), "Nov 22 – 28");
   assert.equal(lib.weekRangeLabel("2026-11-29"), "Nov 29 – Dec 5");
+}
+
+// Week moves a week at a time and shows the days. Month moves a month at a time and shows
+// which days have a workout and how far along each is.
+{
+  const day = (n) => lib.APP_TODAY.slice(0, 8) + String(n).padStart(2, "0");
+  state.mySchedule = [
+    { scheduled_date: day(3), workout_id: 1, title: "Lower", exercise_count: 4, items_total: 4, items_done: 4, started: true },
+    { scheduled_date: day(5), workout_id: 2, title: "Upper", exercise_count: 3, items_total: 3, items_done: 1, started: true },
+    { scheduled_date: day(9), workout_id: 3, title: "Run", exercise_count: 2, items_total: 2, items_done: 0, started: false }
+  ];
+  assert.equal(lib.mineDayStatus(day(3)).state, "done");
+  assert.equal(lib.mineDayStatus(day(5)).state, "partial");
+  assert.equal(lib.mineDayStatus(day(9)).state, "todo");
+  assert.equal(lib.mineDayStatus(day(10)).state, "none");
+
+  assert.equal(lib.mineMode(), "week", "week is the starting view");
+  const week = state.weekStart;
+  lib.shiftMine(1);
+  assert.equal(state.weekStart, lib.addDays(week, 7));
+  lib.mineToday();
+  assert.equal(state.weekStart, lib.sundayOf(lib.APP_TODAY));
+
+  lib.setMineMode("month");
+  assert.equal(store.data.wourkout_mine_mode, "month");
+  const thisMonth = lib.APP_TODAY.slice(0, 7);
+  state.mineMonth = thisMonth;
+  let html = lib.mineView();
+  assert.ok(html.includes("mode-month") && html.includes("month-grid"));
+  assert.ok(!html.includes('class="week"'), "no exercise lists in the month view");
+  assert.ok(html.includes("1 of 3 workouts complete"));
+  assert.equal((html.match(/month-cell st-done/g) || []).length, 1);
+  assert.equal((html.match(/month-cell st-partial/g) || []).length, 1);
+  assert.equal((html.match(/month-cell st-todo/g) || []).length, 1);
+  assert.ok(html.includes(`onclick="openAthleteDay('${day(5)}')"`));
+  assert.ok(html.includes('aria-label="Next month"'));
+  const cells = (html.match(/class="month-cell/g) || []).length;
+  assert.ok(cells % 7 === 0 && cells >= 28 && cells <= 42);
+
+  lib.shiftMine(1);
+  assert.equal(state.mineMonth, lib.shiftMonth(thisMonth, 1));
+  lib.shiftMine(-2);
+  assert.equal(state.mineMonth, lib.shiftMonth(thisMonth, -1));
+  assert.equal(lib.shiftMonth("2026-12", 1), "2027-01");
+  assert.equal(lib.shiftMonth("2027-01", -1), "2026-12");
+  assert.equal(lib.shiftMonth("2026-11", 14), "2028-01");
+  lib.mineToday();
+  assert.equal(state.mineMonth, thisMonth);
+
+  // Back to week: the week of today when the shown month is this month, else the month's first week.
+  state.mineMonth = "2027-03";
+  lib.setMineMode("week");
+  assert.equal(state.weekStart, lib.sundayOf("2027-03-01"));
+  assert.ok(lib.mineView().includes('aria-label="Next week"'));
+  lib.mineToday();
+  state.mySchedule = [];
 }
 
 // On a phone browser the schedule offers the home screen steps until it is dismissed.
@@ -176,6 +232,54 @@ state.gymContext = { athletes: [], calendars: [] };
   sandbox.Intl.DateTimeFormat = fake;
   try { assert.equal(lib.todayIso(evening), "2026-11-22"); } finally { sandbox.Intl.DateTimeFormat = real; }
   assert.ok(/^\d{4}-\d{2}-\d{2}$/.test(lib.APP_TODAY));
+}
+
+// Google sign-in from the home screen app finishes in a sheet. The sheet says to close it and
+// the app underneath picks the sign-in up.
+{
+  const me = { id: 7, role: "athlete", name: "Avery Athlete", username: "avery" };
+  sandbox.__setApi(async (method, url) => {
+    calls.push({ method, url });
+    if (url === "/api/auth/sync-supabase") return { access_token: "google-token", user: me };
+    if (url === "/api/auth/me") return me;
+    if (url === "/api/auth/refresh") return { access_token: "google-token", user: me };
+    return [];
+  });
+  lib.handleLogout();
+  store.data = {};
+
+  // In the app: leaving for Google is noted.
+  sandbox.navigator.standalone = true;
+  lib.noteAppSignIn();
+  assert.ok(lib.appSignInPending());
+  assert.equal(lib.inAppSignInSheet(), false, "the app itself is not the sheet");
+  assert.equal(await lib.adoptAppSignIn(), false, "nothing to pick up yet");
+
+  // In the sheet: same storage, not the installed app.
+  sandbox.navigator.standalone = false;
+  assert.equal(lib.inAppSignInSheet(), true);
+  await lib.syncSupabaseSession("supabase-token");
+  assert.equal(store.data.wourkout_token, "google-token");
+  assert.equal(state.auth.returnToApp, true);
+  assert.ok(lib.appSignInDoneHtml().includes("Close this window"));
+
+  // Back in the app, still on its sign-in screen.
+  sandbox.navigator.standalone = true;
+  state.auth.isAuthenticated = false;
+  state.auth.user = null;
+  state.auth.token = null;
+  state.auth.returnToApp = false;
+  assert.equal(await lib.adoptAppSignIn(), true);
+  assert.equal(state.auth.isAuthenticated, true);
+  assert.equal(state.auth.user.id, 7);
+  assert.equal(lib.appSignInPending(), false, "the note is cleared once used");
+
+  // An ordinary browser sign-in is not told to close anything.
+  sandbox.navigator.standalone = false;
+  lib.handleLogout();
+  await lib.syncSupabaseSession("supabase-token");
+  assert.ok(!state.auth.returnToApp);
+  assert.equal(await lib.adoptAppSignIn(), false, "only the installed app picks up a sign-in");
 }
 
 console.log("athlete mobile ui tests passed");

@@ -707,3 +707,7 @@ class ScheduleItem(BaseModel):
     coach_name: str = ""
     athlete_note: str = ""
     exercise_count: int = 0
+    # How much of the workout the athlete has logged, counted in exercises.
+    items_total: int = 0
+    items_done: int = 0
+    started: bool = False
