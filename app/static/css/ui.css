@@ -645,3 +645,12 @@
   body { overscroll-behavior-y: none; -webkit-tap-highlight-color: transparent; }
   .topnav, .athlete-tabs { -webkit-user-select: none; user-select: none; }
 }
+
+/* Shown in the sheet an iPhone opens for Google sign-in from the home screen app. */
+.app-return { text-align: center; }
+.app-return-tick {
+  width: 56px; height: 56px; border-radius: 50%; margin: 20px auto 12px; display: grid; place-items: center;
+  background: var(--ui-green-soft); color: var(--ui-green); font-size: 28px; font-weight: 700;
+}
+.app-return h2 { margin: 0 0 8px; font-size: 20px; }
+.app-return p { margin: 0 0 20px; color: var(--ui-text-2); font-size: 15px; line-height: 1.5; }
