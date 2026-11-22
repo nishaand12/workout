@@ -645,3 +645,48 @@
   body { overscroll-behavior-y: none; -webkit-tap-highlight-color: transparent; }
   .topnav, .athlete-tabs { -webkit-user-select: none; user-select: none; }
 }
+
+/* ---------- Athlete schedule: week and month views ---------- */
+.mine-page .seg.mine-mode button { padding: 5px 12px; font-weight: 600; color: #aaa; }
+.mine-page .seg.mine-mode button.on { background: #3a3a3a; color: #fff; }
+.month-view { max-width: 980px; margin: 0 auto; padding: 4px 4px 16px; }
+.month-tally { color: #b5b5b5; font-size: 13px; margin: 2px 2px 10px; }
+.month-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.month-dow { text-align: center; color: #8d8d8d; font-size: 11px; font-weight: 700; letter-spacing: .06em; padding: 2px 0 4px; }
+.month-cell {
+  position: relative; min-height: 84px; min-width: 0; border-radius: 10px; border: 1px solid #2c2c2c; background: #1b1b1b; color: #e6e6e6;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 8px; text-align: left; font: inherit;
+}
+button.month-cell { cursor: pointer; }
+button.month-cell:hover { border-color: #555; }
+.month-cell.st-none { background: transparent; border-color: #232323; color: #777; }
+.month-cell.other-month { opacity: .38; }
+.month-cell.is-today { border-color: var(--red); box-shadow: inset 0 0 0 1px var(--red); }
+.month-num { font-size: 13px; font-weight: 700; }
+.month-cell.is-today .month-num { color: #fff; }
+.month-mark, .month-legend i {
+  width: 18px; height: 18px; border-radius: 50%; display: inline-grid; place-items: center; flex: 0 0 auto;
+  font-size: 11px; font-weight: 800; font-style: normal; color: #fff; box-sizing: border-box;
+}
+.st-todo .month-mark, .month-legend i.st-todo { border: 2px solid #5b8def; }
+.st-partial .month-mark, .month-legend i.st-partial { border: 2px solid #f59e0b; background: linear-gradient(90deg, #f59e0b 50%, transparent 50%); }
+.st-done .month-mark, .month-legend i.st-done { background: #16a34a; }
+.month-cell.st-done { background: rgba(22, 163, 74, .12); border-color: rgba(22, 163, 74, .45); }
+.month-cell.st-partial { border-color: rgba(245, 158, 11, .45); }
+.month-title { font-size: 12px; color: #c9c9c9; line-height: 1.25; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+.month-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 12px; color: #b5b5b5; font-size: 12px; }
+.month-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.month-hint { color: #8d8d8d; font-size: 12px; margin: 8px 0 0; }
+
+@media (max-width: 760px) {
+  #app.is-athlete .mine-page .seg.mine-mode { flex: 0 0 auto; }
+  #app.is-athlete .mine-page .seg.mine-mode button { min-width: 64px; font-size: 14px; }
+  #app.is-athlete .mine-page .week { margin-top: 6px; }
+  .month-view { padding: 6px 0 12px; }
+  .month-grid { gap: 4px; }
+  .month-cell { min-height: 0; aspect-ratio: 1 / 1.08; align-items: center; justify-content: center; gap: 3px; padding: 4px 2px; border-radius: 10px; }
+  .month-num { font-size: 15px; font-weight: 600; }
+  .month-title { display: none; }
+  .month-mark { width: 16px; height: 16px; font-size: 10px; }
+  .month-cell.st-none::after { content: ""; height: 16px; }
+}

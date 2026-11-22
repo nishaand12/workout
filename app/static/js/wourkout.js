@@ -1930,6 +1930,7 @@ function go(view, ev) {
   if (view === "build" && state.athleteId && state.athleteId !== "none") loadCalendarSchedule(state.athleteId);
   if (view === "build" && !state.serverExercises.length) loadExercises();
   if (view === "maxes") loadGoals();
+  if (view === "mine" && state.role === "athlete") refreshMyProgress();
 }
 function goTool(view) {
   if (state.editor && state.view === "build" && view !== "build" && !closeEditor()) return;
@@ -4632,38 +4633,166 @@ function weekRangeLabel(start) {
   const month = (d) => d.toLocaleDateString("en-US", { month: "short" });
   return month(a) + " " + a.getDate() + " – " + (a.getMonth() === b.getMonth() ? "" : month(b) + " ") + b.getDate();
 }
+// The athlete's schedule has two views. Week shows each day's exercises and moves a week at a
+// time. Month shows the whole month at a glance, which days have a workout and how far along
+// each one is, and moves a month at a time.
+function mineMode() {
+  if (state.mineMode !== "week" && state.mineMode !== "month") {
+    let saved = "";
+    try { saved = localStorage.getItem("wourkout_mine_mode") || ""; } catch (e) { saved = ""; }
+    state.mineMode = saved === "month" ? "month" : "week";
+  }
+  return state.mineMode;
+}
+function mineMonth() {
+  if (!/^\d{4}-\d{2}$/.test(state.mineMonth || "")) state.mineMonth = APP_TODAY.slice(0, 7);
+  return state.mineMonth;
+}
+function shiftMonth(month, n) {
+  const year = +month.slice(0, 4);
+  const index = +month.slice(5, 7) - 1 + n;
+  const y = year + Math.floor(index / 12);
+  const m = ((index % 12) + 12) % 12;
+  return y + "-" + String(m + 1).padStart(2, "0");
+}
+function setMineMode(mode) {
+  const next = mode === "month" ? "month" : "week";
+  if (next === "month") {
+    // The month that holds most of the week being looked at.
+    state.mineMonth = addDays(state.weekStart || sundayOf(APP_TODAY), 3).slice(0, 7);
+  } else {
+    const month = mineMonth();
+    state.weekStart = APP_TODAY.slice(0, 7) === month ? sundayOf(APP_TODAY) : sundayOf(month + "-01");
+  }
+  state.mineMode = next;
+  try { localStorage.setItem("wourkout_mine_mode", next); } catch (e) { /* ignore */ }
+  render();
+}
+function shiftMine(n) {
+  if (mineMode() === "month") {
+    state.mineMonth = shiftMonth(mineMonth(), n);
+    render();
+    return;
+  }
+  shiftWeek(n);
+}
+function mineToday() {
+  state.mineMonth = APP_TODAY.slice(0, 7);
+  jumpToday();
+}
+// none: nothing scheduled. todo: scheduled, nothing logged. partial: some of it logged. done: all of it.
+function mineDayStatus(date) {
+  const rows = (state.mySchedule || []).filter((row) => row.scheduled_date === date);
+  let total = 0, done = 0, started = false, exercises = 0;
+  rows.forEach((row) => {
+    total += row.items_total || 0;
+    done += row.items_done || 0;
+    exercises += row.exercise_count || 0;
+    if (row.started) started = true;
+  });
+  const day = savedDay(date);
+  const scheduled = !!(day && (day.items || []).length) || exercises > 0;
+  if (!scheduled) return { state: "none", done: 0, total: 0, title: "" };
+  const title = (day && day.title) || (rows[0] && rows[0].title) || "Workout";
+  if (total > 0 && done >= total) return { state: "done", done, total, title };
+  if (started || done > 0) return { state: "partial", done, total, title };
+  return { state: "todo", done, total, title };
+}
+const MINE_STATUS_WORD = { done: "complete", partial: "started", todo: "not started" };
+function mineMonthCell(date, month) {
+  const st = mineDayStatus(date);
+  const dayNum = +date.slice(8, 10);
+  const cls = ["month-cell", "st-" + st.state];
+  if (date.slice(0, 7) !== month) cls.push("other-month");
+  if (date === APP_TODAY) cls.push("is-today");
+  else if (date < APP_TODAY) cls.push("is-past");
+  const mark = st.state === "done" ? "✓" : "";
+  const inner = `<span class="month-num">${dayNum}</span>${st.state === "none" ? "" : `<span class="month-mark" aria-hidden="true">${mark}</span><span class="month-title">${esc(st.title)}</span>`}`;
+  if (st.state === "none") return `<div class="${cls.join(" ")}" aria-label="${esc(fmtLong(date))}: rest">${inner}</div>`;
+  return `<button type="button" class="${cls.join(" ")}" aria-label="${esc(fmtLong(date) + ": " + st.title + ", " + MINE_STATUS_WORD[st.state])}" onclick="openAthleteDay('${date}')">${inner}</button>`;
+}
+function mineMonthHtml() {
+  const month = mineMonth();
+  const first = month + "-01";
+  const last = addDays(shiftMonth(month, 1) + "-01", -1);
+  let cells = "";
+  let scheduled = 0, complete = 0;
+  for (let week = sundayOf(first); week <= last; week = addDays(week, 7)) {
+    for (let i = 0; i < 7; i++) {
+      const date = addDays(week, i);
+      cells += mineMonthCell(date, month);
+      if (date.slice(0, 7) !== month) continue;
+      const st = mineDayStatus(date).state;
+      if (st !== "none") scheduled += 1;
+      if (st === "done") complete += 1;
+    }
+  }
+  const heads = ["S", "M", "T", "W", "T", "F", "S"].map((d) => `<div class="month-dow" aria-hidden="true">${d}</div>`).join("");
+  const tally = scheduled
+    ? `${complete} of ${scheduled} workout${scheduled === 1 ? "" : "s"} complete`
+    : "No workouts scheduled this month";
+  return `<div class="month-view">
+    <div class="month-tally">${tally}</div>
+    <div class="month-grid">${heads}${cells}</div>
+    <div class="month-legend"><span><i class="st-todo"></i>Scheduled</span><span><i class="st-partial"></i>Started</span><span><i class="st-done">✓</i>Complete</span></div>
+    <p class="month-hint">Tap a day to open its workout.</p>
+  </div>`;
+}
+function monthTitle(month) {
+  return new Date(month + "-15T12:00:00").toLocaleDateString("en-US", { month: "long", year: "numeric" });
+}
+// Fresh progress for the schedule, without refetching every workout.
+async function refreshMyProgress() {
+  if (state.role !== "athlete" || refreshMyProgress.busy) return;
+  refreshMyProgress.busy = true;
+  try {
+    const rows = await api("GET", "/api/my/schedule");
+    state.mySchedule = rows;
+    state.athleteAssignments = rows;
+    if (state.view === "mine") render();
+  } catch (err) {
+    console.error(err);
+  } finally {
+    refreshMyProgress.busy = false;
+  }
+}
 function mineView() {
   const fromList = buildAthletes().find((a) => a.id === state.actingAthlete);
   const person = fromList || { name: (state.auth.user && state.auth.user.name) || "Athlete" };
-  const weeks = state.viewMode === "week" ? 1 : 4;
-  let weeksHtml = "";
-  for (let w = 0; w < weeks; w++) {
-    const start = addDays(state.weekStart, w * 7);
+  const month = mineMode() === "month";
+  let bodyHtml = "";
+  let heading = "";
+  if (month) {
+    heading = monthTitle(mineMonth());
+    bodyHtml = mineMonthHtml();
+  } else {
+    const start = state.weekStart;
     let cols = "";
     for (let i = 0; i < 7; i++) cols += athleteDayCol(addDays(start, i));
-    const label = start === sundayOf(APP_TODAY) ? "This week" : weekRangeLabel(start);
-    weeksHtml += `<div class="week-head">${esc(label)}</div><div class="week">${cols}</div>`;
+    heading = start === sundayOf(APP_TODAY) ? "This week" : weekRangeLabel(start);
+    bodyHtml = `<div class="week">${cols}</div>`;
   }
-  return `<section class="stage mine-page">
+  const unit = month ? "month" : "week";
+  return `<section class="stage mine-page ${month ? "mode-month" : "mode-week"}">
     ${installBannerHtml()}
     <div class="subhead">
       <div>
-        <div class="crumbs">Athlete · your schedule</div>
-        <div class="athlete-name">${esc(person.name)}</div>
+        <div class="crumbs">${esc(person.name)} · your schedule</div>
+        <div class="athlete-name">${esc(heading)}</div>
       </div>
       <div class="sub-actions">
         <div class="seg">
-          <button onclick="shiftWeek(-1)">‹</button>
-          <button class="today-pill" onclick="jumpToday()">Today</button>
-          <button onclick="shiftWeek(1)">›</button>
+          <button aria-label="Previous ${unit}" onclick="shiftMine(-1)">‹</button>
+          <button class="today-pill" onclick="mineToday()">Today</button>
+          <button aria-label="Next ${unit}" onclick="shiftMine(1)">›</button>
         </div>
-        <select class="ghost" onchange="state.viewMode=this.value;render()">
-          <option value="month" ${state.viewMode === "month" ? "selected" : ""}>Month</option>
-          <option value="week" ${state.viewMode === "week" ? "selected" : ""}>Week</option>
-        </select>
+        <div class="seg mine-mode" role="group" aria-label="Schedule view">
+          <button type="button" class="${month ? "" : "on"}" aria-pressed="${month ? "false" : "true"}" onclick="setMineMode('week')">Week</button>
+          <button type="button" class="${month ? "on" : ""}" aria-pressed="${month ? "true" : "false"}" onclick="setMineMode('month')">Month</button>
+        </div>
       </div>
     </div>
-    <div class="cal-scroll">${weeksHtml}</div>
+    <div class="cal-scroll">${bodyHtml}</div>
   </section>`;
 }
 async function openAthleteDay(date) {
@@ -10078,6 +10207,9 @@ async function initAuth() {
 
 window.saveInfo = saveInfo;
 window.openInstallHelp = openInstallHelp;
+window.shiftMine = shiftMine;
+window.setMineMode = setMineMode;
+window.mineToday = mineToday;
 window.dismissInstallBanner = dismissInstallBanner;
 window.runInstallPrompt = runInstallPrompt;
 window.addEventListener("beforeinstallprompt", (ev) => {

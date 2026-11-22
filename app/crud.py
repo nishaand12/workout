@@ -4278,6 +4278,40 @@ def assign_workout_to_athlete(db: Session, coach: User, athlete_id: int, title: 
     return assignment
 
 
+def _sets_to_finish(exercise_row) -> int:
+    """How many done sets finish this exercise; 0 when there is nothing to log (a note)."""
+    category = ((exercise_row.exercise.category if exercise_row.exercise else "") or "").strip().lower()
+    if category in ("note", "notes"):
+        return 0
+    notes = exercise_row.notes or ""
+    flags = ""
+    for line in notes.splitlines():
+        if line.startswith("Flags:"):
+            flags = line[len("Flags:"):]
+    # A circuit, a questionnaire, and a read-and-tick block are each logged as one tick.
+    if "circuit" in category or "question" in category or "textOnly" in flags.split(","):
+        return 1
+    return max(1, exercise_row.prescribed_sets or 1)
+
+
+def workout_progress(workout, session) -> dict:
+    """Exercises finished out of exercises to do, from the sets the athlete ticked done."""
+    done_sets = {}
+    for log in (session.set_logs if session else []):
+        if log.completed:
+            done_sets.setdefault(log.workout_exercise_id, set()).add(log.set_number)
+    total = 0
+    done = 0
+    for row in (workout.exercises if workout else []):
+        need = _sets_to_finish(row)
+        if not need:
+            continue
+        total += 1
+        if len(done_sets.get(row.id, ())) >= need:
+            done += 1
+    return {"items_total": total, "items_done": done, "started": bool(done_sets)}
+
+
 def schedule_for_athlete(db: Session, user: User) -> List[dict]:
     if "athlete" not in user.roles and (user.role or "") not in ("athlete", "student"):
         raise HTTPException(status_code=403, detail="Only an athlete can open their schedule.")
@@ -4308,6 +4342,7 @@ def schedule_for_athlete(db: Session, user: User) -> List[dict]:
             "coach_name": coach.name if coach else "",
             "athlete_note": (session.athlete_note or "") if session else "",
             "exercise_count": len(workout.exercises) if workout else 0,
+            **workout_progress(workout, session),
         })
     rows.sort(key=lambda r: (r["scheduled_date"], r["assignment_id"]))
     return rows
