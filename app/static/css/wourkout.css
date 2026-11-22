@@ -82,6 +82,7 @@ button { cursor: pointer; }
 .athlete-name { cursor: pointer; }
 .athlete-menu { top: 34px; left: 0; min-width: 240px; max-height: 360px; overflow: auto; }
 .athlete-menu button.on { background: #2457c5; color: white; }
+.athlete-menu .athlete-menu-new { border-top: 1px solid #3a3a3a; color: #9ec0ef; font-weight: 600; position: sticky; bottom: 0; background: #242424; }
 .sub-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .ghost {
   background: transparent; border: 1px solid #3a3a3a; color: #ddd; border-radius: 6px;
@@ -137,8 +138,8 @@ button { cursor: pointer; }
   background: #1b1b1b; border: 1px solid #2c2c2c; border-radius: 8px; min-height: 200px;
   display: flex; flex-direction: column; position: relative; padding: 6px 6px 4px; min-width: 0;
 }
-.day.focus { outline: 1px solid #3d6fd6; }
-.day.day-selected { outline: 2px solid #3b82f6; }
+.day.focus { outline: 1px solid var(--day-accent, #3d6fd6); }
+.day.day-selected { outline: 2px solid var(--day-accent, #3b82f6); }
 .day.clip-hot { box-shadow: inset 0 0 0 2px #3b82f6; }
 .day-date { background: transparent; border: 0; color: inherit; font: inherit; font-weight: inherit; letter-spacing: inherit; padding: 0; cursor: pointer; }
 .day.read { cursor: pointer; }
@@ -225,6 +226,7 @@ input.day-title::placeholder { color: #8d8d8d; font-weight: 500; }
 .dose-switch { display: inline-flex; align-items: center; gap: 4px; }
 .set-val { display: flex; align-items: center; gap: 3px; min-width: 0; max-width: 100%; }
 .set-val .sec-suffix { color: #9a9a9a; font-size: 12px; flex: 0 0 auto; }
+.set-val.is-effort .sec-suffix { display: none; }
 .unit-set { display: inline-flex; align-items: center; gap: 6px; color: #ddd; font-size: 12px; }
 .unit-set select { background: #1c1c1c; color: #ddd; border: 1px solid #3a3a3a; border-radius: 6px; padding: 5px 8px; }
 #app.light .unit-set { color: #333; }
@@ -328,6 +330,8 @@ input.day-title::placeholder { color: #8d8d8d; font-weight: 500; }
   visibility: hidden;
 }
 .editor.build-editor.is-placed { visibility: visible; }
+/* A chain can hold more exercises than fit on screen, so its box scrolls. */
+.editor.build-editor.chain-box { max-height: calc(100vh - 76px); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #555 transparent; }
 .editor.build-editor .editor-h { gap: 6px; }
 .editor.build-editor .name-input { font-size: 13px; }
 .editor.build-editor .row { margin: 3px 0; gap: 5px; }

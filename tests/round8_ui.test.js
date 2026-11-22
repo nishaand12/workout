@@ -176,6 +176,8 @@ const date = "2026-11-17";
   // Phases: picking days starts a draft, saving it colours the week banners and shows its notes.
   assert.equal(lib.phaseBannerStyle("2026-11-15"), "");
   state.buildPanel = "phases";
+  // Pin the mini calendar so the check does not depend on today's date.
+  state.phaseMiniStart = "2026-11-15";
   lib.pickPhaseRange("2026-12-12", "2026-11-15", true);
   assert.equal(state.phaseDraft.start, "2026-11-15");
   assert.equal(state.phaseDraft.end, "2026-12-12");
