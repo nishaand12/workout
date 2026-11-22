@@ -247,7 +247,27 @@ function blankDay(date, extra = {}) {
   };
 }
 
-const APP_TODAY = new Date().toISOString().slice(0, 10);
+// Today is the date where the person is, read from their device's time zone. A device that
+// will not say which zone it is in is treated as being on Eastern time (Toronto).
+const FALLBACK_TIME_ZONE = "America/Toronto";
+function dateInZone(when, timeZone) {
+  const parts = {};
+  new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" })
+    .formatToParts(when).forEach((part) => { parts[part.type] = part.value; });
+  if (!/^\d{4}$/.test(parts.year || "") || !parts.month || !parts.day) throw new Error("no date");
+  return parts.year + "-" + parts.month + "-" + parts.day;
+}
+function todayIso(when) {
+  const now = when || new Date();
+  try {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (zone) return dateInZone(now, zone);
+  } catch (e) { /* fall through to Eastern */ }
+  try { return dateInZone(now, FALLBACK_TIME_ZONE); } catch (e) { /* no zone data at all */ }
+  const pad = (n) => String(n).padStart(2, "0");
+  return now.getFullYear() + "-" + pad(now.getMonth() + 1) + "-" + pad(now.getDate());
+}
+const APP_TODAY = todayIso();
 
 function weekName(date) {
   const start = sundayOf(date);
@@ -673,7 +693,7 @@ function render() {
     return;
   }
   const light = state.view !== "build" && state.view !== "mine";
-  root.className = light ? "light" : state.view === "build" ? "fit" : "";
+  root.className = (light ? "light" : state.view === "build" ? "fit" : "") + (state.role === "athlete" ? " is-athlete" : "");
   const toastHtml = state.toast ? `<div class="toast">${esc(state.toast)}</div>` : "";
   const pending = state.pendingFocus;
   if (pending) state.pendingFocus = "";
@@ -813,6 +833,7 @@ function land(user) {
 async function enterApp(data) {
   if (data.access_token) {
     localStorage.setItem("wourkout_token", data.access_token);
+    localStorage.setItem("wourkout_token_at", String(Date.now()));
     state.auth.token = data.access_token;
   }
   state.auth.isAuthenticated = true;
@@ -1696,6 +1717,7 @@ function drawerHtml(displayName, initial, roleClass, avatarBg, user) {
       </div>
       ${links}
       ${switcher}
+      ${state.role === "athlete" ? `<div class="drawer-label">App</div><button type="button" class="navbtn" onclick="openInstallHelp()">ADD TO HOME SCREEN</button>` : ""}
       <div class="drawer-foot">
         <div class="nav-profile">
           <div class="nav-avatar" style="background:${avatarBg}">${initial}</div>
@@ -1734,7 +1756,127 @@ function nav() {
       </div>
       <button class="nav-logout-btn" onclick="handleLogout()">Log out</button>
     </div>
-  </header>${drawerHtml(displayName, initial, roleClass, avatarBg, user)}`;
+  </header>${drawerHtml(displayName, initial, roleClass, avatarBg, user)}${isAthlete ? athleteTabsHtml() : ""}`;
+}
+// On a phone an athlete moves between pages with a tab bar under the thumb.
+const ATHLETE_TABS = [
+  ["mine", "Schedule", '<rect x="3.5" y="5" width="17" height="15" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/>'],
+  ["entry", "Workout", '<path d="M3 12h2.5M18.5 12H21M5.5 8v8M8.5 6v12M15.5 6v12M18.5 8v8M8.5 12h7"/>'],
+  ["whiteboard", "Board", '<rect x="3.5" y="4.5" width="17" height="12" rx="2"/><path d="M8 20h8M12 16.5V20M7.5 9h6M7.5 12h9"/>'],
+  ["maxes", "PRs", '<path d="M7 4h10v5a5 5 0 0 1-10 0zM7 6H4v1.5A3.5 3.5 0 0 0 7.5 11M17 6h3v1.5a3.5 3.5 0 0 1-3.5 3.5M12 14v3.5M8.5 20h7M10 17.5h4"/>'],
+  ["journal", "Journal", '<path d="M6.5 3.5h11a1.5 1.5 0 0 1 1.5 1.5v14a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 19V5a1.5 1.5 0 0 1 1.5-1.5zM9 8h6M9 12h6M9 16h3.5"/>']
+];
+function athleteTabsHtml() {
+  return `<nav class="athlete-tabs" aria-label="Athlete pages">${ATHLETE_TABS.map(([id, label, icon]) => {
+    const on = state.view === id;
+    return `<button type="button" class="athlete-tab${on ? " on" : ""}"${on ? ' aria-current="page"' : ""} onclick="go('${id}')"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icon}</svg><span>${label}</span></button>`;
+  }).join("")}</nav>`;
+}
+// Home screen install. A phone browser cannot be told to install the site, so the athlete is
+// shown the two or three taps it takes.
+let installPromptEvent = null;
+function devicePlatform() {
+  const nav = typeof navigator !== "undefined" ? navigator : {};
+  const ua = String(nav.userAgent || "");
+  if (/iphone|ipad|ipod/i.test(ua) || (/macintosh/i.test(ua) && (nav.maxTouchPoints || 0) > 1)) return "ios";
+  if (/android/i.test(ua)) return "android";
+  return "";
+}
+function isInstalledApp() {
+  try {
+    if (typeof navigator !== "undefined" && navigator.standalone) return true;
+    return typeof window.matchMedia === "function" && window.matchMedia("(display-mode: standalone)").matches;
+  } catch (e) { return false; }
+}
+function installBannerHtml() {
+  if (state.role !== "athlete" || !devicePlatform() || isInstalledApp()) return "";
+  try { if (localStorage.getItem("wourkout_install_hint") === "off") return ""; } catch (e) { return ""; }
+  return `<div class="install-banner"><button type="button" class="install-banner-main" onclick="openInstallHelp()"><b>Add wourkout to your home screen</b><span>It opens like an app, already signed in. Show me how</span></button><button type="button" class="install-banner-x" aria-label="Dismiss" onclick="dismissInstallBanner()">✕</button></div>`;
+}
+function dismissInstallBanner() {
+  try { localStorage.setItem("wourkout_install_hint", "off"); } catch (e) { /* ignore */ }
+  render();
+}
+function openInstallHelp(platform) {
+  state.navOpen = false;
+  state.modal = { type: "install", platform: platform || devicePlatform() || "ios" };
+  render();
+}
+async function runInstallPrompt() {
+  if (!installPromptEvent) return;
+  const ev = installPromptEvent;
+  installPromptEvent = null;
+  try {
+    ev.prompt();
+    const choice = await ev.userChoice;
+    if (choice && choice.outcome === "accepted") { state.modal = null; dismissInstallBanner(); return; }
+  } catch (e) { /* the browser declined to show it */ }
+  render();
+}
+function installHelpHtml(m) {
+  const ios = m.platform !== "android";
+  const share = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V3.5M8 7l4-4 4 4M6 11H5a1 1 0 0 0-1 1v7.5a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V12a1 1 0 0 0-1-1h-1"/></svg>';
+  const steps = ios
+    ? [
+      "Open this site in <b>Safari</b>. Other browsers on iPhone may not offer the option.",
+      `Tap the <b>Share</b> button <span class="install-key">${share}</span> at the bottom of the screen.`,
+      "Scroll down the list and tap <b>Add to Home Screen</b>.",
+      "Tap <b>Add</b> in the top corner.",
+      "Open <b>wourkout</b> from your home screen and sign in once. After that it stays signed in."
+    ]
+    : [
+      "Open this site in <b>Chrome</b>.",
+      'Tap the <b>menu</b> <span class="install-key">⋮</span> at the top right.',
+      "Tap <b>Add to Home screen</b>. On some phones it says <b>Install app</b>.",
+      "Tap <b>Install</b> or <b>Add</b> to confirm.",
+      "Open <b>wourkout</b> from your home screen. It stays signed in."
+    ];
+  const direct = !ios && installPromptEvent
+    ? `<button type="button" class="install-now" onclick="runInstallPrompt()">Install now</button><div class="install-or">or do it by hand:</div>`
+    : "";
+  const done = isInstalledApp() ? `<div class="install-done">You are using the installed app right now.</div>` : "";
+  return `<div class="modal-back install-back" onclick="if(event.target===this){state.modal=null;render()}"><div class="modal install-sheet" role="dialog" aria-label="Add wourkout to your home screen" onclick="event.stopPropagation()">
+    <div class="install-head"><h3>Add to your home screen</h3><button type="button" class="iconbtn" aria-label="Close" onclick="state.modal=null;render()">✕</button></div>
+    <p class="install-lead">wourkout then opens full screen from its own icon, like any other app.</p>
+    ${done}
+    <div class="install-tabs" role="tablist"><button type="button" role="tab" aria-selected="${ios ? "true" : "false"}" class="${ios ? "on" : ""}" onclick="openInstallHelp('ios')">iPhone</button><button type="button" role="tab" aria-selected="${ios ? "false" : "true"}" class="${ios ? "" : "on"}" onclick="openInstallHelp('android')">Android</button></div>
+    ${direct}
+    <ol class="install-steps">${steps.map((step) => `<li>${step}</li>`).join("")}</ol>
+    <button type="button" class="full" onclick="state.modal=null;render()">Done</button>
+  </div></div>`;
+}
+// A sign-in is renewed as the app is used, so it runs out only after a long time away.
+const SESSION_RENEW_MS = 12 * 60 * 60 * 1000;
+async function renewSession() {
+  if (!state.auth || !state.auth.isAuthenticated || !state.auth.token || renewSession.busy) return;
+  let last = 0;
+  try { last = +localStorage.getItem("wourkout_token_at") || 0; } catch (e) { return; }
+  if (Date.now() - last < SESSION_RENEW_MS) return;
+  renewSession.busy = true;
+  try {
+    const data = await api("POST", "/api/auth/refresh");
+    if (data && data.access_token && state.auth.isAuthenticated) {
+      localStorage.setItem("wourkout_token", data.access_token);
+      localStorage.setItem("wourkout_token_at", String(Date.now()));
+      state.auth.token = data.access_token;
+    }
+  } catch (err) {
+    console.warn("Could not renew the session:", err);
+  } finally {
+    renewSession.busy = false;
+  }
+}
+// A home screen app can sit open for days. Coming back to it picks up the new day and any
+// change the coach made.
+let appHiddenAt = 0;
+function appResumed() {
+  if (!state.auth || !state.auth.isAuthenticated) return;
+  if (todayIso() !== APP_TODAY) { window.location.reload(); return; }
+  renewSession();
+  const away = appHiddenAt ? Date.now() - appHiddenAt : 0;
+  if (state.role === "athlete" && state.view === "mine" && away > 5 * 60 * 1000) {
+    loadMySchedule().then(render).catch((err) => console.error(err));
+  }
 }
 function menuFor(id) {
   if (state.navMenu !== id || state.role === "athlete") return "";
@@ -4477,11 +4619,18 @@ function athleteDayCol(date) {
   const items = day ? athleteScheduleHtml(date, day.items) : "";
   const isRest = !day || !(day.items || []).length;
   const openAttr = day ? ` onclick="openAthleteDay('${date}')"` : "";
-  return `<div class="day ${isRest ? "rest-day" : "read"} ${open}" data-day="${date}"${openAttr}>
-    <div class="day-top"><span>${fmtDay(date)}</span></div>
+  const when = date === APP_TODAY ? " is-today" : date < APP_TODAY ? " is-past" : "";
+  return `<div class="day ${isRest ? "rest-day" : "read"} ${open}${when}" data-day="${date}"${openAttr}>
+    <div class="day-top"><span>${fmtDay(date)}</span>${date === APP_TODAY ? `<span class="today-chip">Today</span>` : ""}</div>
     <div class="day-title ${isRest ? "placeholder" : ""}">${esc(isRest ? "Rest" : (day.title || "Workout"))}</div>
     <div>${items}</div>
   </div>`;
+}
+function weekRangeLabel(start) {
+  const a = new Date(start + "T12:00:00");
+  const b = new Date(addDays(start, 6) + "T12:00:00");
+  const month = (d) => d.toLocaleDateString("en-US", { month: "short" });
+  return month(a) + " " + a.getDate() + " – " + (a.getMonth() === b.getMonth() ? "" : month(b) + " ") + b.getDate();
 }
 function mineView() {
   const fromList = buildAthletes().find((a) => a.id === state.actingAthlete);
@@ -4492,9 +4641,11 @@ function mineView() {
     const start = addDays(state.weekStart, w * 7);
     let cols = "";
     for (let i = 0; i < 7; i++) cols += athleteDayCol(addDays(start, i));
-    weeksHtml += `<div class="week">${cols}</div>`;
+    const label = start === sundayOf(APP_TODAY) ? "This week" : weekRangeLabel(start);
+    weeksHtml += `<div class="week-head">${esc(label)}</div><div class="week">${cols}</div>`;
   }
-  return `<section class="stage">
+  return `<section class="stage mine-page">
+    ${installBannerHtml()}
     <div class="subhead">
       <div>
         <div class="crumbs">Athlete · your schedule</div>
@@ -5646,8 +5797,8 @@ function athleteEntryView() {
     listHtml: entryListHtml(who.id, state.entryDate, day.items, "athlete"),
     pick: "selectEntryDate('$D')",
     actions: `${unitSelect(who.id)}
-      <button class="btn btn-secondary" type="button" onclick="window.print()">Print</button>
-      <button class="btn btn-primary" type="button" onclick="go('mine')">My schedule</button>`,
+      <button class="btn btn-secondary hide-phone" type="button" onclick="window.print()">Print</button>
+      <button class="btn btn-primary hide-phone" type="button" onclick="go('mine')">My schedule</button>`,
     unit: entryUnit(),
     summary: summarize(who.id, state.entryDate, day.items),
     noteHtml: ownAthleteSession() && day.workoutId ? noteForm(day.workoutId) : "",
@@ -5986,7 +6137,7 @@ function entryItem(aid, date, it) {
     }).join("");
     return `<tr class="${done ? "set-done" : ""}"><td class="set-n">${i + 1}</td>${inputs}<td class="set-tick"><input aria-label="Done set ${i + 1}" type="checkbox" ${done ? "checked" : ""} onchange="logCell('${key}',${i},'done',this.checked,'${date}','${it.id}',${it.weId || 0})"></td></tr>`;
   }).join("");
-  const table = `<table class="sets"><tr><th>Set</th>${fields.map((field) => `<th>${field[1]}</th>`).join("")}<th>Done</th></tr>${rows}</table>`;
+  const table = `<div class="sets-scroll"><table class="sets"><tr><th>Set</th>${fields.map((field) => `<th>${field[1]}</th>`).join("")}<th>Done</th></tr>${rows}</table></div>`;
   const safeName = String(it.name || "Exercise").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
   return entryShell(aid, date, it, `${athletePlayerHtml(it)}${table}<button class="complete" type="button" onclick="markDone('${key}','${safeName}',${it.weId || 0},${it.sets || 1})">Complete</button>`);
 }
@@ -8839,6 +8990,7 @@ function modalHtml() {
   const m = state.modal;
   if (!m) return "";
   if (m.type === "edit") return editModalHtml(m);
+  if (m.type === "install") return installHelpHtml(m);
   if (m.type === "chain") return chainEditorHtml(m);
   if (m.type === "questionnaire") return questionnaireEditorHtml(m);
   if (m.type === "question") return questionEditorHtml(m);
@@ -9848,6 +10000,7 @@ async function handleResetPassword(e) {
 
 function handleLogout(reason) {
   localStorage.removeItem("wourkout_token");
+  localStorage.removeItem("wourkout_token_at");
   state.auth.token = null;
   state.auth.user = null;
   state.auth.isAuthenticated = false;
@@ -9901,6 +10054,7 @@ async function initAuth() {
     try {
       const me = await api("GET", "/api/auth/me");
       state.auth.isAuthenticated = true;
+      renewSession();
       land(me);
       if (!me.needs_onboarding) {
         if (state.role === "athlete") {
@@ -9923,6 +10077,19 @@ async function initAuth() {
 }
 
 window.saveInfo = saveInfo;
+window.openInstallHelp = openInstallHelp;
+window.dismissInstallBanner = dismissInstallBanner;
+window.runInstallPrompt = runInstallPrompt;
+window.addEventListener("beforeinstallprompt", (ev) => {
+  ev.preventDefault();
+  installPromptEvent = ev;
+  if (state.modal && state.modal.type === "install") render();
+});
+window.addEventListener("appinstalled", () => { installPromptEvent = null; });
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") { appHiddenAt = Date.now(); return; }
+  appResumed();
+});
 window.addItem = addItem;
 window.snapshot = snapshot;
 window.toast = toast;

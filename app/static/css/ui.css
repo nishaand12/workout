@@ -510,3 +510,138 @@
 #app.light .modal.chain-modal > .hint { padding: 0; margin-bottom: 8px; }
 #app.light .modal.chain-modal > .full { margin-top: 8px; }
 #app.light .modal.chain-modal > .full:last-child { margin-bottom: 18px; }
+
+/* ---------- Athlete pages on a phone ---------- */
+.topnav .wordmark, .nav-drawer .wordmark { color: #fff; }
+.nav-drawer:not(.open) { box-shadow: none; }
+.athlete-tabs, .week-head, .today-chip { display: none; }
+.sets-scroll { width: 100%; }
+
+.install-banner {
+  display: flex; align-items: stretch; margin: 10px 12px 0; border-radius: 12px; overflow: hidden;
+  background: #1d2a44; border: 1px solid #2f4a80; color: #e8efff;
+}
+.install-banner-main { flex: 1; min-width: 0; background: transparent; border: 0; text-align: left; padding: 10px 12px; color: inherit; }
+.install-banner-main b { display: block; font-size: 14px; font-weight: 600; }
+.install-banner-main span { display: block; font-size: 12px; color: #b9c8e8; margin-top: 2px; }
+.install-banner-x { background: transparent; border: 0; color: #b9c8e8; width: 44px; font-size: 14px; }
+
+.modal.install-sheet { width: min(440px, 100%); padding: 18px 18px 16px; font-size: 14px; line-height: 1.45; }
+.install-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.install-head h3 { margin: 0; font-size: 18px; }
+.install-lead { margin: 6px 0 12px; color: #b8b8b8; }
+.install-done { background: rgba(34, 197, 94, .14); border: 1px solid rgba(34, 197, 94, .4); color: #86efac; border-radius: 8px; padding: 8px 10px; margin-bottom: 12px; }
+.install-tabs { display: flex; background: #1b1b1b; border-radius: 10px; padding: 3px; gap: 3px; margin-bottom: 12px; }
+.install-tabs button { flex: 1; height: 38px; border: 0; border-radius: 8px; background: transparent; color: #b8b8b8; font-size: 14px; font-weight: 600; }
+.install-tabs button.on { background: #3a3a3a; color: #fff; }
+.install-now { width: 100%; height: 46px; border: 0; border-radius: 10px; background: var(--red); color: #fff; font-size: 15px; font-weight: 600; }
+.install-or { text-align: center; color: #9a9a9a; font-size: 12px; margin: 8px 0 2px; }
+.install-steps { margin: 0 0 14px; padding: 0; list-style: none; counter-reset: step; display: flex; flex-direction: column; gap: 10px; }
+.install-steps li { counter-increment: step; position: relative; padding-left: 36px; min-height: 26px; color: #e6e6e6; }
+.install-steps li::before {
+  content: counter(step); position: absolute; left: 0; top: -1px; width: 26px; height: 26px; border-radius: 50%;
+  background: #3a3a3a; color: #fff; font-size: 13px; font-weight: 700; display: grid; place-items: center;
+}
+.install-steps b { color: #fff; }
+.install-key {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 24px; height: 24px; padding: 0 4px;
+  border-radius: 6px; background: #3a3a3a; color: #7eb6ff; vertical-align: middle; font-weight: 700;
+}
+#app.light .modal.install-sheet { background: #2a2a2a; color: #f3f3f3; border-color: #444; }
+#app.light .modal.install-sheet .full { background: #3a3a3a; color: #fff; border-color: #555; }
+
+@media (max-width: 760px) {
+  .install-back { align-items: end; padding: 0; }
+  .modal.install-sheet {
+    width: 100%; border-radius: 16px 16px 0 0; border-bottom: 0; max-height: 92vh; overflow: auto;
+    padding-bottom: calc(16px + env(safe-area-inset-bottom));
+  }
+
+  #app.is-athlete .hide-phone { display: none; }
+  #app.is-athlete .topnav {
+    height: calc(48px + env(safe-area-inset-top)); padding-top: env(safe-area-inset-top);
+    padding-left: calc(8px + env(safe-area-inset-left)); padding-right: calc(10px + env(safe-area-inset-right));
+  }
+  #app.is-athlete .topnav .view-pill { display: none; }
+  #app.is-athlete .nav-toggle { width: 44px; height: 44px; }
+  #app.is-athlete .wordmark { font-size: 17px; }
+  #app.is-athlete .nav-drawer { padding-top: calc(12px + env(safe-area-inset-top)); padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
+  #app.is-athlete .nav-drawer .navbtn { padding: 13px 10px; font-size: 13px; }
+  #app.is-athlete .nav-drawer .nav-logout-btn { height: 44px; font-size: 13px; }
+
+  /* Room for the tab bar, which sits above the phone's home indicator. */
+  #app.is-athlete .shell { padding-bottom: calc(60px + env(safe-area-inset-bottom)); }
+  #app.is-athlete .athlete-tabs {
+    display: grid; grid-template-columns: repeat(5, 1fr); position: fixed; left: 0; right: 0; bottom: 0; z-index: 45;
+    background: #0e0e0e; border-top: 1px solid #262626;
+    padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  .athlete-tab {
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; height: 58px;
+    background: transparent; border: 0; color: #8f8f8f; font-size: 11px; font-weight: 600; letter-spacing: .01em;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .athlete-tab.on { color: #fff; }
+  .athlete-tab.on svg { color: var(--red); }
+  #app.is-athlete .toast { top: auto; right: 12px; left: 12px; bottom: calc(70px + env(safe-area-inset-bottom)); text-align: center; }
+
+  /* Typing in a box smaller than 16px makes an iPhone zoom the page. */
+  #app.is-athlete input:not([type="checkbox"]):not([type="radio"]), #app.is-athlete select, #app.is-athlete textarea { font-size: 16px; }
+
+  /* Schedule: the week runs down the page, one day to a card. */
+  #app.is-athlete .mine-page .subhead { flex-wrap: wrap; gap: 10px; padding: 14px 14px 6px; }
+  #app.is-athlete .mine-page .athlete-name { font-size: 22px; }
+  #app.is-athlete .mine-page .sub-actions { margin-left: 0; width: 100%; }
+  #app.is-athlete .mine-page .seg { flex: 1; display: flex; }
+  #app.is-athlete .mine-page .seg button { height: 44px; min-width: 48px; font-size: 16px; }
+  #app.is-athlete .mine-page .seg .today-pill { flex: 1; font-size: 14px; }
+  #app.is-athlete .mine-page select.ghost { height: 44px; }
+  #app.is-athlete .mine-page .cal-scroll { overflow: visible; padding: 4px 12px 20px; }
+  #app.is-athlete .mine-page .week-head {
+    display: block; color: #9a9a9a; font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+    padding: 12px 4px 6px;
+  }
+  #app.is-athlete .mine-page .week { display: flex; flex-direction: column; gap: 8px; margin-bottom: 4px; }
+  #app.is-athlete .mine-page .day { min-height: 0; padding: 12px 14px; border-radius: 12px; border-left: 3px solid #333; }
+  #app.is-athlete .mine-page .day.read { border-left-color: #3b82f6; }
+  #app.is-athlete .mine-page .day.is-today { border-color: #4b6fb5; border-left-color: var(--red); background: #1f2430; }
+  #app.is-athlete .mine-page .day.is-past { opacity: .72; }
+  #app.is-athlete .mine-page .day.focus { outline: 0; }
+  #app.is-athlete .mine-page .day-top { font-size: 12px; justify-content: flex-start; gap: 8px; color: #b5b5b5; }
+  #app.is-athlete .mine-page .today-chip {
+    display: inline-block; background: var(--red); color: #fff; border-radius: 999px; padding: 1px 8px; font-size: 10px; letter-spacing: .05em;
+  }
+  #app.is-athlete .mine-page .day-title { font-size: 17px; padding: 4px 0 6px; }
+  #app.is-athlete .mine-page .day.rest-day { flex-direction: row; align-items: center; justify-content: space-between; padding: 10px 14px; }
+  #app.is-athlete .mine-page .day.rest-day .day-title { width: auto; padding: 0; font-size: 14px; }
+  #app.is-athlete .mine-page .day .ex { padding: 5px 0; }
+  #app.is-athlete .mine-page .day .ex-name { font-size: 14px; }
+  #app.is-athlete .mine-page .day .ex-sub { font-size: 12px; white-space: normal; }
+  #app.is-athlete .mine-page .day .chain-fold { width: 40px; height: 36px; }
+
+  /* Light pages: entry, whiteboard, PRs, journal. */
+  #app.is-athlete .ui-wrap { padding: 16px 12px 28px; gap: 14px; }
+  #app.is-athlete .ui-head { gap: 10px; }
+  #app.is-athlete .entry-page .ui-head .ui-actions:empty { display: none; }
+  #app.is-athlete .entry-week { position: relative; }
+  #app.is-athlete .entry-week > button { min-width: 36px; min-height: 44px; }
+  #app.is-athlete .entry-day { min-height: 52px; }
+  #app.is-athlete .entry-list { padding: 6px; gap: 8px; }
+  #app.is-athlete .ui-page .entry-item { padding: 14px 12px; min-height: 56px; }
+  #app.is-athlete .entry-name strong { font-size: 16px; }
+  #app.is-athlete .entry-body { padding: 2px 12px 14px; align-items: stretch; }
+  #app.is-athlete .sets-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  #app.is-athlete .ui-page .sets { border-spacing: 0 8px; }
+  #app.is-athlete .ui-page .sets td { padding: 0 3px; }
+  #app.is-athlete .ui-page .sets input:not([type="checkbox"]) { height: 46px; min-width: 58px; }
+  #app.is-athlete .ui-page .sets input[type="checkbox"] { width: 30px; height: 30px; }
+  #app.is-athlete .ui-page .sets td.set-tick { width: 48px; }
+  #app.is-athlete .entry-body .complete, #app.is-athlete .entry-body .athlete-player:not(.playing) { height: 46px; }
+  #app.is-athlete .entry-body > .complete { width: 100%; }
+  #app.is-athlete .ui-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+}
+/* Installed to the home screen: no browser bars, so nothing should rubber-band or get selected by accident. */
+@media (display-mode: standalone) {
+  body { overscroll-behavior-y: none; -webkit-tap-highlight-color: transparent; }
+  .topnav, .athlete-tabs { -webkit-user-select: none; user-select: none; }
+}

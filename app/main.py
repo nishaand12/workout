@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from fastapi import FastAPI, Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from sqlalchemy.orm import Session
@@ -238,6 +238,11 @@ PUBLIC_ROUTES = {
     ("GET", "/"),
     ("HEAD", "/"),
     ("GET", "/health"),
+    # A phone fetches these without a token when the site is added to the home screen.
+    ("GET", "/manifest.webmanifest"),
+    ("GET", "/apple-touch-icon.png"),
+    ("GET", "/apple-touch-icon-precomposed.png"),
+    ("GET", "/favicon.ico"),
     ("GET", "/api/auth/config"),
     ("POST", "/api/auth/register"),
     ("POST", "/api/auth/login"),
@@ -756,7 +761,7 @@ def register_user(user_in: UserRegister, db: Session = Depends(get_db)):
         if crud.get_user_by_email_or_username(db, user_in.username):
             raise HTTPException(status_code=400, detail="This username is already taken.")
     user = crud.create_auth_user(db, user_in)
-    access_token = crud.create_access_token(user.id, user.role)
+    access_token = crud.create_session_token(user)
     return {"access_token": access_token, "token_type": "bearer", "user": user}
 
 @app.post("/api/auth/login", response_model=Token)
@@ -769,12 +774,17 @@ def login_user(login_in: UserLogin, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Invalid username/email or password.")
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account is disabled.")
-    access_token = crud.create_access_token(user.id, user.role)
+    access_token = crud.create_session_token(user)
     return {"access_token": access_token, "token_type": "bearer", "user": user}
 
 @app.get("/api/auth/me", response_model=UserResponse)
 def get_my_profile(current_user: crud.User = Depends(require_auth)):
     return current_user
+
+@app.post("/api/auth/refresh", response_model=Token)
+def refresh_session(current_user: crud.User = Depends(require_auth)):
+    """A fresh token for a signed-in user, so a session lasts from the last visit, not the first."""
+    return {"access_token": crud.create_session_token(current_user), "token_type": "bearer", "user": current_user}
 
 @app.post("/api/auth/view", response_model=UserResponse)
 def switch_view(req: ViewSwitch, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
@@ -797,7 +807,7 @@ async def sync_supabase_user(req: SupabaseAuthSync, db: Session = Depends(get_db
                     supabase_uid=req.supabase_uid,
                     role=req.role or "athlete"
                 ))
-            access_token = crud.create_access_token(user.id, user.role)
+            access_token = crud.create_session_token(user)
             return {"access_token": access_token, "token_type": "bearer", "user": user}
         raise HTTPException(status_code=401, detail="Could not verify Supabase credentials.")
 
@@ -820,7 +830,7 @@ async def sync_supabase_user(req: SupabaseAuthSync, db: Session = Depends(get_db
             user.supabase_uid = uid
             db.commit()
 
-    access_token = crud.create_access_token(user.id, user.role)
+    access_token = crud.create_session_token(user)
     return {"access_token": access_token, "token_type": "bearer", "user": user}
 
 @app.post("/api/auth/reset-password-request")
@@ -1449,6 +1459,21 @@ def _versioned_index(index_file: str) -> str:
         _index_cache["html"] = ASSET_LINK.sub(lambda m: f'"{m.group(1)}?v={_asset_hash(m.group(1))}"', html)
         _index_cache["key"] = key
     return _index_cache["html"]
+
+# The home screen manifest lives at the root so the installed app covers the whole site.
+@app.get("/manifest.webmanifest", include_in_schema=False)
+def serve_manifest():
+    return FileResponse(os.path.join(static_path, "manifest.webmanifest"), media_type="application/manifest+json")
+
+# Phones ask for these at the root without being told where they are.
+@app.get("/apple-touch-icon.png", include_in_schema=False)
+@app.get("/apple-touch-icon-precomposed.png", include_in_schema=False)
+def serve_touch_icon():
+    return FileResponse(os.path.join(static_path, "icons", "apple-touch-icon.png"), media_type="image/png")
+
+@app.get("/favicon.ico", include_in_schema=False)
+def serve_favicon():
+    return FileResponse(os.path.join(static_path, "icons", "icon-192.png"), media_type="image/png")
 
 @app.api_route("/", methods=["GET", "HEAD"])
 def serve_index():
