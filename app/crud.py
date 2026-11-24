@@ -270,8 +270,7 @@ def seed_database_if_empty(db: Session):
             calendar_date=cal_date,
             week_number=wk_num,
             day_of_week=dow,
-            description=w_data.get("description", ""),
-            video_url=w_data.get("video_url", "")
+            description=w_data.get("description", "")
         )
         db.add(workout)
         db.flush()
@@ -285,7 +284,7 @@ def seed_database_if_empty(db: Session):
                     name=ex_name,
                     category="Strength",
                     default_notes=item.get("notes", ""),
-                    video_url=f"https://www.youtube.com/results?search_query={ex_name.replace(' ', '+')}"
+                    video_url=""
                 )
                 db.add(ex_obj)
                 db.flush()
@@ -1165,8 +1164,7 @@ def create_workout(db: Session, workout_in: WorkoutCreate):
         calendar_date=cal_date,
         week_number=wk_num,
         day_of_week=workout_in.day_of_week or dow,
-        description=workout_in.description or "",
-        video_url=workout_in.video_url or ""
+        description=workout_in.description or ""
     )
     db.add(workout)
     db.flush()
@@ -1257,7 +1255,6 @@ def add_workout_to_day(db: Session, req: AddWorkoutToDayRequest, viewer: User) -
             calendar_date=req.calendar_date or src_w.calendar_date,
             scheduled_date=src_w.scheduled_date,
             description=src_w.description,
-            video_url=src_w.video_url,
             gym_id=viewer.gym_id,
             created_by_coach_id=viewer.id,
         )
@@ -1302,7 +1299,6 @@ def save_program_template(db: Session, req: SaveProgramTemplateRequest, viewer: 
             calendar_date="",
             scheduled_date=src_w.scheduled_date,
             description=src_w.description,
-            video_url=src_w.video_url,
             gym_id=viewer.gym_id,
             created_by_coach_id=viewer.id,
         )
@@ -1598,7 +1594,6 @@ def copy_week(db: Session, req: CopyWeekRequest, viewer: User) -> List[Workout]:
                 calendar_date=target_iso,
                 scheduled_date=target_display,
                 description=src_w.description,
-                video_url=src_w.video_url,
                 gym_id=viewer.gym_id,
                 created_by_coach_id=viewer.id,
             )
@@ -2042,7 +2037,6 @@ def write_group_day_onto_members(db: Session, group: Optional[Group], source: Op
             week_number=source.week_number or 1,
             day_of_week=source.day_of_week or "",
             description=source.description or "",
-            video_url=source.video_url or "",
             created_by_coach_id=coach_id or source.created_by_coach_id,
             gym_id=source.gym_id,
         )
