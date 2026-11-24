@@ -59,7 +59,7 @@ vm.createContext(sandbox);
 
 const source = fs.readFileSync("app/static/js/build-order.js", "utf8") + "\n" + fs.readFileSync("app/static/js/wourkout.js", "utf8") + `
 globalThis.__lib = {
-  nav, mineView, athleteTabsHtml, installBannerHtml, installHelpHtml, openInstallHelp, dismissInstallBanner, devicePlatform, renewSession, weekRangeLabel, drawerHtml, modalHtml, entryItem, athleteDayCol, sundayOf, addDays, APP_TODAY, setMineMode, shiftMine, mineToday, mineDayStatus, mineMonthHtml, shiftMonth, mineMode, todayIso, dateInZone, noteAppSignIn, adoptAppSignIn, inAppSignInSheet, appSignInPending, syncSupabaseSession, appSignInDoneHtml, stayInSignInSheet, handleLogout,
+  nav, mineView, athleteTabsHtml, installBannerHtml, installHelpHtml, openInstallHelp, dismissInstallBanner, devicePlatform, renewSession, weekRangeLabel, drawerHtml, modalHtml, entryItem, athleteDayCol, sundayOf, addDays, APP_TODAY, setMineMode, shiftMine, mineToday, mineDayStatus, mineMonthHtml, shiftMonth, mineMode, todayIso, dateInZone, noteAppSignIn, adoptAppSignIn, inAppSignInSheet, appSignInPending, syncSupabaseSession, appSignInDoneHtml, stayInSignInSheet, handleLogout, handleGoogleLogin, loadAuthConfig, resumeStoredSession, renderLoginGate,
   state, item, ensureDay, addChainToDay, selectChain, chainBoxPop, closeChainBox, toggleTrack, setCell, changeSets,
   doseKeys, scriptLine, chainEditorHtml, openChainEditor, chainMemberPayload, itemNotes: typeof itemNotes === "function" ? itemNotes : null,
   weekPhases, phaseBannerStyle, phaseTagsHtml, weekNoteHtml, weekNoteOpen, phasesPanelHtml, pickPhaseRange, savePhaseDraft,
@@ -280,6 +280,54 @@ state.gymContext = { athletes: [], calendars: [] };
   await lib.syncSupabaseSession("supabase-token");
   assert.ok(!state.auth.returnToApp);
   assert.equal(await lib.adoptAppSignIn(), false, "only the installed app picks up a sign-in");
+}
+
+// Google sign-in survives a page load where the settings or the Supabase script did not arrive.
+{
+  const config = { supabase_url: "https://project.supabase.test", supabase_anon_key: "real-key", allow_google_oauth: true };
+  let online = false;
+  const opened = [];
+  sandbox.location.assign = (url) => opened.push(url);
+  sandbox.__setApi(async (method, url) => {
+    if (!online) throw new TypeError("Load failed");
+    if (url === "/api/auth/config") return config;
+    return [];
+  });
+  lib.handleLogout();
+  state.auth.config = { supabase_url: "", supabase_anon_key: "", allow_google_oauth: false };
+  sandbox.supabaseClient = undefined;
+
+  await lib.handleGoogleLogin();
+  assert.equal(state.modal, null, "no settings dialog for the person signing in");
+  assert.ok(state.auth.error.includes("Check your connection"));
+  assert.equal(opened.length, 0);
+
+  online = true;
+  await lib.handleGoogleLogin();
+  assert.equal(state.auth.error, "");
+  assert.equal(opened[0], "https://project.supabase.test/auth/v1/authorize?provider=google&redirect_to=http%3A%2F%2Flocalhost%2F");
+
+  // One sign-in at a time.
+  state.auth.loading = true;
+  await lib.handleGoogleLogin();
+  assert.equal(opened.length, 1);
+  assert.ok(/class="google-btn"[^>]*disabled/.test(lib.renderLoginGate()));
+  state.auth.loading = false;
+
+  state.auth.config = { ...config, allow_google_oauth: false };
+  await lib.handleGoogleLogin();
+  assert.ok(state.auth.error.includes("not available"));
+  assert.equal(opened.length, 1);
+}
+
+// A dropped connection does not sign the device out.
+{
+  store.data = { wourkout_token: "still-good" };
+  sandbox.__setApi(async () => { throw new TypeError("Load failed"); });
+  assert.equal(await lib.resumeStoredSession(), false);
+  assert.equal(store.data.wourkout_token, "still-good");
+  assert.ok(state.auth.error.includes("Check your connection"));
+  store.data = {};
 }
 
 console.log("athlete mobile ui tests passed");

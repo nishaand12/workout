@@ -417,7 +417,7 @@ const state = {
     resetToken: null,
     roleChoice: "athlete",
     regDraft: { name: "", username: "", email: "", password: "" },
-    config: { supabase_url: "", supabase_anon_key: "", google_auth_enabled: false }
+    config: { supabase_url: "", supabase_anon_key: "", allow_google_oauth: false }
   },
   gymContext: null,
   gymActivity: null,
@@ -9170,17 +9170,6 @@ function modalHtml() {
   if (m.type === "journal") {
     return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render();}"><div class="modal"><h3>Journal entry</h3><div class="modal-body ui-form">${uiField("Title", `<input class="field" data-focus="jtitle" value="${esc(m.title || "")}" oninput="state.modal.title=this.value">`)}${uiField("Entry", `<textarea data-focus="jbody" oninput="state.modal.body=this.value">${esc(m.body || "")}</textarea>`)}</div><div class="modal-foot"><button class="full" onclick="state.modal=null;render()">Cancel</button><button class="full primary" onclick="saveJournalEntry()">Save</button></div></div></div>`;
   }
-  if (m.type === "google_options") {
-    return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render();}"><div class="modal" style="max-width:440px">
-      <h3>Google sign-in</h3>
-      <p class="modal-sub">Live Google sign-in runs through your Supabase project.</p>
-      <div class="modal-body ui-form">
-        ${uiField("Supabase project anon key (public)", `<input class="field" id="modal-anon-key" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6...">`)}
-        <button class="btn btn-secondary btn-block" type="button" onclick="saveSupabaseAnonKey()">Save key and open Google sign-in</button>
-      </div>
-      <div class="modal-foot"><button class="full" type="button" onclick="state.modal=null;render()">Cancel</button></div>
-    </div></div>`;
-  }
   return "";
 }
 function saveInfo() {
@@ -9772,14 +9761,14 @@ function renderLoginGate() {
   const succHtml = state.auth.success ? `<div class="auth-success-banner">${esc(state.auth.success)}</div>` : "";
   
   const googleBtn = (mode === "login" || mode === "register") ? `
-    <button type="button" class="google-btn" onclick="handleGoogleLogin()">
+    <button type="button" class="google-btn" onclick="handleGoogleLogin()" ${state.auth.loading ? "disabled" : ""}>
       <svg viewBox="0 0 24 24">
         <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
         <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
         <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
         <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
       </svg>
-      Continue with Google
+      ${state.auth.loading ? "Signing in..." : "Continue with Google"}
     </button>
     <div class="auth-divider">or continue with email</div>
   ` : "";
@@ -9996,38 +9985,32 @@ async function handleRegister(e) {
 }
 
 async function handleGoogleLogin() {
+  if (state.auth.loading) return;
   state.auth.error = "";
-  if (window.supabaseClient) {
-    try {
-      noteAppSignIn();
+  try {
+    // The settings can fail to load when the page opens on a weak connection, so ask again here.
+    if (!state.auth.config.supabase_url) await loadAuthConfig();
+    const config = state.auth.config;
+    if (!config.allow_google_oauth) {
+      throw new Error("Google sign-in is not available right now. Sign in with your email and password.");
+    }
+    noteAppSignIn();
+    const redirectTo = window.location.origin + window.location.pathname;
+    if (window.supabaseClient) {
       const { error } = await window.supabaseClient.auth.signInWithOAuth({
         provider: "google",
-        options: {
-          redirectTo: window.location.origin + window.location.pathname
-        }
+        options: { redirectTo }
       });
       if (error) throw error;
-    } catch (err) {
-      state.auth.error = err.message || "Google sign in error";
-      render();
+    } else {
+      // The Supabase script did not load (a content blocker, or its host is down). This is the
+      // same address it would have opened.
+      window.location.assign(config.supabase_url + "/auth/v1/authorize?" + new URLSearchParams({ provider: "google", redirect_to: redirectTo }));
     }
-  } else {
-    state.modal = { type: "google_options" };
+  } catch (err) {
+    state.auth.error = isOffline(err) ? OFFLINE_MESSAGE : (err.message || "Google sign in error");
     render();
   }
-}
-
-async function saveSupabaseAnonKey() {
-  const key = (document.getElementById("modal-anon-key")?.value || "").trim();
-  if (!key) { toast("Please enter the Anon key"); return; }
-  localStorage.setItem("wourkout_supabase_anon_key", key);
-  state.modal = null;
-  const supaUrl = (state.auth.config && state.auth.config.supabase_url) || "https://kqznlgtnexcsgpgifaou.supabase.co";
-  if (window.supabase) {
-    window.supabaseClient = window.supabase.createClient(supaUrl, key);
-  }
-  toast("Key saved! Connecting to Google...");
-  await handleGoogleLogin();
 }
 
 async function syncSupabaseSession(accessToken) {
@@ -10130,16 +10113,23 @@ function handleLogout(reason) {
   render();
 }
 
+const OFFLINE_MESSAGE = "Could not reach wourkout. Check your connection and try again.";
+// fetch rejects with a TypeError when no answer came back at all.
+function isOffline(err) {
+  return !!err && err.name === "TypeError";
+}
+async function loadAuthConfig() {
+  const config = await api("GET", "/api/auth/config");
+  state.auth.config = config;
+  if (!window.supabaseClient && window.supabase && config.supabase_url && config.supabase_anon_key) {
+    window.supabaseClient = window.supabase.createClient(config.supabase_url, config.supabase_anon_key);
+  }
+}
 async function initAuth() {
+  // A key once typed into the old Google sign-in dialog must not replace the real one.
+  localStorage.removeItem("wourkout_supabase_anon_key");
   try {
-    const config = await api("GET", "/api/auth/config").catch(() => null);
-    if (config) {
-      state.auth.config = config;
-      const anonKey = localStorage.getItem("wourkout_supabase_anon_key") || config.supabase_anon_key;
-      if (window.supabase && config.supabase_url && anonKey) {
-        window.supabaseClient = window.supabase.createClient(config.supabase_url, anonKey);
-      }
-    }
+    await loadAuthConfig();
   } catch (e) {
     console.warn("Could not load auth config:", e);
   }
@@ -10187,8 +10177,12 @@ async function resumeStoredSession() {
     }
     return true;
   } catch (err) {
-    console.warn("Session expired or invalid:", err);
-    localStorage.removeItem("wourkout_token");
+    console.warn("Could not resume the session:", err);
+    // A refused token is already cleared by api(). Anything else, such as a dropped connection,
+    // keeps it so the next visit is still signed in.
+    if (localStorage.getItem("wourkout_token")) {
+      state.auth.error = isOffline(err) ? OFFLINE_MESSAGE : "Could not open your account. Reload the page to try again.";
+    }
     state.auth.token = null;
     state.auth.user = null;
     state.auth.isAuthenticated = false;
@@ -10293,7 +10287,6 @@ window.updateRegDraft = updateRegDraft;
 window.handleLogin = handleLogin;
 window.handleRegister = handleRegister;
 window.handleGoogleLogin = handleGoogleLogin;
-window.saveSupabaseAnonKey = saveSupabaseAnonKey;
 window.handleForgotPassword = handleForgotPassword;
 window.handleResetPassword = handleResetPassword;
 window.handleLogout = handleLogout;
