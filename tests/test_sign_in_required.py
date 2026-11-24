@@ -3,6 +3,7 @@ import os
 import re
 import tempfile
 import unittest
+from unittest import mock
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///" + os.path.join(tempfile.mkdtemp(), "signin.db"))
 os.environ["SUPABASE_URL"] = ""
@@ -51,6 +52,36 @@ class SignInRequiredTests(unittest.TestCase):
         bad_login = self.client.post("/api/auth/login", json={"email_or_username": "nobody", "password": "wrong"})
         self.assertNotEqual(bad_login.status_code, 404)
         self.assertIn(bad_login.status_code, (400, 401))
+
+    def test_supabase_sign_in_rejects_a_token_supabase_did_not_verify(self):
+        coach = self.client.post("/api/auth/register", json={
+            "name": "Sync Victim", "email": "sync.victim@example.com", "password": "Password123!", "role": "coach",
+        })
+        self.assertEqual(coach.status_code, 201)
+        for body in (
+            {"access_token": "not-a-real-token", "email": "sync.victim@example.com", "supabase_uid": "x"},
+            {"access_token": "not-a-real-token", "email": "brand.new@example.com", "role": "admin"},
+        ):
+            res = self.client.post("/api/auth/sync-supabase", json=body)
+            self.assertEqual(res.status_code, 401, body)
+            self.assertNotIn("access_token", res.json())
+
+    def test_supabase_sign_in_uses_who_supabase_says_not_the_request(self):
+        verified = {"id": "supa-uid-1", "email": "verified.person@example.com", "user_metadata": {"full_name": "Verified Person"}}
+        with mock.patch("app.main.crud.verify_supabase_token", mock.AsyncMock(return_value=verified)):
+            res = self.client.post("/api/auth/sync-supabase", json={
+                "access_token": "checked-by-supabase", "email": "someone.else@example.com",
+            })
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["user"]["email"], "verified.person@example.com")
+
+    def test_reset_request_never_hands_out_a_token(self):
+        self.client.post("/api/auth/register", json={
+            "name": "Reset Victim", "email": "reset.victim@example.com", "password": "Password123!", "role": "coach",
+        })
+        res = self.client.post("/api/auth/reset-password-request", json={"email": "reset.victim@example.com"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(set(res.json()), {"message"})
 
     def test_api_docs_are_not_published(self):
         for path in ("/docs", "/redoc", "/openapi.json"):

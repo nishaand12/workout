@@ -280,10 +280,12 @@ class TrainerFlowTests(unittest.TestCase):
         req_res = self.client.post("/api/auth/reset-password-request", json={"email": email})
         self.assertEqual(req_res.status_code, 200)
         self.assertIn("message", req_res.json())
-        token = req_res.json()["reset_token"]
-        self.assertIsNotNone(token)
+        # The answer must never carry a token: anyone could type someone else's email.
+        self.assertNotIn("reset_token", req_res.json())
+        self.assertNotIn("access_token", req_res.json())
 
-        # Confirm reset
+        # Confirm reset with a token the user really holds (in production, Supabase's recovery session).
+        token = reg.json()["access_token"]
         confirm_res = self.client.post("/api/auth/reset-password", json={
             "token": token,
             "new_password": "NewPassword123!"

@@ -438,8 +438,6 @@ class AuthConfigResponse(BaseModel):
 
 class SupabaseAuthSync(BaseModel):
     access_token: str
-    supabase_uid: Optional[str] = None
-    email: Optional[str] = None
     name: Optional[str] = None
     role: Optional[str] = "athlete"
 

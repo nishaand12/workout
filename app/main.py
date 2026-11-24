@@ -795,20 +795,9 @@ def switch_view(req: ViewSwitch, db: Session = Depends(get_db), current_user: cr
 
 @app.post("/api/auth/sync-supabase", response_model=Token)
 async def sync_supabase_user(req: SupabaseAuthSync, db: Session = Depends(get_db)):
+    # Who is signing in comes only from Supabase. Nothing the caller sends names an account.
     supa_user = await crud.verify_supabase_token(req.access_token)
     if not supa_user:
-        if req.email:
-            user = crud.get_user_by_email_or_username(db, req.email)
-            if not user:
-                user = crud.create_auth_user(db, UserRegister(
-                    name=req.name or req.email.split("@")[0],
-                    email=req.email,
-                    password="",
-                    supabase_uid=req.supabase_uid,
-                    role=req.role or "athlete"
-                ))
-            access_token = crud.create_session_token(user)
-            return {"access_token": access_token, "token_type": "bearer", "user": user}
         raise HTTPException(status_code=401, detail="Could not verify Supabase credentials.")
 
     uid = supa_user.get("id")
@@ -834,15 +823,10 @@ async def sync_supabase_user(req: SupabaseAuthSync, db: Session = Depends(get_db
     return {"access_token": access_token, "token_type": "bearer", "user": user}
 
 @app.post("/api/auth/reset-password-request")
-async def reset_password_request(req: PasswordResetRequest, db: Session = Depends(get_db)):
-    user = crud.get_user_by_email_or_username(db, req.email)
-    reset_token = None
-    if user:
-        reset_token = crud.create_access_token(user.id, role=user.role, expires_hours=1)
-    return {
-        "message": "If this email is registered, password reset instructions have been sent.",
-        "reset_token": reset_token
-    }
+async def reset_password_request(req: PasswordResetRequest):
+    # The reset email itself comes from Supabase. This answer never carries a token, because a
+    # token here would sign anyone in as whoever owns the email they typed.
+    return {"message": "If this email is registered, password reset instructions have been sent."}
 
 @app.post("/api/auth/reset-password")
 async def reset_password(req: PasswordResetConfirm, db: Session = Depends(get_db)):

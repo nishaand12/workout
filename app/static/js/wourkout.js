@@ -9175,8 +9175,6 @@ function modalHtml() {
       <h3>Google sign-in</h3>
       <p class="modal-sub">Live Google sign-in runs through your Supabase project.</p>
       <div class="modal-body ui-form">
-        <button class="btn btn-primary btn-block" type="button" onclick="handleGoogleDemoLogin()">Continue with Google (1-click)</button>
-        <div class="auth-divider" style="margin:4px 0">or connect a live project</div>
         ${uiField("Supabase project anon key (public)", `<input class="field" id="modal-anon-key" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6...">`)}
         <button class="btn btn-secondary btn-block" type="button" onclick="saveSupabaseAnonKey()">Save key and open Google sign-in</button>
       </div>
@@ -10019,28 +10017,6 @@ async function handleGoogleLogin() {
   }
 }
 
-async function handleGoogleDemoLogin() {
-  state.modal = null;
-  state.auth.loading = true;
-  state.auth.error = "";
-  render();
-  try {
-    const data = await api("POST", "/api/auth/sync-supabase", {
-      access_token: "google_oauth_token",
-      role: state.auth.roleChoice || "athlete",
-      email: "google.user@gmail.com",
-      name: "Google User"
-    });
-    await enterApp(data);
-    toast("Welcome, " + (data.user.name || data.user.username));
-  } catch (err) {
-    state.auth.error = err.message || "Failed to sign in with Google";
-  } finally {
-    state.auth.loading = false;
-    render();
-  }
-}
-
 async function saveSupabaseAnonKey() {
   const key = (document.getElementById("modal-anon-key")?.value || "").trim();
   if (!key) { toast("Please enter the Anon key"); return; }
@@ -10317,7 +10293,6 @@ window.updateRegDraft = updateRegDraft;
 window.handleLogin = handleLogin;
 window.handleRegister = handleRegister;
 window.handleGoogleLogin = handleGoogleLogin;
-window.handleGoogleDemoLogin = handleGoogleDemoLogin;
 window.saveSupabaseAnonKey = saveSupabaseAnonKey;
 window.handleForgotPassword = handleForgotPassword;
 window.handleResetPassword = handleResetPassword;
