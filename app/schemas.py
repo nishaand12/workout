@@ -194,7 +194,6 @@ class WorkoutBase(BaseModel):
     week_number: Optional[int] = 1
     day_of_week: Optional[str] = "Monday"
     description: Optional[str] = ""
-    video_url: Optional[str] = ""
 
 class WorkoutCreate(WorkoutBase):
     exercises: Optional[List[WorkoutExerciseCreate]] = []
@@ -207,7 +206,6 @@ class WorkoutUpdate(BaseModel):
     week_number: Optional[int] = None
     day_of_week: Optional[str] = None
     description: Optional[str] = None
-    video_url: Optional[str] = None
     exercises: Optional[List[WorkoutExerciseCreate]] = None
 
 class WorkoutResponse(WorkoutBase):

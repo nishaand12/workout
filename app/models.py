@@ -281,7 +281,6 @@ class Workout(Base):
     week_number = Column(Integer, default=1, index=True)
     day_of_week = Column(String(50), default="Monday", index=True)
     description = Column(Text, default="")
-    video_url = Column(String(500), default="")  # Workout-level video link
     created_by_coach_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     gym_id = Column(Integer, ForeignKey("gyms.id", ondelete="CASCADE"), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
