@@ -437,7 +437,8 @@
   background: var(--ui-surface); color: var(--ui-text); border: 1px solid var(--ui-border-strong); border-radius: var(--ui-r-control);
   font: inherit; font-size: 14px; font-weight: 500; cursor: pointer; box-shadow: var(--ui-shadow);
 }
-.google-btn:hover { background: var(--ui-hover); }
+.google-btn:hover:not(:disabled) { background: var(--ui-hover); }
+.google-btn:disabled { opacity: .5; cursor: not-allowed; }
 .google-btn svg { width: 18px; height: 18px; }
 .auth-divider { display: flex; align-items: center; color: var(--ui-subtle); font-size: 12px; margin: 18px 0; }
 .auth-divider::before, .auth-divider::after { content: ""; flex: 1; border-bottom: 1px solid var(--ui-border); }
