@@ -26,13 +26,25 @@ def build_engine(url: str):
             pool_pre_ping=True
         )
     else:
-        # Serverless-optimized pooling for Supabase / Cloud Run
+        # One Cloud Run instance runs many requests at once, and each request
+        # holds a connection until its session is closed. pool_size 5 +
+        # max_overflow 5 is 10, so the next checkout waits the default 30s
+        # and raises QueuePool TimeoutError. That is the outage.
+        #
+        # Supabase's session pooler keeps one Postgres backend per client
+        # connection. Small computes default that pool to 15 backends, shared
+        # with the rest of the project, so this process may burst to 15 and
+        # no higher. Overflow connections are closed when returned; an idle
+        # instance keeps only pool_size. pool_pre_ping and pool_recycle drop
+        # connections the pooler has already closed.
         return create_engine(
             url,
             pool_size=5,
-            max_overflow=5,
+            max_overflow=10,
+            pool_timeout=30,
             pool_recycle=300,
-            pool_pre_ping=True
+            pool_pre_ping=True,
+            pool_use_lifo=True,
         )
 
 engine = build_engine(db_url)
@@ -56,9 +68,13 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 def get_db():
+    """One session per request. Always returned to the pool, including on errors."""
     db = SessionLocal()
     try:
         yield db
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 
