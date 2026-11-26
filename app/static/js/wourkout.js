@@ -88,6 +88,7 @@ function item(partial) {
     powers: Array(sets).fill(""), pcts: Array(sets).fill(""),
     props: [], note: "", detail: "", questions: [], requireResponse: false,
     completionOnly: false, textOnly: false, trackReps: true, trackTime: false, trackDistance: false, trackVolume: false, videoUrl: "",
+    perSide: false,
     dose: 2
   };
   return Object.assign(base, partial, { reps: reps.slice() });
@@ -193,7 +194,7 @@ function fromCatalog(entry) {
   const defaults = libraryDefaultsFrom(record);
   if (entry.type === "note") {
     return item({
-      name: entry.name, type: "note", letter: "A", sets: 0, reps: [],
+      name: entry.name, type: "note", letter: "", sets: 0, reps: [],
       note: defaults ? (defaults.note || "") : "", trackReps: false, completionOnly: false,
       videoUrl: defaults && defaults.videoUrl ? defaults.videoUrl : ""
     });
@@ -218,7 +219,7 @@ function fromCatalog(entry) {
     }, defaults));
   }
   if (entry.type === "break") return item({ name: "Session Break", type: "break", letter: "", sets: 0, reps: [], trackReps: false });
-  if (entry.type === "rest") return item({ name: "Rest Time", type: "rest", letter: "", sets: 1, reps: [60], note: "60s", trackReps: false });
+  if (entry.type === "rest") return restItem(60);
   if (entry.type === "video") return item({ name: "Video", type: "video", letter: "", sets: 0, reps: [], trackReps: false });
   const sets = defaults ? Math.max(1, Math.min(10, parseInt(defaults.sets, 10) || 1)) : 1;
   const rep = defaults && defaults.reps != null && String(defaults.reps).trim() !== "" ? defaults.reps : "1";
@@ -322,6 +323,7 @@ const state = {
   propMenu: false,
   trackMenu: false,
   letterMenu: false,
+  selLetterMenu: null,
   optionsMenu: false,
   supersetMenu: false,
   dayMenu: null,
@@ -562,16 +564,22 @@ function doseMark(key, value) {
   return raw;
 }
 // "3 x 2 · 10 m": the first measure carries the set count, the rest follow it.
+// Reps counted on each side read "3 x 8/side".
 function doseText(it) {
   let keys = doseKeys(it);
   if (!keys.length) keys = ["reps"];
   const count = it.sets || 1;
+  const side = (key) => (key === "reps" && it.perSide ? "/side" : "");
   return keys.map((key, index) => {
     const values = doseArray(it, key);
     const same = values.every((v) => String(v) === String(values[0]));
-    if (index === 0) return same ? count + " x " + doseMark(key, values[0]) : values.map((v) => doseMark(key, v)).join(", ");
-    return same ? doseMark(key, values[0]) : values.map((v) => doseMark(key, v)).join("/");
+    if (index === 0) return same ? count + " x " + doseMark(key, values[0]) + side(key) : values.map((v) => doseMark(key, v)).join(", ") + side(key);
+    return same ? doseMark(key, values[0]) + side(key) : values.map((v) => doseMark(key, v)).join("/") + side(key);
   }).join(" · ");
+}
+// Reps a coach marks per side: each number is done on the left and again on the right.
+function repsWord(it) {
+  return it && it.perSide ? "Reps/side" : "Reps";
 }
 function loadPhrase(loads, unit) {
   if (!(loads || []).some((x) => x !== "" && x != null)) return "";
@@ -634,7 +642,7 @@ function reletter(day) {
   const letters = day.items.map((it) => it.letter).filter(Boolean);
   const unique = new Set(letters);
   if (unique.size !== letters.length) return;
-  day.items.forEach((it, i) => { if (it.type !== "break" && it.type !== "rest" && it.type !== "video") it.letter = LETTERS[Math.min(i, 9)]; });
+  day.items.forEach((it, i) => { if (it.type !== "break" && it.type !== "rest" && it.type !== "video" && it.type !== "note") it.letter = LETTERS[Math.min(i, 9)]; });
 }
 function resizeSets(it, n) {
   n = Math.max(1, Math.min(10, n));
@@ -676,6 +684,8 @@ function render() {
   const focusId = active && active.dataset ? active.dataset.focus : null;
   const selStart = active && active.selectionStart;
   const selEnd = active && active.selectionEnd;
+  // A set box the athlete is typing in keeps what they typed when a save elsewhere redraws the page.
+  const keptValue = active && active.dataset && active.dataset.keep != null ? active.value : null;
   const phaseScroll = document.querySelector('.build-panel[data-panel="phases"] .bp-scroll');
   const phaseScrollTop = phaseScroll ? phaseScroll.scrollTop : 0;
   const chainScroll = document.querySelector(".editor.chain-box");
@@ -721,6 +731,7 @@ function render() {
     if (focusKey) {
       const el = document.querySelector(`[data-focus="${focusKey}"]`);
       if (el) {
+        if (!pending && keptValue != null && el.dataset && el.dataset.keep != null && el.value !== keptValue) el.value = keptValue;
         el.focus();
         if (!pending && selStart != null && el.setSelectionRange) {
           try { el.setSelectionRange(selStart, selEnd == null ? selStart : selEnd); } catch (e) { /* ignore */ }
@@ -927,6 +938,8 @@ function itemNotes(it) {
     } else if (it.trackReps === false && !it.trackTime && !it.trackDistance) flags.push("noTrackReps");
   }
   if (it.trackVolume) flags.push("trackVolume");
+  if (dosed && it.perSide) flags.push("perSide");
+  if (it.type === "rest") flags.push("rest");
   if (it.type === "circuit" && it.completionOnly === false) flags.push("noCompletionOnly");
   else if (it.completionOnly) flags.push("completionOnly");
   if (dosed && it.completionOnly && it.textOnly) flags.push("textOnly");
@@ -946,6 +959,16 @@ function itemNotes(it) {
   });
   return lines.filter(Boolean).join("\n");
 }
+// A rest is saved as the library exercise "Rest Time" with a rest flag. Days saved before the
+// flag still name it, so the name alone also marks a rest.
+const REST_NAME = "Rest Time";
+function isRestName(name) {
+  return String(name || "").trim().toLowerCase() === REST_NAME.toLowerCase();
+}
+function restItem(seconds, extra) {
+  const secs = String(seconds == null || seconds === "" ? 60 : seconds).replace(/s$/i, "").trim() || "60";
+  return Object.assign(item({ name: REST_NAME, type: "rest", letter: "", sets: 1, reps: [secs], note: secs + "s", trackReps: false }), extra || {});
+}
 function workoutToDayItems(workout) {
   if (!workout || !Array.isArray(workout.exercises)) return [];
   return workout.exercises.slice().sort((a, b) => (a.order_index || 0) - (b.order_index || 0)).map((we) => {
@@ -953,6 +976,23 @@ function workoutToDayItems(workout) {
     const flags = parsed.flags;
     const loads = String(we.target_weight || "").split(",");
     const cat = String((we.exercise && we.exercise.category) || "");
+    if (flags.indexOf("rest") >= 0 || isRestName(we.exercise && we.exercise.name)) {
+      const firstRep = String(we.target_reps || "").split(",")[0].trim();
+      const seconds = (parsed.times[0] && String(parsed.times[0]).trim()) || (firstRep && firstRep !== "1" ? firstRep : "") || "60";
+      return restItem(seconds, {
+        id: "wx" + we.id,
+        weId: we.id,
+        exerciseId: we.exercise_id,
+        letter: we.chain_instance ? (we.superset_group || "") : "",
+        chainId: we.chain_id || null,
+        chainInstance: we.chain_instance || "",
+        chainName: we.chain_name || "",
+        chainKind: we.chain_kind || "",
+        chainOrder: we.chain_order || 0,
+        chainCoachOpen: !!we.chain_coach_open,
+        chainAthleteOpen: !!we.chain_athlete_open
+      });
+    }
     const type = dayItemType(cat, parsed);
     const sets = type === "note" ? 0 : (we.prescribed_sets || 1);
     // Days saved before dose2 kept seconds or distance in the reps row. upgradeDose moves them out.
@@ -970,7 +1010,8 @@ function workoutToDayItems(workout) {
       id: "wx" + we.id,
       weId: we.id,
       name: (we.exercise && we.exercise.name) || "Exercise",
-      letter: we.chain_instance ? (we.superset_group || "") : (we.superset_group || "A"),
+      // A note is not an exercise, so it never carries a letter.
+      letter: type === "note" ? "" : (we.chain_instance ? (we.superset_group || "") : (we.superset_group || "A")),
       type,
       sets,
       reps: type === "note" ? [] : reps,
@@ -1000,6 +1041,7 @@ function workoutToDayItems(workout) {
           ? false
           : ((type === "circuit" || type === "questionnaire") ? flags.indexOf("trackReps") >= 0 : flags.indexOf("noTrackReps") < 0)),
       trackVolume: flags.indexOf("trackVolume") >= 0,
+      perSide: type === "lift" && flags.indexOf("perSide") >= 0,
       completionOnly,
       textOnly: type === "lift" && completionOnly && (flags.indexOf("textOnly") >= 0 || isTextOnlyCategory(cat)),
       exerciseId: we.exercise_id,
@@ -2613,7 +2655,7 @@ function buildView() {
           <div class="crumbs">Calendars / ${esc(currentTarget.name)}</div>
           <div class="athlete-pick">
             <button type="button" class="athlete-name" id="build-athlete" onclick="toggleAthleteMenu(event)">${esc(currentTarget.name)} ▾</button>
-            ${state.athleteMenu ? `<div class="menu athlete-menu" id="build-athlete-menu">${buildAthletes().map((a) => `<button type="button" class="${a.id === state.athleteId ? "on" : ""}" onclick="switchAthlete('${esc(a.id)}')">${a.id === state.athleteId ? "✓ " : ""}${esc(a.name)}</button>`).join("")}${state.role === "coach" ? `<button type="button" class="athlete-menu-new" onclick="openNewCalendar(event)">+ Create new calendar</button>` : ""}</div>` : ""}
+            ${state.athleteMenu ? `<div class="menu athlete-menu" id="build-athlete-menu">${buildAthletes().map((a) => `<button type="button" class="${a.id === state.athleteId ? "on" : ""}" onclick="switchAthlete('${esc(a.id)}')">${a.id === state.athleteId ? "✓ " : ""}${esc(a.name)}${noCalendarAthlete(a) ? ` <span class="muted">· no calendar</span>` : ""}</button>`).join("")}${state.role === "coach" ? `<button type="button" class="athlete-menu-new" onclick="openNewCalendar(event)">+ Create new calendar</button>` : ""}</div>` : ""}
           </div>
         </div>
         <div class="sub-actions">
@@ -2632,9 +2674,54 @@ function buildView() {
           </select>
         </div>
       </div>
-      <div class="cal-scroll build-cal ${state.viewMode === "week" ? "mode-week" : "mode-month"}" onscroll="onBuildScroll(this)">${weeksHtml}</div>
+      ${noCalendarAthlete(currentTarget) ? noCalendarHtml(currentTarget) : `<div class="cal-scroll build-cal ${state.viewMode === "week" ? "mode-week" : "mode-month"}" onscroll="onBuildScroll(this)">${weeksHtml}</div>`}
       ${floatingEditor}
     </section>`;
+}
+// An athlete in the picker who follows no calendar. Programming lives on calendars, so Build
+// asks the coach to put them on one instead of showing an empty grid.
+function noCalendarAthlete(target) {
+  if (!target || target.isCalendar || !target.serverId || state.role === "athlete") return false;
+  const ctx = state.gymContext;
+  const row = ctx && (ctx.athletes || []).find((u) => u.id === target.serverId);
+  return !!row && !row.calendar_id;
+}
+function noCalendarHtml(target) {
+  const calendars = ((state.gymContext && state.gymContext.calendars) || []).slice().sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+  const pick = calendars.length
+    ? `<div class="no-cal-row"><select class="ghost" id="no-cal-pick" aria-label="Calendar for ${esc(target.name)}">${calendars.map((c) => `<option value="${c.id}">${esc(c.name)}${c.athlete_count ? " (" + c.athlete_count + ")" : ""}</option>`).join("")}</select>
+        <button type="button" class="pill on" onclick="placeOnCalendar(${target.serverId})">Put on this calendar</button></div>`
+    : "";
+  return `<div class="no-cal" role="status">
+    <h3>${esc(target.name)} isn't on a calendar</h3>
+    <p>Workouts live on calendars. Put ${esc(target.name)} on one to program for them.</p>
+    ${pick}
+    <button type="button" class="pill" onclick="newCalendarFor(${target.serverId})">+ New calendar: ${esc(target.name)}</button>
+  </div>`;
+}
+async function placeOnCalendar(userId, calendarId) {
+  const el = document.getElementById("no-cal-pick");
+  const id = calendarId || parseInt((el && el.value) || "", 10);
+  if (!id) { toast("Choose a calendar"); return; }
+  try {
+    await api("PUT", "/api/users/" + userId, { calendar_id: id });
+    await loadGymContext();
+    toast("Calendar assigned");
+    if (buildAthletes().some((a) => a.id === "cal:" + id)) switchAthlete("cal:" + id);
+    else render();
+  } catch (err) {
+    toast(err.message || "Could not assign that calendar");
+  }
+}
+async function newCalendarFor(userId) {
+  const row = ((state.gymContext && state.gymContext.athletes) || []).find((u) => u.id === userId);
+  const name = ((row && (row.name || row.email)) || "Athlete").trim();
+  try {
+    const made = await api("POST", "/api/calendars", { name });
+    await placeOnCalendar(userId, made.id);
+  } catch (err) {
+    toast(err.message || "Could not create that calendar");
+  }
 }
 // The Build picker lists calendars. A calendar followed by exactly one athlete carries
 // that athlete's units and identity, so athlete-only controls keep working for it.
@@ -2825,6 +2912,7 @@ function dayCol(date) {
   const recurLabel = day.recurWeeks ? `Recurring · ${day.recurWeeks}w ▾` : (day.recurring ? `Recurring (${day.recurring}) ▾` : "Not recurring ▾");
   const header = sel.length
     ? `<button class="recur" style="background:#2457c5">Selected (${sel.length})</button>
+       ${sel.some((it) => it.type !== "note") ? `<span class="sel-letter-anchor"><button type="button" class="pill sel-letter-btn" title="Set the letter for every selected exercise" aria-expanded="${state.selLetterMenu === date ? "true" : "false"}" onclick="toggleSelectedLetterMenu('${date}', event)">Letter ▾</button>${state.selLetterMenu === date ? selectedLetterPop(date) : ""}</span>` : ""}
        <button class="iconbtn" title="Copy" onclick="openCopy('${date}','copy')">⧉</button>
        <button class="iconbtn" title="Move" onclick="openCopy('${date}','move')">→</button>
        <button class="iconbtn" title="Delete" onclick="askDelete('${date}')">🗑</button>`
@@ -2881,7 +2969,10 @@ function chainIsOpen(head, audience) {
 }
 function chainSubline(group) {
   const head = group[0];
-  const count = group.length + (group.length === 1 ? " exercise" : " exercises");
+  const lifts = group.filter((it) => it.type !== "rest").length;
+  const rests = group.length - lifts;
+  let count = lifts + (lifts === 1 ? " exercise" : " exercises");
+  if (rests) count += " · " + rests + (rests === 1 ? " rest" : " rests");
   return head.chainKind ? head.chainKind + " · " + count : count;
 }
 function letterBadge(letter) {
@@ -2928,6 +3019,13 @@ function chainMemberEditHtml(date, it, index) {
       <textarea aria-label="Text for ${esc(it.name)}" data-focus="note-${it.id}" rows="2" oninput="setField('${date}','${it.id}','note', this.value)" onchange="renderSoon()">${esc(it.note || "")}</textarea>
     </section>`;
   }
+  if (it.type === "rest") {
+    return `<section class="chain-edit chain-edit-rest" data-chain-member="${esc(it.id)}">
+      <div class="chain-edit-h"><span class="chain-edit-n">${index + 1}</span><span class="chain-edit-name">Rest</span>
+        <button type="button" class="iconbtn" title="Remove this rest" aria-label="Remove this rest" onclick="removeChainRest('${date}','${it.id}')">🗑</button></div>
+      <div class="row">Seconds <input class="rest-secs" aria-label="Rest seconds" data-focus="rest-${it.id}" inputmode="numeric" value="${esc(it.reps[0] || 60)}" oninput="setRestSeconds('${date}','${it.id}', this.value)" onchange="renderSoon()"></div>
+    </section>`;
+  }
   if (it.type !== "lift" && it.type !== "circuit") {
     return `<section class="chain-edit" data-chain-member="${esc(it.id)}">${name}<div class="hint">${esc(scriptLine(it))}</div></section>`;
   }
@@ -2966,12 +3064,46 @@ function chainBoxPop() {
     </div>
     <div class="hint">${esc(chainSubline(group))} · changes here apply to this day only</div>
     <div class="row chain-box-letters">${letters}</div>
-    <div class="chain-edit-list">${group.map((it, index) => chainMemberEditHtml(date, it, index)).join("")}</div>
+    <div class="chain-edit-list">${group.map((it, index) => chainMemberEditHtml(date, it, index) + (it.type === "rest" ? "" : `<button type="button" class="linkish chain-add-rest" onclick="addChainRest('${date}','${instance}','${esc(it.id)}')">+ Rest after ${esc(it.name)}</button>`)).join("")}</div>
     <div class="row editor-actions">
       ${head.chainId ? `<button type="button" class="pill" onclick="openChainFromDay('${date}','${instance}')">Edit chain</button>` : ""}
       <button type="button" class="pill" onclick="breakChain('${date}','${instance}')">Break apart</button>
     </div>
   </div>`;
+}
+// A rest inside a chain on one day. It joins the chain block, so it moves and folds with it.
+function addChainRest(date, instance, afterId) {
+  const day = ensureDay(date);
+  const at = day.items.findIndex((it) => it.id === afterId);
+  const anchor = day.items[at];
+  if (!anchor || anchor.chainInstance !== instance) return;
+  snapshot();
+  const rest = restItem(60, {
+    letter: anchor.letter || "",
+    chainId: anchor.chainId || null,
+    chainInstance: instance,
+    chainName: anchor.chainName || "",
+    chainKind: anchor.chainKind || "",
+    chainOrder: (anchor.chainOrder || 0) + 0.5
+  });
+  day.items.splice(at + 1, 0, rest);
+  day.items.filter((it) => it.chainInstance === instance).forEach((it, i) => { it.chainOrder = i; });
+  state.pendingFocus = "rest-" + rest.id;
+  refreshFutureCopies(date);
+  noteDayEdit(date);
+  render();
+}
+function removeChainRest(date, id) {
+  const day = ensureDay(date);
+  const at = day.items.findIndex((it) => it.id === id && it.type === "rest");
+  if (at < 0) return;
+  snapshot();
+  const instance = day.items[at].chainInstance;
+  day.items.splice(at, 1);
+  if (instance) day.items.filter((it) => it.chainInstance === instance).forEach((it, i) => { it.chainOrder = i; });
+  refreshFutureCopies(date);
+  noteDayEdit(date);
+  render();
 }
 function closeChainBox() {
   if (!state.chainBox) return;
@@ -2980,8 +3112,26 @@ function closeChainBox() {
   queueDaySave(state.athleteId, date, { explicit: true, ifEdited: true });
   render();
 }
+// A note reads as a note in the day: its text, no letter, no sets.
+function noteRow(date, it) {
+  const dragAttr = ` draggable="true" ondragstart="dragStart(event,'${date}','${it.id}')"`;
+  const hot = clipHotMatches(date, { level: "exercise", id: it.id }) ? " clip-hot" : "";
+  const editing = state.editor && state.editor.day === date && state.editor.id === it.id ? " editing" : "";
+  const text = String(it.note || "").trim();
+  return `<div class="ex ex-note ${it.selected ? "selected" : ""}${hot}${editing}" data-id="${esc(it.id)}"${dragAttr} onclick="selectExercise('${date}','${it.id}', event)">
+    <button class="ex-main" title="${esc(text || it.name)}" onclick="openEditor('${date}','${it.id}', event)">
+      <div class="ex-note-text">${text ? esc(text) : `<span class="ex-note-empty">${esc(it.name || "Note")}</span>`}</div>
+    </button>
+    <span class="ex-tools">
+      <input class="check" type="checkbox" title="Select" ${it.selected ? "checked" : ""} onclick="toggleItem('${date}','${it.id}', this.checked);event.stopPropagation()">
+      <button class="handle" title="Drag">⋮⋮</button>
+      <button class="trash" title="Delete" onclick="askDelete('${date}','${it.id}')">🗑</button>
+    </span>
+  </div>`;
+}
 function exRow(date, day, it, opts) {
   const inChain = opts && opts.inChain;
+  if (it.type === "note" && !inChain) return noteRow(date, it);
   const letter = inChain ? "" : letterBadge(it.letter);
   const dragAttr = inChain ? "" : ` draggable="true" ondragstart="dragStart(event,'${date}','${it.id}')"`;
   const hot = clipHotMatches(date, { level: "exercise", id: it.id }) ? " clip-hot" : "";
@@ -3054,7 +3204,7 @@ function searchPop(date) {
     <div class="search-results">
       ${chainRows}
       ${rows}
-      <button class="opt create-row" onclick="createExercise('${date}')">+ Create New Exercise <span class="tag">Shift+Enter</span></button>
+      <button class="opt create-row" onclick="createExercise('${date}')">+ Create New Exercise <span class="tag">Ctrl+Enter</span></button>
       ${swap ? "" : `<button class="opt create-row" onclick="createChainFromDay('${date}')">+ Create New Chain</button>`}
     </div>
   </div>`;
@@ -3167,6 +3317,7 @@ function applyChainMemberFields(it, member, letter) {
   }
   if (repsText !== "") it.reps = Array(it.sets || 1).fill(repsText);
   applyChainDose(it, member);
+  if ((it.type || "lift") === "lift") it.perSide = !!member.per_side;
   if (notesGiven) it.note = String(member.notes);
   else if (it.type !== "circuit") {
     const defaults = libraryDefaultsFrom(exerciseRecord(it.name));
@@ -3176,6 +3327,11 @@ function applyChainMemberFields(it, member, letter) {
 }
 function applyExplicitChainFields(it, member) {
   if (!it || !member) return it;
+  if (it.type === "rest") {
+    const secs = chainText(member.time).replace(/s$/i, "");
+    if (secs !== "") { it.reps = [secs]; it.note = secs + "s"; }
+    return it;
+  }
   const setsText = chainText(member.sets);
   const repsText = chainText(member.reps);
   const notesGiven = member.notes != null && String(member.notes).trim() !== "";
@@ -3185,6 +3341,7 @@ function applyExplicitChainFields(it, member) {
   }
   if (repsText !== "" && it.type !== "note") it.reps = Array(it.sets || 1).fill(repsText);
   applyChainDose(it, member);
+  if ((it.type || "lift") === "lift") it.perSide = !!member.per_side;
   if (notesGiven) it.note = String(member.notes);
   return it;
 }
@@ -3192,8 +3349,9 @@ function chainMemberItem(chain, member, index, instance, day, letter) {
   const record = (state.serverExercises || []).find((row) => row.id === member.exercise_id) || null;
   const name = (record && record.name) || (member.exercise && member.exercise.name) || member.name || "Exercise";
   const category = (record && record.category) || (member.exercise && member.exercise.category) || "";
-  const type = category ? dayTypeForCategory(category) : "lift";
-  const it = fromCatalog({ name, type });
+  const rest = isRestName(name);
+  const type = rest ? "rest" : (category ? dayTypeForCategory(category) : "lift");
+  const it = rest ? restItem(chainText(member.time) || chainText(member.reps) || 60) : fromCatalog({ name, type });
   applyChainMemberFields(it, member, letter || "");
   it.chainId = chain.id;
   it.chainInstance = instance;
@@ -3486,14 +3644,14 @@ function isTextOnlyItem(it) {
 }
 function editorHead(date, it, day) {
   const textOnly = isTextOnlyItem(it);
-  const letterBtn = it.chainInstance
+  const letterBtn = it.chainInstance || it.type === "note"
     ? ""
     : `<button type="button" class="pill" onclick="toggleEditorMenu('letterMenu', event)">${esc(letterCode(day, it))} ▾</button>`;
-  const letterPop = !it.chainInstance && state.letterMenu
+  const letterPop = !it.chainInstance && it.type !== "note" && state.letterMenu
     ? `<div class="pop letter-pop" onclick="event.stopPropagation()">${LETTERS.map((L) => `<button type="button" class="opt" onclick="setLetter('${date}','${it.id}','${L}')">${L}</button>`).join("")}<button type="button" class="opt" onclick="setLetter('${date}','${it.id}','')">–</button></div>`
     : "";
   return `<div class="editor-h">
-      <span class="letter" style="background:${LETTER_COLOR[it.letter] || "#666"}">${esc(it.letter || "•")}</span>
+      ${it.type === "note" ? `<span class="note-badge" aria-hidden="true">✎</span>` : `<span class="letter" style="background:${LETTER_COLOR[it.letter] || "#666"}">${esc(it.letter || "•")}</span>`}
       ${it.type === "break" || it.type === "rest" || it.type === "video"
         ? `<input class="name-input" aria-label="Exercise name" data-focus="exname-${it.id}" value="${esc(it.name)}" oninput="setField('${date}','${it.id}','name', this.value)" onchange="renderSoon()">`
         : `<button type="button" class="name-input name-swap" aria-label="${esc(it.name)}. Choose a different exercise" aria-expanded="${state.swap && state.swap.id === it.id ? "true" : "false"}" title="Choose a different exercise" onclick="openSwap('${date}','${it.id}', event)"><span class="name-swap-text">${esc(it.name)}</span><span class="name-swap-caret" aria-hidden="true">▾</span></button>`}
@@ -3502,7 +3660,7 @@ function editorHead(date, it, day) {
       <button type="button" class="iconbtn" title="Close" onclick="closeEditor();event.stopPropagation()">✕</button>
     </div>
     ${letterPop}
-    ${textOnly ? "" : `<button type="button" class="linkish" onclick="openInfo('${date}','${it.id}')">+ Add Additional Info (Shift + I)</button>`}
+    ${textOnly ? "" : `<button type="button" class="linkish" onclick="openInfo('${date}','${it.id}')">+ Add Additional Info (Ctrl + I)</button>`}
     ${it.note && !textOnly ? `<div class="note-line">${esc(it.note)}</div>` : ""}`;
 }
 // Rows of the set table: the tracked measures first, then the added properties.
@@ -3613,9 +3771,21 @@ function editorPop(date) {
 function trackControl(date, it) {
   const on = { reps: it.trackReps !== false, time: !!it.trackTime, distance: !!it.trackDistance };
   const pill = (value, label) => `<button type="button" class="pill ${on[value] ? "on" : ""}" aria-pressed="${on[value] ? "true" : "false"}" onclick="toggleTrack('${date}','${it.id}','${value}')">${on[value] ? "✓ " : ""}${label}</button>`;
+  const side = on.reps
+    ? `<button type="button" class="pill side-pill ${it.perSide ? "on" : ""}" aria-pressed="${it.perSide ? "true" : "false"}" title="Reps are done on each side" onclick="togglePerSide('${date}','${it.id}')">${it.perSide ? "✓ " : ""}/side</button>`
+    : "";
   return `<div class="dose-switch" role="group" aria-label="Track reps, time, and distance">
-    ${pill("reps", "Reps")}${pill("time", "Time (s)")}${pill("distance", "Distance (" + distanceAbbr(displayDistanceUnit()) + ")")}
+    ${pill("reps", "Reps")}${side}${pill("time", "Time (s)")}${pill("distance", "Distance (" + distanceAbbr(displayDistanceUnit()) + ")")}
   </div>`;
+}
+function togglePerSide(date, id) {
+  const it = findItem(date, id);
+  if (!it) return;
+  snapshot();
+  it.perSide = !it.perSide;
+  refreshFutureCopies(date);
+  noteDayEdit(date);
+  render();
 }
 function setRow(date, it, label) {
   const fill = label === "Sets"
@@ -3656,7 +3826,7 @@ function propArray(it, key) {
   return arr;
 }
 function fieldLabel(it, key) {
-  if (key === "reps") return "Reps";
+  if (key === "reps") return repsWord(it);
   if (key === "time") return "Time (s)";
   if (key === "load") return displayUnit() ? "Load (" + unitWord(displayUnit()) + ")" : "Load";
   if (key === "restRep") return "Rest/Rep (s)";
@@ -3702,14 +3872,14 @@ function optionsPop(date, it) {
 }
 function supersetLabel(date, it) {
   const day = ensureDay(date);
-  const partners = day.items.filter((x) => x.id !== it.id && x.letter && x.letter === it.letter && x.type !== "break" && x.type !== "rest" && x.type !== "video");
+  const partners = day.items.filter((x) => x.id !== it.id && x.letter && x.letter === it.letter && x.type !== "break" && x.type !== "rest" && x.type !== "video" && x.type !== "note");
   if (!partners.length) return "None";
   const name = partners[0].name || "Exercise";
   return name.length > 16 ? name.slice(0, 16) + "…" : name;
 }
 function supersetPop(date, it) {
   const day = ensureDay(date);
-  const others = day.items.filter((x) => x.id !== it.id && x.type !== "break" && x.type !== "rest" && x.type !== "video");
+  const others = day.items.filter((x) => x.id !== it.id && x.type !== "break" && x.type !== "rest" && x.type !== "video" && x.type !== "note");
   const none = supersetLabel(date, it) === "None";
   const rows = others.map((x) => `<button type="button" class="opt ${x.letter && x.letter === it.letter && !none ? "active" : ""}" onclick="joinSuperset('${date}','${it.id}','${x.id}')">${esc(letterCode(day, x))} ${esc(x.name)}</button>`).join("");
   return `<div class="pop superset-pop" onclick="event.stopPropagation()">
@@ -4365,7 +4535,7 @@ async function publishDay(date, opts = {}) {
       exercises.push({
         id: it.weId || null,
         exercise_id: ex.id,
-        superset_group: it.chainInstance ? (it.letter || "") : (it.letter || "A"),
+        superset_group: it.type === "note" ? "" : (it.chainInstance ? (it.letter || "") : (it.letter || "A")),
         order_index: exercises.length,
         prescription_text: scriptLine(it, { plain: true }).slice(0, 100),
         prescribed_sets: sets,
@@ -5043,6 +5213,39 @@ function selectDay(date, ev) {
   state.focusDay = date;
   render();
 }
+// Several selected exercises take one letter together, in the order they sit in the day,
+// so picking B for three of them makes B1, B2, B3. A chain moves as one block; notes keep no letter.
+function selectedLetterPop(date) {
+  const buttons = LETTERS.map((L) => `<button type="button" class="opt" onclick="setSelectedLetter('${date}','${L}')">${L}</button>`).join("");
+  return `<div class="pop letter-pop sel-letter-pop" onclick="event.stopPropagation()">${buttons}<button type="button" class="opt" title="No letter" onclick="setSelectedLetter('${date}','')">–</button></div>`;
+}
+function toggleSelectedLetterMenu(date, ev) {
+  if (ev) ev.stopPropagation();
+  state.selLetterMenu = state.selLetterMenu === date ? null : date;
+  render();
+}
+function setSelectedLetter(date, letter) {
+  const day = ensureDay(date);
+  const picked = day.items.filter((it) => it.selected && it.type !== "note");
+  state.selLetterMenu = null;
+  if (!picked.length) { render(); return; }
+  snapshot();
+  const doneChains = new Set();
+  // Clearing a letter moves each row to the top, so go last-first to keep their order.
+  (letter ? picked : picked.slice().reverse()).forEach((it) => {
+    if (it.chainInstance) {
+      if (doneChains.has(it.chainInstance)) return;
+      doneChains.add(it.chainInstance);
+      reorderChainForLetter(day.items, it.chainInstance, letter);
+    } else {
+      reorderForLetter(day.items, it.id, letter);
+    }
+  });
+  refreshFutureCopies(date);
+  noteDayEdit(date);
+  toast(picked.length + " exercise" + (picked.length === 1 ? "" : "s") + (letter ? " set to " + letter : " cleared"));
+  render();
+}
 function setChainLetter(date, instance, letter) {
   snapshot();
   reorderChainForLetter(ensureDay(date).items, instance, letter);
@@ -5215,13 +5418,59 @@ function openCopy(date, mode) {
   state.modal = {
     type: "copy", mode, date, ids,
     target: date, rangeEnd: addDays(date, 2),
+    sourceRange: false, sourceEnd: addDays(date, 6),
     includeLoads: true, includeTitles: true, placement: "bottom"
   };
   state.dayMenu = null;
   render();
 }
+// Copy a run of days: each day from the first to the last lands the same number of days after
+// the paste date, so a copied week keeps its shape. With "Clear existing workouts", a day with
+// nothing on it clears its target too; otherwise an empty day adds nothing.
+const COPY_RANGE_MAX_DAYS = 62;
+function applyCopyRange(m) {
+  const span = daysBetween(m.date, m.sourceEnd);
+  if (!(span >= 0)) { toast("The last day must be on or after the first"); return; }
+  if (span >= COPY_RANGE_MAX_DAYS) { toast("Copy up to " + COPY_RANGE_MAX_DAYS + " days at a time"); return; }
+  if (!m.target) { toast("Choose the day to paste on"); return; }
+  snapshot();
+  const athleteId = m.athleteId || state.athleteId;
+  const sources = [];
+  for (let k = 0; k <= span; k++) {
+    const src = ensureDay(addDays(m.date, k));
+    sources.push({
+      offset: k,
+      title: src.title,
+      color: src.color,
+      items: (src.items || []).map((it) => JSON.parse(JSON.stringify(it)))
+    });
+  }
+  let days = 0;
+  let count = 0;
+  sources.forEach((src) => {
+    if (!src.items.length && m.placement !== "clear") return;
+    const d = addDays(m.target, src.offset);
+    const day = ensureDay(d, athleteId);
+    const clones = freshenChainInstances(src.items.map((it) => Object.assign(JSON.parse(JSON.stringify(it)), { id: uid(), selected: false })));
+    if (!m.includeLoads) clones.forEach((it) => { it.loads = (it.loads || []).map(() => ""); it.props = (it.props || []).filter((p) => p !== "load"); });
+    if (m.placement === "clear") day.items = clones;
+    else day.items = day.items.concat(clones);
+    if (m.includeTitles && (src.items.length || m.placement === "clear")) {
+      day.title = src.items.length ? src.title : "Rest";
+      day.color = src.color;
+    }
+    days += 1;
+    count += clones.length;
+    noteDayEdit(d, athleteId);
+  });
+  toast(days ? `${span + 1} day${span ? "s" : ""} copied to ${fmtShort(m.target)} – ${fmtShort(addDays(m.target, span))}` : "Nothing to copy in those days");
+  noteHist("Copied " + (span + 1) + " days (" + count + " items)");
+  state.modal = null;
+  render();
+}
 function applyCopy() {
   const m = state.modal;
+  if (m.mode === "workout" && m.sourceRange) { applyCopyRange(m); return; }
   snapshot();
   const source = ensureDay(m.date);
   const items = source.items.filter((it) => m.ids.includes(it.id)).map((it) => JSON.parse(JSON.stringify(it)));
@@ -5968,7 +6217,7 @@ function entryColumns(it) {
   const cols = [];
   // One column for each measure the coach tracks: reps, time, distance.
   doseKeys(it).forEach((key) => {
-    if (key === "reps") cols.push(["r", "Reps"]);
+    if (key === "reps") cols.push(["r", repsWord(it)]);
     else if (key === "time") cols.push(["time", "Time (s)"]);
     else cols.push(["distance", "Distance (" + distanceAbbr(entryDistanceUnit()) + ")"]);
   });
@@ -6026,9 +6275,11 @@ function setIsComplete(it, entered) {
   if (!fields.length) return false;
   return fields.every((field) => countsAsEntered(entered && entered[field]));
 }
-// With nothing required, the athlete's own Done tick is the answer.
+// With nothing required, a set is done once the athlete enters any value in it (or completes
+// every set at once, which is the tick).
 function cellDone(it, entered, ticked) {
-  return requiredEntryFields(it).length ? setIsComplete(it, entered) : !!ticked;
+  if (requiredEntryFields(it).length) return setIsComplete(it, entered);
+  return !!ticked || entryColumns(it).some(([col]) => countsAsEntered(entered && entered[col]));
 }
 function prescribedEntry(it, field, index) {
   const i = index || 0;
@@ -6143,6 +6394,9 @@ function athleteScheduleHtml(date, items) {
         <div class="ex chain-head" onclick="toggleChainOpen('${date}','${esc(instance)}','athlete', event)">${letterBadge(head.letter)}<div class="ex-main"><div class="ex-name">${esc(head.chainName || "Chain")}</div><div class="ex-sub">${esc(chainSubline(group))}</div></div><button type="button" class="chain-fold" aria-label="${open ? "Collapse chain" : "Expand chain"}" onclick="toggleChainOpen('${date}','${esc(instance)}','athlete', event)">${open ? "▾" : "▸"}</button></div>
         ${open ? `<div class="chain-members">${members}</div>` : ""}
       </div>`;
+    } else if (it.type === "note") {
+      html += `<div class="ex ex-note"><div class="ex-main"><div class="ex-note-text">${esc(String(it.note || "").trim() || it.name || "Note")}</div></div></div>`;
+      index += 1;
     } else {
       html += `<div class="ex">${letterBadge(it.letter)}<div class="ex-main"><div class="ex-name">${esc(it.name)}</div><div class="ex-sub">${esc(scriptLine(it))}</div></div></div>`;
       index += 1;
@@ -6247,7 +6501,8 @@ function entryShell(aid, date, it, body) {
 }
 function entryItem(aid, date, it) {
   const key = aid + ":" + date + ":" + it.id;
-  if (it.type === "note") return entryShell(aid, date, it, `<div class="preview-copy">${esc(it.note || "")}</div>`);
+  if (it.type === "note") return `<div class="entry-note">${esc(String(it.note || "").trim() || it.name || "Note")}</div>`;
+  if (it.type === "rest") return `<div class="entry-rest">Rest ${esc(String((it.reps && it.reps[0]) || 60).replace(/s$/i, ""))}s</div>`;
   if (it.type === "circuit") return entryShell(aid, date, it, circuitEntryHtml(aid, date, it));
   if (it.type === "questionnaire") return entryShell(aid, date, it, questionnaireEntryHtml(aid, date, it));
   if (isTextOnlyItem(it)) {
@@ -6267,40 +6522,59 @@ function entryItem(aid, date, it) {
       const value = shownEntry(entered, field, prefillEntry(it, field, i));
       const mode = field === "tempo" ? "text" : "decimal";
       const target = field === "intensity" && isIntensityRange(prescribedEntry(it, field, i)) ? ` placeholder="${esc(prescribedEntry(it, field, i))}"` : "";
-      return `<td><input aria-label="${esc(label)} set ${i + 1}" inputmode="${mode}"${target} value="${esc(value)}" onchange="logCell('${key}',${i},'${field}',this.value,'${date}','${it.id}',${it.weId || 0})"></td>`;
+      return `<td><input aria-label="${esc(label)} set ${i + 1}" inputmode="${mode}"${target} value="${esc(value)}" data-focus="entry-${esc(key)}-${i}-${field}" data-keep onchange="logCell('${key}',${i},'${field}',this.value,'${date}','${it.id}',${it.weId || 0})"></td>`;
     }).join("");
-    return `<tr class="${done ? "set-done" : ""}"><td class="set-n">${i + 1}</td>${inputs}<td class="set-tick"><input aria-label="Done set ${i + 1}" type="checkbox" ${done ? "checked" : ""} onchange="logCell('${key}',${i},'done',this.checked,'${date}','${it.id}',${it.weId || 0})"></td></tr>`;
+    // No Done box: a set is done once the athlete enters a value in it.
+    return `<tr class="${done ? "set-done" : ""}"><td class="set-n">${done ? `<span class="set-check" aria-label="Set ${i + 1} done">✓</span>` : i + 1}</td>${inputs}</tr>`;
   }).join("");
-  const table = `<div class="sets-scroll"><table class="sets"><tr><th>Set</th>${fields.map((field) => `<th>${field[1]}</th>`).join("")}<th>Done</th></tr>${rows}</table></div>`;
-  const safeName = String(it.name || "Exercise").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-  return entryShell(aid, date, it, `${athletePlayerHtml(it)}${table}<button class="complete" type="button" onclick="markDone('${key}','${safeName}',${it.weId || 0},${it.sets || 1})">Complete</button>`);
+  const table = `<div class="sets-scroll"><table class="sets"><tr><th>Set</th>${fields.map((field) => `<th>${field[1]}</th>`).join("")}</tr>${rows}</table></div>`;
+  const status = entryItemStatus(aid, date, it);
+  const allDone = status && status.done >= status.total;
+  return entryShell(aid, date, it, `${athletePlayerHtml(it)}${table}<button class="complete${allDone ? " done" : ""}" type="button" title="Marks every set done with the numbers shown" onclick="completeAllSets('${key}','${date}','${it.id}',${it.weId || 0})">${allDone ? "✓ Completed" : "Complete all sets"}</button>`);
 }
 function logCell(key, i, field, value, date, itemId, weId) {
   const log = state.logs[key] || (state.logs[key] = { cells: {}, hydrated: true });
   log.hydrated = true;
   const it = entryItemById(date, itemId);
   log.cells[i] = log.cells[i] || { entered: {}, done: false };
-  if (!log.cells[i].entered) log.cells[i].entered = {};
+  const cell = log.cells[i];
+  if (!cell.entered) cell.entered = {};
+  // Boxes the athlete left showing the coach's numbers, copied in when the set became done.
+  cell.prefilled = cell.prefilled || {};
   if (field !== "done") {
-    log.cells[i].entered[field] = value;
-    log.cells[i][field] = value;
+    cell.entered[field] = value;
+    cell[field] = value;
+    delete cell.prefilled[field];
+  } else {
+    cell.ticked = !!value;
   }
   const map = {
     w: "weight", r: "reps", time: "time", rest: "rest", tempo: "tempo", velocity: "velocity",
     power: "power", pct: "pct", restRep: "restRep", distance: "distance", intensity: "intensity"
   };
-  // Ticking Done keeps what the boxes show, so prefilled reps and weight count too.
-  if (field === "done" && value && it) {
+  const copyShown = () => {
+    if (!it) return;
     entryColumns(it).forEach(([col]) => {
-      if (Object.prototype.hasOwnProperty.call(log.cells[i].entered, col)) return;
+      if (Object.prototype.hasOwnProperty.call(cell.entered, col)) return;
       const shown = prefillEntry(it, col, i);
       if (shown == null || String(shown).trim() === "") return;
-      log.cells[i].entered[col] = shown;
-      log.cells[i][col] = shown;
+      cell.entered[col] = shown;
+      cell[col] = shown;
+      cell.prefilled[col] = true;
     });
-  }
-  const ticked = field === "done" ? !!value : log.cells[i].done;
-  log.cells[i].done = !!(it && cellDone(it, log.cells[i].entered, ticked));
+  };
+  const dropShown = () => {
+    Object.keys(cell.prefilled).forEach((col) => { delete cell.entered[col]; delete cell[col]; });
+    cell.prefilled = {};
+  };
+  // Completing a set keeps what its boxes show, so prefilled reps and weight count too.
+  if (field === "done" && value) copyShown();
+  const typed = {};
+  Object.keys(cell.entered).forEach((col) => { if (!cell.prefilled[col]) typed[col] = cell.entered[col]; });
+  const required = !!it && requiredEntryFields(it).length > 0;
+  cell.done = !!(it && cellDone(it, required ? cell.entered : typed, !!cell.ticked));
+  if (cell.done) copyShown();
+  else if (!required) dropShown();
   // A done set is saved with every value its boxes show.
   const fill = {};
   if (log.cells[i].done && it) {
@@ -6354,6 +6628,22 @@ function toggleExerciseComplete(key, date, itemId, weId) {
   render();
 }
 function logCheck(key) { state.logs[key] = { done: true, hydrated: true }; }
+// The button under a set table: every set done with the numbers its boxes show, or, when they
+// are all done already, every set back to not done.
+function completeAllSets(key, date, itemId, weId) {
+  const it = entryItemById(date, itemId);
+  if (!it) return;
+  const log = state.logs[key] || (state.logs[key] = { cells: {}, hydrated: true });
+  const total = it.sets || 1;
+  let allDone = true;
+  for (let i = 0; i < total; i++) if (!(log.cells && log.cells[i] && log.cells[i].done)) allDone = false;
+  for (let i = 0; i < total; i++) {
+    const cell = log.cells && log.cells[i];
+    if (!allDone && cell && cell.done) continue;
+    logCell(key, i, "done", !allDone, date, itemId, weId);
+  }
+  if (!allDone) toast("Logged " + (it.name || "exercise"));
+}
 async function markDone(key, name) {
   const log = state.logs[key] || (state.logs[key] = { cells: {}, hydrated: true });
   log.exerciseDone = true;
@@ -6592,7 +6882,7 @@ function usersView() {
         <td>${assignedGroups(r.groups).map((g) => `<span class="ui-badge blue">${esc(g)}</span>`).join(" ") || `<span class="muted">—</span>`}</td>
         <td class="hide-sm">${r.role === "athlete" ? `<span class="ui-badge">${esc(r.cals || "—")}</span>` : `<span class="muted">${esc(r.cals || "—")}</span>`}</td>
         <td class="hide-sm">${active ? `<span class="ui-badge green">${esc(r.activity)}</span>` : `<span class="ui-badge amber">No activity</span>`}</td>
-        <td class="row-actions"><button class="btn btn-ghost btn-sm" type="button" onclick="editUser('${r.id}')">Edit</button><button class="btn btn-ghost btn-sm btn-danger" type="button" onclick="removeUser('${r.id}')">Remove</button></td>
+        <td class="row-actions">${r.role === "athlete" && r.serverId && ctx && r.email && !/\.wourkout\.app$/i.test(r.email) ? `<button class="btn btn-ghost btn-sm" type="button" title="Email ${esc(r.email)} a link to set a password and sign in" onclick="sendAthleteInvite(${r.serverId})">Send invite</button>` : ""}<button class="btn btn-ghost btn-sm" type="button" onclick="editUser('${r.id}')">Edit</button><button class="btn btn-ghost btn-sm btn-danger" type="button" onclick="removeUser('${r.id}')">Remove</button></td>
       </tr>`;
     }).join("");
     main = `${uiHead("", coaches ? "Coaches" : "Athletes", coaches ? "Coaches in this gym." : "Athletes on teams you lead, plus anyone without a group.", "")}
@@ -6604,8 +6894,10 @@ function usersView() {
           ${uiField("Email", `<input class="input" type="email" data-focus="user-email" value="${esc(state.toolForm.email || "")}" oninput="state.toolForm.email=this.value">`)}
           ${uiField("Role", `<select class="select" onchange="state.toolForm.role=this.value;render()"><option value="student" ${selectedRole !== "coach" ? "selected" : ""}>Athlete</option><option value="coach" ${selectedRole === "coach" ? "selected" : ""}>Coach</option></select>`)}
           ${selectedRole !== "coach" && teams.length ? uiField("Group", `<select class="select" id="user-team-id" onchange="state.toolForm.userTeamId=this.value">${teams.map((t) => `<option value="${t.id}" ${String(t.id) === chosenTeamId ? "selected" : ""}>${esc(t.name)}</option>`).join("")}</select>`) : ""}
+          ${selectedRole !== "coach" && ctx ? uiField("Calendar", newAthleteCalendarSelect(ctx)) : ""}
           <button class="btn btn-primary" type="submit">Add</button>
         </form>
+        ${selectedRole !== "coach" && ctx ? `<div class="ui-card-body ui-hint" style="padding-top:0">The athlete gets an email with a link to wourkout, where they choose their own password.</div>` : ""}
       </section>
       <section class="ui-card">
         ${uiCardHead(coaches ? "Coaches" : "Athletes", filtered.length, null, `<span class="ui-inline">
@@ -6627,6 +6919,31 @@ function usersView() {
     </nav>
     <div class="ui-stack" style="gap:20px">${main}</div>
   </div></section>`;
+}
+// Where a new athlete starts: an existing calendar, a new one named after them, or none yet.
+function newAthleteCalendarSelect(ctx) {
+  const calendars = (ctx && ctx.calendars) || [];
+  const chosen = state.toolForm.userCalendar == null ? "new" : String(state.toolForm.userCalendar);
+  const first = (state.toolForm.first || "").trim();
+  const last = (state.toolForm.last || "").trim();
+  const named = (first + " " + last).trim();
+  const opt = (value, label) => `<option value="${esc(value)}" ${chosen === String(value) ? "selected" : ""}>${esc(label)}</option>`;
+  return `<select class="select" id="user-calendar" aria-label="Calendar for the new athlete" onchange="state.toolForm.userCalendar=this.value">
+    ${opt("new", named ? "New calendar: " + named : "New calendar named after them")}
+    ${opt("", "No calendar yet")}
+    ${calendars.map((c) => opt(c.id, c.name + (c.athlete_count ? " (" + c.athlete_count + ")" : ""))).join("")}
+  </select>`;
+}
+function inviteRedirect() {
+  return typeof location !== "undefined" && location.origin ? location.origin + "/" : null;
+}
+async function sendAthleteInvite(userId) {
+  try {
+    const res = await api("POST", "/api/gym/athletes/" + userId + "/invite", { redirect_to: inviteRedirect() });
+    toast(res.message || "Invite sent");
+  } catch (err) {
+    toast(err.message || "Could not send the invite");
+  }
 }
 function assignedGroups(value) {
   return String(value || "").split(",").map((part) => part.trim()).filter(Boolean);
@@ -6660,6 +6977,7 @@ async function importUsers() {
     try {
       const payload = {
         team_id: teamObj.id,
+        redirect_to: inviteRedirect(),
         athletes: people.map((p) => ({
           name: (p.first + " " + p.last).trim(),
           email: p.email || null
@@ -6670,8 +6988,12 @@ async function importUsers() {
       if (box) box.value = "";
       state.toolForm.uploadTeamId = String(teamObj.id);
       state.userTab = "athletes";
-      const count = (res && res.created && res.created.length) || people.length;
-      toast(count + " athlete" + (count === 1 ? "" : "s") + " added to " + teamObj.name);
+      const count = (res && res.added_count) || people.length;
+      const invited = ((res && res.users) || []).filter((row) => row.invite_status === "sent" || row.invite_status === "reset_sent").length;
+      const unsent = ((res && res.users) || []).filter((row) => row.invite_status === "failed" || row.invite_status === "not_configured");
+      let note = invited ? " · " + invited + " invite email" + (invited === 1 ? "" : "s") + " sent" : "";
+      if (unsent.length) note += " · " + unsent[0].invite_message;
+      toast(count + " athlete" + (count === 1 ? "" : "s") + " added to " + teamObj.name + note);
       render();
       return;
     } catch (err) {
@@ -6703,7 +7025,22 @@ function exportData() {
   a.download = "wourkout-export.json";
   a.click();
 }
-async function removeUser(id) {
+function removeUser(id) {
+  const row = state.coaches.concat(state.athletes).find((c) => c.id === id);
+  const name = row ? ((row.first || "") + " " + (row.last || "")).trim() || row.email : "this person";
+  const athlete = !row || row.role !== "coach";
+  state.modal = {
+    type: "confirm",
+    title: "Remove " + name + "?",
+    body: athlete
+      ? "Their account and logged sets are removed. Their calendar stays, with all its workouts, and anyone else on it keeps it."
+      : "They lose coach access to this gym.",
+    confirmLabel: "Remove",
+    onConfirm: () => { state.modal = null; render(); removeUserNow(id); }
+  };
+  render();
+}
+async function removeUserNow(id) {
   const row = state.coaches.concat(state.athletes).find((c) => c.id === id);
   const serverId = row ? row.serverId : (String(id).startsWith("srv") ? parseInt(String(id).slice(3), 10) : (String(id).startsWith("u") || String(id).startsWith("c") ? parseInt(String(id).slice(1), 10) : null));
   if (serverId) {
@@ -6917,6 +7254,7 @@ async function addUserRecord(ev) {
   const role = state.toolForm.role || (state.userTab === "coaches" ? "coach" : "student");
   if (!first || !email) { toast("First name and email are required"); return; }
   const fullName = (first + " " + last).trim();
+  let added = "";
   try {
     if (state.auth && state.auth.token && state.auth.user && state.auth.user.gym_id) {
       if (role === "coach") {
@@ -6929,14 +7267,22 @@ async function addUserRecord(ev) {
           toast("Create a group first in the Groups tab");
           return;
         }
-        await api("POST", "/api/gym/athletes", { name: fullName, email, team_id: teamId });
+        const calEl = document.getElementById("user-calendar");
+        const calChoice = calEl ? calEl.value : (state.toolForm.userCalendar == null ? "new" : String(state.toolForm.userCalendar));
+        const created = await api("POST", "/api/gym/athletes", {
+          name: fullName, email, team_id: teamId,
+          calendar_id: calChoice && calChoice !== "new" ? parseInt(calChoice, 10) : null,
+          new_calendar: calChoice === "new",
+          redirect_to: inviteRedirect()
+        });
+        added = created && created.invite_message ? "Athlete added. " + created.invite_message : "Athlete added";
       }
       await loadGymContext();
       state.toolForm.first = "";
       state.toolForm.last = "";
       state.toolForm.email = "";
       state.userTab = role === "coach" ? "coaches" : "athletes";
-      toast("User added");
+      toast(added || "User added");
       render();
       return;
     }
@@ -7694,7 +8040,8 @@ function openChainFromDay(date, instance) {
         reps: fromTemplate.reps,
         time: fromTemplate.time,
         distance: fromTemplate.distance,
-        notes: fromTemplate.notes
+        notes: fromTemplate.notes,
+        per_side: fromTemplate.per_side != null ? fromTemplate.per_side : !!it.perSide
       });
     })
   };
@@ -8318,14 +8665,15 @@ function editCalendar(id) {
 function askDeleteCalendar(id) {
   const target = buildAthletes().find((a) => a.id === id);
   if (!target || !target.isCalendar) return;
-  if (target.athleteIds.length) {
-    toast("Move " + target.athleteNames.join(", ") + " to another calendar first");
-    return;
-  }
+  const names = target.athleteNames || [];
+  const who = names.length
+    ? " " + (names.length > 3 ? names.slice(0, 3).join(", ") + " and " + (names.length - 3) + " more" : names.join(", ")) +
+      (names.length === 1 ? " is" : " are") + " on it and will have no calendar until you give them one. Their accounts and logs stay."
+    : "";
   state.modal = {
     type: "confirm",
     title: `Delete the calendar "${target.name}"?`,
-    body: "Every programmed day on it is removed. This cannot be undone.",
+    body: "Every programmed day on it is removed. This cannot be undone." + who,
     confirmLabel: "Delete calendar",
     onConfirm: () => deleteCalendar(target.calendarId)
   };
@@ -9046,7 +9394,8 @@ function chainMemberDraft(member) {
     reps: member.reps || "",
     time: member.time || "",
     distance: member.distance || "",
-    notes: member.notes || ""
+    notes: member.notes || "",
+    per_side: !!member.per_side
   };
 }
 function chainMemberPayload(mem) {
@@ -9059,8 +9408,29 @@ function chainMemberPayload(mem) {
     reps: chainText(mem && mem.reps),
     time: chainText(mem && mem.time).replace(/s$/i, ""),
     distance: chainText(mem && mem.distance),
-    notes: mem && mem.notes != null ? String(mem.notes) : ""
+    notes: mem && mem.notes != null ? String(mem.notes) : "",
+    per_side: !!(mem && mem.per_side)
   };
+}
+function toggleChainMemberSide(index) {
+  const m = state.modal;
+  if (!m || !m.members || !m.members[index]) return;
+  m.members[index].per_side = !m.members[index].per_side;
+  render();
+}
+// A rest in a saved chain is the library's "Rest Time" with its seconds. Up and Down place it.
+async function addChainBuilderRest() {
+  const m = state.modal;
+  if (!m || m.type !== "chain") return;
+  try {
+    const ex = await ensureExercise(REST_NAME, "Strength");
+    if (state.modal !== m) return;
+    m.members.push(chainMemberDraft({ exercise_id: ex.id, name: REST_NAME, time: "60" }));
+    state.pendingFocus = "chain-rest-" + (m.members.length - 1);
+    render();
+  } catch (err) {
+    toast(err.message || "Could not add a rest");
+  }
 }
 function setChainMemberField(index, key, value) {
   const m = state.modal;
@@ -9072,13 +9442,20 @@ function chainEditorHtml(m) {
   const q = String(m.pickQ || "").trim().toLowerCase();
   const matches = (state.serverExercises || []).filter((row) => !row.hidden && (!q || row.name.toLowerCase().includes(q)));
   const options = matches.slice(0, 6);
-  const members = (m.members || []).map((mem, index) => `<div class="chain-member">
+  const members = (m.members || []).map((mem, index) => isRestName(mem.name) ? `<div class="chain-member chain-member-rest">
+      <span>${index + 1}. Rest</span>
+      <button type="button" onclick="moveChainMember(${index}, -1)">Up</button>
+      <button type="button" onclick="moveChainMember(${index}, 1)">Down</button>
+      <button type="button" onclick="removeChainMember(${index})">Remove</button>
+      <label class="chain-field">Seconds <input aria-label="Rest seconds" data-focus="chain-rest-${index}" inputmode="numeric" value="${esc(mem.time || "")}" oninput="setChainMemberField(${index}, 'time', this.value)"></label>
+    </div>` : `<div class="chain-member">
       <span>${index + 1}. ${esc(mem.name)}</span>
       <button type="button" onclick="moveChainMember(${index}, -1)">Up</button>
       <button type="button" onclick="moveChainMember(${index}, 1)">Down</button>
       <button type="button" onclick="removeChainMember(${index})">Remove</button>
       <label class="chain-field">Sets <input aria-label="Sets for ${esc(mem.name)}" value="${esc(mem.sets || "")}" oninput="setChainMemberField(${index}, 'sets', this.value)"></label>
-      <label class="chain-field">Reps <input aria-label="Reps for ${esc(mem.name)}" value="${esc(mem.reps || "")}" oninput="setChainMemberField(${index}, 'reps', effortFill(event, this, 'reps'))"></label>
+      <label class="chain-field">${mem.per_side ? "Reps/side" : "Reps"} <input aria-label="Reps for ${esc(mem.name)}" value="${esc(mem.reps || "")}" oninput="setChainMemberField(${index}, 'reps', effortFill(event, this, 'reps'))"></label>
+      <button type="button" class="side-toggle${mem.per_side ? " on" : ""}" aria-pressed="${mem.per_side ? "true" : "false"}" title="Reps are done on each side" onclick="toggleChainMemberSide(${index})">${mem.per_side ? "✓ " : ""}/side</button>
       <label class="chain-field">Time (s) <input aria-label="Time in seconds for ${esc(mem.name)}" value="${esc(mem.time || "")}" oninput="setChainMemberField(${index}, 'time', effortFill(event, this, 'time'))"></label>
       <label class="chain-field">Distance (${esc(distanceAbbr(displayDistanceUnit()))}) <input aria-label="Distance for ${esc(mem.name)}" value="${esc(mem.distance || "")}" oninput="setChainMemberField(${index}, 'distance', effortFill(event, this, 'distance'))"></label>
       <label class="chain-field chain-notes">Notes <input aria-label="Notes for ${esc(mem.name)}" value="${esc(mem.notes || "")}" oninput="setChainMemberField(${index}, 'notes', this.value)"></label>
@@ -9092,6 +9469,7 @@ function chainEditorHtml(m) {
     <label class="edit-field"><span>Name</span><input class="field" data-focus="chain-name" value="${esc(m.name || "")}" oninput="state.modal.name=this.value"></label>
     <label class="edit-field"><span>Kind</span><select class="field" onchange="state.modal.kind=this.value">${kinds.map((kind) => `<option ${m.kind === kind ? "selected" : ""}>${esc(kind)}</option>`).join("")}</select></label>
     <div class="chain-members">${members || `<p class="hint">No exercises in this chain yet. The same exercise can be added twice.</p>`}</div>
+    <button type="button" class="pill chain-add-rest" onclick="addChainBuilderRest()">+ Add rest</button>
     <div class="chain-pick">
       <label class="edit-field"><span>Add an exercise</span><input class="field" type="text" autocomplete="off" data-focus="chain-pick" placeholder="Search the exercise library" aria-label="Search exercises to add to the chain" value="${esc(m.pickQ || "")}" oninput="state.modal.pickQ=this.value;render()"></label>
       <div class="chain-pick-results">
@@ -9140,20 +9518,23 @@ function modalHtml() {
   }
   if (m.type === "copy") {
     return `<div class="modal-back"><div class="modal" onclick="event.stopPropagation()"><div class="split"><h3>${m.mode === "move" ? "Move" : "Copy"}</h3><button class="iconbtn" onclick="state.modal=null;render()">✕</button></div>
-      <div class="sub">${m.ids.length} workout items selected</div>
+      ${m.mode === "workout" ? `<div>Copy from</div>
+      <div class="row"><button class="pill ${!m.sourceRange ? "on" : ""}" onclick="state.modal.sourceRange=false;render()">This day</button><button class="pill ${m.sourceRange ? "on" : ""}" onclick="state.modal.sourceRange=true;render()">Range of days</button></div>
+      ${m.sourceRange ? `<div class="copy-range"><span>${esc(fmtShort(m.date))} through</span> <input class="field" type="date" aria-label="Last day to copy" min="${m.date}" value="${m.sourceEnd}" onchange="state.modal.sourceEnd=this.value;render()"></div>
+      <div class="hint">${(() => { const n = daysBetween(m.date, m.sourceEnd) + 1; return n > 0 ? n + " day" + (n > 1 ? "s" : "") + ", pasted day for day from the date below." : "Pick a last day on or after the first."; })()}</div>` : `<div class="sub">${m.ids.length} workout items selected</div>`}` : `<div class="sub">${m.ids.length} workout items selected</div>`}
       <div>To calendar</div>
       <div class="row"><select class="ghost" onchange="state.modal.athleteId=this.value">${buildAthletes().filter((a) => a.id !== "none").map((a) => `<option value="${esc(a.id)}" ${a.id === (m.athleteId || state.athleteId) ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select></div>
-      <div>Paste on</div>
-      <div class="row"><button class="pill ${!m.range ? "on" : ""}" onclick="state.modal.range=false;render()">Single date</button><button class="pill ${m.range ? "on" : ""}" onclick="state.modal.range=true;render()">Date range</button></div>
+      <div>${m.mode === "workout" && m.sourceRange ? "Paste starting on" : "Paste on"}</div>
+      ${m.mode === "workout" && m.sourceRange ? "" : `<div class="row"><button class="pill ${!m.range ? "on" : ""}" onclick="state.modal.range=false;render()">Single date</button><button class="pill ${m.range ? "on" : ""}" onclick="state.modal.range=true;render()">Date range</button></div>`}
       <input class="field" type="date" value="${m.target}" onchange="state.modal.target=this.value">
-      ${m.range ? `<input class="field" type="date" value="${m.rangeEnd}" onchange="state.modal.rangeEnd=this.value" style="margin-top:6px">` : ""}
+      ${m.range && !(m.mode === "workout" && m.sourceRange) ? `<input class="field" type="date" value="${m.rangeEnd}" onchange="state.modal.rangeEnd=this.value" style="margin-top:6px">` : ""}
       <div style="margin-top:8px">Options · Include</div>
       <label class="chk"><input type="checkbox" ${m.includeLoads ? "checked" : ""} onchange="state.modal.includeLoads=this.checked"> Prescribed loads</label>
       <label class="chk"><input type="checkbox" ${m.includeTitles ? "checked" : ""} onchange="state.modal.includeTitles=this.checked"> Workout titles and colors</label>
       <div>Placement · Existing workouts</div>
       <label class="chk"><input type="radio" name="pl" ${m.placement === "bottom" ? "checked" : ""} onchange="state.modal.placement='bottom'"> Bottom of workout</label>
       <label class="chk"><input type="radio" name="pl" ${m.placement === "clear" ? "checked" : ""} onchange="state.modal.placement='clear'"> Clear existing workouts</label>
-      <button class="full primary" onclick="applyCopy()">${m.mode === "move" ? "Move" : "Copy"} to ${m.range ? "range" : "1 day"}</button>
+      <button class="full primary" onclick="applyCopy()">${m.mode === "workout" && m.sourceRange ? "Copy days" : (m.mode === "move" ? "Move" : "Copy") + " to " + (m.range ? "range" : "1 day")}</button>
       <button class="full" onclick="state.modal=null;render()">Cancel</button>
     </div></div>`;
   }
@@ -9196,8 +9577,8 @@ document.addEventListener("click", (ev) => {
   if (state.chainBox && !ev.target.closest(".build-editor, .modal, .modal-back, .menu, .pop")) { state.chainBox = null; changed = true; }
   if (ev.target.closest(".menu, .pop, .modal, .modal-back, .nav-anchor, .group-pop")) { if (changed) render(); return; }
   if (state.navMenu) { state.navMenu = null; changed = true; }
-  if (state.dayMenu || state.recurMenu || state.propMenu || state.letterMenu || state.optionsMenu || state.supersetMenu || state.trackMenu || state.colorMenu || state.searchDay) {
-    state.dayMenu = state.recurMenu = state.colorMenu = state.searchDay = state.swap = null;
+  if (state.dayMenu || state.recurMenu || state.propMenu || state.letterMenu || state.optionsMenu || state.supersetMenu || state.trackMenu || state.colorMenu || state.searchDay || state.selLetterMenu) {
+    state.dayMenu = state.recurMenu = state.colorMenu = state.searchDay = state.swap = state.selLetterMenu = null;
     state.propMenu = state.letterMenu = state.optionsMenu = state.supersetMenu = state.trackMenu = false;
     changed = true;
   }
@@ -9230,14 +9611,15 @@ document.addEventListener("keydown", (ev) => {
     undo();
     return;
   }
-  if (state.editor && ev.shiftKey && ev.key.toLowerCase() === "i") { ev.preventDefault(); openInfo(state.editor.day, state.editor.id); return; }
+  // Shortcuts use Ctrl (or Cmd on a Mac), never Shift, so capital letters can still be typed.
+  if (state.editor && (ev.metaKey || ev.ctrlKey) && !ev.shiftKey && !ev.altKey && ev.key.toLowerCase() === "i") { ev.preventDefault(); openInfo(state.editor.day, state.editor.id); return; }
   if (state.editor && (ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "p") {
     ev.preventDefault();
     state.propMenu = !state.propMenu;
     render();
     return;
   }
-  if (state.searchDay && ev.shiftKey && ev.key === "Enter") { ev.preventDefault(); createExercise(state.searchDay); return; }
+  if (state.searchDay && (ev.metaKey || ev.ctrlKey) && ev.key === "Enter") { ev.preventDefault(); createExercise(state.searchDay); return; }
   if (typing) return;
   if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "c") {
     ev.preventDefault();
@@ -9276,6 +9658,17 @@ window.editorClick = editorClick;
 window.blurWeekNote = blurWeekNote;
 window.openEditor = openEditor;
 window.setLetter = setLetter;
+window.placeOnCalendar = placeOnCalendar;
+window.newCalendarFor = newCalendarFor;
+window.sendAthleteInvite = sendAthleteInvite;
+window.completeAllSets = completeAllSets;
+window.addChainRest = addChainRest;
+window.removeChainRest = removeChainRest;
+window.addChainBuilderRest = addChainBuilderRest;
+window.toggleChainMemberSide = toggleChainMemberSide;
+window.togglePerSide = togglePerSide;
+window.toggleSelectedLetterMenu = toggleSelectedLetterMenu;
+window.setSelectedLetter = setSelectedLetter;
 window.changeSets = changeSets;
 window.addProp = addProp;
 window.setCell = setCell;
@@ -9849,11 +10242,12 @@ function renderLoginGate() {
         </div>
       </form>
     `;
-  } else if (mode === "reset") {
+  } else if (mode === "reset" || mode === "invite") {
+    const invite = mode === "invite";
     content = `
       <form class="auth-form" onsubmit="handleResetPassword(event); return false;">
         <p class="auth-copy">
-          Enter your new password below to reset your credentials.
+          ${invite ? "Welcome to wourkout. Your coach added you. Choose a password to finish setting up your account." : "Enter your new password below to reset your credentials."}
         </p>
         <div class="auth-input-group">
           <label>New Password (min. 6 characters)</label>
@@ -9864,7 +10258,7 @@ function renderLoginGate() {
           <input class="auth-input" id="confirm-password" type="password" placeholder="••••••••" required minlength="6" autocomplete="new-password">
         </div>
         <button class="auth-submit-btn" type="submit" ${state.auth.loading ? "disabled" : ""}>
-          ${state.auth.loading ? "Resetting..." : "Update Password"}
+          ${state.auth.loading ? (invite ? "Saving..." : "Resetting...") : (invite ? "Set password and sign in" : "Update Password")}
         </button>
         <div class="auth-footer-links" style="justify-content:center">
           <button type="button" class="auth-link" onclick="setAuthMode('login')">Back to Sign In</button>
@@ -10075,14 +10469,20 @@ async function handleResetPassword(e) {
   state.auth.success = "";
   render();
   try {
+    const token = state.auth.resetToken || "";
+    // The sign-in form checks wourkout's own copy of the password, so that is the one to set.
+    // The emailed link's token proves who this is.
+    await api("POST", "/api/auth/reset-password", { token: token || "mock-token", new_password: pwd });
+    // Keep Supabase's copy in step too, for anything that signs in through it.
     if (window.supabaseClient && window.supabaseClient.auth) {
-      const { error } = await window.supabaseClient.auth.updateUser({ password: pwd });
-      if (error) throw error;
-    } else {
-      await api("POST", "/api/auth/reset-password", {
-        token: state.auth.resetToken || "mock-token",
-        new_password: pwd
-      });
+      try { await window.supabaseClient.auth.updateUser({ password: pwd }); } catch (_) { /* the app's own password is set */ }
+    }
+    state.auth.resetToken = null;
+    if (token) {
+      state.auth.loading = false;
+      state.auth.mode = "login";
+      await syncSupabaseSession(token);
+      if (state.auth.isAuthenticated) return;
     }
     state.auth.success = "Password updated successfully! Please sign in.";
     state.auth.mode = "login";
@@ -10139,8 +10539,9 @@ async function initAuth() {
     const hashParams = new URLSearchParams(window.location.hash.slice(1));
     const accessToken = hashParams.get("access_token");
     const type = hashParams.get("type");
-    if (type === "recovery" && accessToken) {
-      state.auth.mode = "reset";
+    if ((type === "recovery" || type === "invite") && accessToken) {
+      // An invite link from a coach and a reset link both land here to choose a password.
+      state.auth.mode = type === "invite" ? "invite" : "reset";
       state.auth.resetToken = accessToken;
       history.replaceState(null, "", window.location.pathname + window.location.search);
       render();

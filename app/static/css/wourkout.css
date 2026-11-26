@@ -189,6 +189,11 @@ input.day-title::placeholder { color: #8d8d8d; font-weight: 500; }
 .ex-name { font-size: 12px; line-height: 1.25; }
 .ex-sub { font-size: 11px; color: #9a9a9a; line-height: 1.25; }
 .ex-main { flex: 1; min-width: 0; background: transparent; border: 0; color: inherit; text-align: left; padding: 0; }
+/* A note in a day is text, not a lettered exercise. */
+.ex.ex-note { border-left: 2px solid #8a7a4a; padding-left: 6px; }
+.ex-note-text { font-size: 11px; line-height: 1.35; font-style: italic; color: #d8cfae; white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.ex-note-empty { color: #9a9a9a; }
+.note-badge { width: 16px; height: 16px; display: grid; place-items: center; color: #d8cfae; flex-shrink: 0; }
 .ex-tools {
   position: absolute; top: 1px; right: 1px; display: none; align-items: center; gap: 1px;
   background: #262626; border-radius: 4px; padding: 0 2px;
@@ -351,7 +356,11 @@ input.day-title::placeholder { color: #8d8d8d; font-weight: 500; }
 .prop-menu-h { display: flex; justify-content: space-between; align-items: center; padding: 4px 8px 6px; color: #eee; font-size: 13px; }
 .prop-menu-h span { color: #999; font-size: 11px; }
 .about-prop { border-top: 1px solid #3a3a3a; margin-top: 4px; color: #cfcfcf; }
-.letter-pop { right: 8px; top: 36px; width: 72px; padding: 4px; }
+.letter-pop { right: 8px; top: 36px; width: 96px; padding: 4px; display: grid; grid-template-columns: 1fr 1fr; gap: 2px; max-height: min(260px, 50vh); overflow-y: auto; overscroll-behavior: contain; }
+.letter-pop .opt { text-align: center; padding: 5px 0; }
+.sel-letter-anchor { position: relative; display: inline-flex; }
+.sel-letter-btn { padding: 2px 7px; font-size: 11px; }
+.sel-letter-pop { left: 0; right: auto; top: 24px; }
 .options-pop { left: 0; top: 28px; width: 180px; }
 .superset-pop { left: 0; top: 28px; width: 220px; max-height: 220px; overflow: auto; }
 .superset-anchor { display: flex; align-items: center; gap: 6px; }
@@ -751,3 +760,17 @@ table.data tr:hover td { background: #fafafa; }
 .ph-actions .ph-del { margin-left: auto; color: #fca5a5; }
 .ph-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
 .ph-row .bp-main { cursor: pointer; }
+
+/* Round 10: reps per side, rests inside chains. */
+.dose-switch .side-pill { margin-left: -2px; }
+.chain-add-rest { display: block; margin: 2px 0 6px; color: #9ab; }
+.chain-edit-rest .rest-secs { width: 70px; }
+.chain-member .side-toggle { background: transparent; border: 1px solid #555; color: #ccc; border-radius: 999px; padding: 2px 8px; font-size: 11px; }
+.chain-member .side-toggle.on { background: #1d3358; border-color: #3b82f6; color: #fff; }
+.chain-member-rest { background: rgba(120, 140, 170, .08); }
+.copy-range { display: flex; align-items: center; gap: 8px; }
+.copy-range .field { flex: 1; }
+.no-cal { margin: 40px auto; max-width: 460px; background: #242424; border: 1px solid #3a3a3a; border-radius: 10px; padding: 18px 20px; display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+.no-cal h3 { margin: 0; font-size: 16px; }
+.no-cal p { margin: 0; color: #aaa; font-size: 13px; }
+.no-cal-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }

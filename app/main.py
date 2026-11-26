@@ -33,7 +33,7 @@ from app.schemas import (
     AuthConfigResponse, UserRegister, UserLogin, Token,
     PasswordResetRequest, PasswordResetConfirm, SupabaseAuthSync,
     ViewSwitch, GymCreate, JoinCodeCreate, JoinCodeRedeem, JoinCodeResponse,
-    GymContext, GymMemberCreate, GymMemberCreated, MoveTeamRequest,
+    GymContext, GymMemberCreate, GymMemberCreated, MoveTeamRequest, LoginInviteRequest, LoginInviteResponse,
     GymSavedItem, GymItemCreate, GymItemUpdate, HideExerciseRequest, HideChainRequest,
     ProgrammingUse, ProgrammingRemoved,
     CoachAssignRequest, AthleteNoteRequest, ScheduleItem,
@@ -189,6 +189,7 @@ def ensure_schema_migrations():
             ("notes", "TEXT"),
             ("time", "VARCHAR(50)"),
             ("distance", "VARCHAR(50)"),
+            ("per_side", "BOOLEAN DEFAULT FALSE"),
         )
         for name, ddl in member_columns:
             if name not in mcols:
@@ -1260,8 +1261,28 @@ def remove_coach(user_id: int, db: Session = Depends(get_db), current_user: crud
 def add_athlete(body: GymMemberCreate, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
     if not body.team_id:
         raise HTTPException(status_code=400, detail="An athlete belongs to exactly one team.")
-    user, password = crud.add_gym_athlete(db, current_user, body.name, body.email, body.team_id)
-    return {"user": user, "temporary_password": password}
+    user, password = crud.add_gym_athlete(
+        db, current_user, body.name, body.email, body.team_id,
+        calendar_id=body.calendar_id, new_calendar=body.new_calendar,
+    )
+    # Only a brand-new account needs onboarding; someone already in the system can sign in already.
+    invite = crud.send_login_invite(user.email, user.name, body.redirect_to) if password else None
+    return {
+        "user": user,
+        "temporary_password": password,
+        "invite_status": invite and invite["status"],
+        "invite_message": invite and invite["message"],
+    }
+
+@app.post("/api/gym/athletes/{user_id}/invite", response_model=LoginInviteResponse)
+def invite_athlete(user_id: int, body: LoginInviteRequest, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    access.require_gym(current_user)
+    athlete = crud.get_user(db, user_id)
+    if not athlete or athlete.gym_id != current_user.gym_id:
+        raise HTTPException(status_code=404, detail="Athlete not found in this gym.")
+    if not access.is_admin(current_user):
+        access.assert_own_athlete(db, current_user, athlete)
+    return crud.send_login_invite(athlete.email, athlete.name, body.redirect_to)
 
 @app.post("/api/gym/athletes/bulk", response_model=BulkAthleteUploadResponse, status_code=status.HTTP_201_CREATED)
 def add_athletes_bulk(
@@ -1269,7 +1290,13 @@ def add_athletes_bulk(
     db: Session = Depends(get_db),
     current_user: crud.User = Depends(require_auth),
 ):
-    return crud.bulk_add_gym_athletes(db, current_user, body.team_id, body.athletes)
+    result = crud.bulk_add_gym_athletes(db, current_user, body.team_id, body.athletes)
+    for row in result["users"]:
+        user = row["user"]
+        if row.get("temporary_password") and not crud.is_placeholder_email(user.email):
+            invite = crud.send_login_invite(user.email, user.name, body.redirect_to)
+            row["invite_status"], row["invite_message"] = invite["status"], invite["message"]
+    return result
 
 @app.get("/api/calendar/schedule", response_model=List[CalendarScheduleEntry])
 def get_calendar_schedule(

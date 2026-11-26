@@ -70,19 +70,34 @@ class CalendarTests(unittest.TestCase):
         self.assertEqual(res.status_code, 201, res.text)
         return res.json()
 
-    def test_every_athlete_gets_a_personal_calendar(self):
+    def test_no_calendar_is_made_behind_the_coachs_back(self):
         auth, team_id = self._gym_coach("Personal")
         rows = self._athletes(auth, team_id, ["Sam Lee", "Jo Kim"])
+        sam = rows[0]["user"]["id"]
         ctx = self.client.get("/api/gym/context", headers=auth).json()
         by_name = {a["name"]: a for a in ctx["athletes"]}
-        self.assertEqual(by_name["Sam Lee"]["calendar_name"], "Sam Lee")
-        self.assertEqual(by_name["Jo Kim"]["calendar_name"], "Jo Kim")
-        self.assertNotEqual(by_name["Sam Lee"]["calendar_id"], by_name["Jo Kim"]["calendar_id"])
-        names = {c["name"]: c for c in ctx["calendars"]}
-        self.assertEqual(names["Sam Lee"]["athlete_ids"], [rows[0]["user"]["id"]])
-        self.assertEqual(names["Jo Kim"]["athlete_count"], 1)
-        listed = self.client.get("/api/calendars", headers=auth).json()
-        self.assertEqual({c["name"] for c in listed}, {"Sam Lee", "Jo Kim"})
+        self.assertIsNone(by_name["Sam Lee"]["calendar_id"])
+        self.assertIsNone(by_name["Jo Kim"]["calendar_id"])
+        self.assertEqual(ctx["calendars"], [])
+        self.assertEqual(self.client.get(f"/api/calendar/schedule?user_id={sam}", headers=auth).json(), [])
+        self.assertEqual(self.client.get(f"/api/calendar/week-notes?user_id={sam}", headers=auth).status_code, 200)
+        self.assertEqual(self.client.get("/api/calendars", headers=auth).json(), [])
+        self.assertEqual(self.client.get("/api/my/schedule", headers=self._login(rows[0])).json(), [])
+
+    def test_deleting_an_athlete_keeps_their_calendar(self):
+        auth, team_id = self._gym_coach("Keep")
+        rows = self._athletes(auth, team_id, ["Kim Solo"])
+        kim = rows[0]["user"]["id"]
+        calendar_id = self.client.post("/api/calendars", json={"name": "Kim Solo"}, headers=auth).json()["id"]
+        self.client.put(f"/api/calendars/{calendar_id}", json={"athlete_ids": [kim]}, headers=auth)
+        workout = self._workout(auth, "Solo day", "2026-12-03")
+        self.client.post("/api/assignments", json={"workout_id": workout["id"], "calendar_id": calendar_id, "scheduled_date": "2026-12-03"}, headers=auth)
+        gone = self.client.delete(f"/api/gym/athletes/{kim}", headers=auth)
+        self.assertEqual(gone.status_code, 200, gone.text)
+        kept = next(c for c in self.client.get("/api/calendars", headers=auth).json() if c["id"] == calendar_id)
+        self.assertEqual((kept["athlete_count"], kept["programmed_days"]), (0, 1))
+        days = self.client.get(f"/api/calendar/schedule?calendar_id={calendar_id}", headers=auth).json()
+        self.assertEqual([d["workout"]["id"] for d in days], [workout["id"]])
 
     def test_shared_calendar_is_followed_live_and_only_by_its_athletes(self):
         auth, team_id = self._gym_coach("Shared")
@@ -139,14 +154,14 @@ class CalendarTests(unittest.TestCase):
         self.assertEqual(moved.json()["calendar_id"], calendar_id)
         self.assertEqual([row["workout_id"] for row in self.client.get("/api/my/schedule", headers=cal_auth).json()], [workout["id"]])
 
-        # Taking Ben off sends him back to a calendar of his own, and he no longer sees the day.
+        # Taking Ben off leaves him on no calendar, and he no longer sees the day.
         trimmed = self.client.put(f"/api/calendars/{calendar_id}", json={"name": "Fall block v2", "athlete_ids": [ana, cal]}, headers=auth)
         self.assertEqual(trimmed.status_code, 200, trimmed.text)
         self.assertEqual(trimmed.json()["name"], "Fall block v2")
         ctx = self.client.get("/api/gym/context", headers=auth).json()
         ben_row = next(a for a in ctx["athletes"] if a["id"] == ben)
-        self.assertEqual(ben_row["calendar_name"], "Ben Fox")
-        self.assertNotEqual(ben_row["calendar_id"], calendar_id)
+        self.assertIsNone(ben_row["calendar_id"])
+        self.assertNotIn("Ben Fox", [c["name"] for c in ctx["calendars"]])
         self.assertEqual(self.client.get("/api/my/schedule", headers=ben_auth).json(), [])
 
         # Workout summaries count everyone on the calendar as assigned.
@@ -171,7 +186,7 @@ class CalendarTests(unittest.TestCase):
         }, headers=auth)
         self.assertEqual(both.status_code, 400)
 
-    def test_delete_is_blocked_while_followed_and_foreign_coaches_see_nothing(self):
+    def test_deleting_a_followed_calendar_keeps_its_athletes_and_foreign_coaches_see_nothing(self):
         auth, team_id = self._gym_coach("Delete")
         rows = self._athletes(auth, team_id, ["Eve Ash"])
         eve = rows[0]["user"]["id"]
@@ -180,10 +195,6 @@ class CalendarTests(unittest.TestCase):
         workout = self._workout(auth, "Camp day", "2026-12-01")
         self.client.post("/api/assignments", json={"workout_id": workout["id"], "calendar_id": calendar_id, "scheduled_date": "2026-12-01"}, headers=auth)
 
-        blocked = self.client.delete(f"/api/calendars/{calendar_id}", headers=auth)
-        self.assertEqual(blocked.status_code, 409, blocked.text)
-        self.assertIn("Eve Ash", blocked.json()["detail"])
-
         other, _ = self._gym_coach("Elsewhere")
         self.assertEqual(self.client.get(f"/api/calendar/schedule?calendar_id={calendar_id}", headers=other).status_code, 403)
         self.assertEqual(self.client.put(f"/api/calendars/{calendar_id}", json={"name": "Mine"}, headers=other).status_code, 403)
@@ -191,13 +202,15 @@ class CalendarTests(unittest.TestCase):
         wrong_gym = self.client.put(f"/api/users/{eve}", json={"calendar_id": 999999}, headers=auth)
         self.assertEqual(wrong_gym.status_code, 400)
 
-        self.client.put(f"/api/calendars/{calendar_id}", json={"athlete_ids": []}, headers=auth)
         gone = self.client.delete(f"/api/calendars/{calendar_id}", headers=auth)
         self.assertEqual(gone.status_code, 200, gone.text)
         self.assertEqual(self.client.get("/api/assignments", params={"calendar_id": calendar_id}, headers=auth).json(), [])
         self.assertNotIn(calendar_id, [c["id"] for c in self.client.get("/api/calendars", headers=auth).json()])
         ctx = self.client.get("/api/gym/context", headers=auth).json()
-        self.assertEqual(next(a for a in ctx["athletes"] if a["id"] == eve)["calendar_name"], "Eve Ash")
+        eve_row = next(a for a in ctx["athletes"] if a["id"] == eve)
+        self.assertIsNone(eve_row["calendar_id"])
+        self.assertEqual(ctx["calendars"], [])
+        self.assertEqual(self.client.get("/api/my/schedule", headers=self._login(rows[0])).json(), [])
 
     def test_legacy_rows_move_onto_calendars(self):
         auth, team_id = self._gym_coach("Legacy")
