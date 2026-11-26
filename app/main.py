@@ -44,6 +44,7 @@ from app.schemas import (
     CalendarCreate, CalendarUpdate, CalendarResponse,
 )
 from app import crud
+from app import teambuildr
 
 logger = logging.getLogger(__name__)
 
@@ -372,6 +373,28 @@ def create_exercise(exercise_in: ExerciseCreate, db: Session = Depends(get_db)):
     if existing:
         raise HTTPException(status_code=400, detail="Exercise with this name already exists")
     return crud.create_exercise(db, exercise_in)
+
+@app.post("/api/import/teambuildr")
+async def read_teambuildr_pdf(request: Request, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    """Read a TeamBuildr printable workout PDF (sent as the raw request body) into days and items,
+    with library matches for each exercise name. Nothing is saved: the coach reviews it first."""
+    if not _staff(current_user):
+        raise HTTPException(status_code=403, detail="Athlete accounts do not have coach tools.")
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > teambuildr.MAX_PDF_BYTES:
+        raise HTTPException(status_code=413, detail="That PDF is larger than 10 MB.")
+    data = await request.body()
+    try:
+        parsed = teambuildr.parse_pdf(data)
+    except teambuildr.TeamBuildrError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    hidden = set(crud.hidden_exercise_ids(db, current_user))
+    library = [
+        {"id": row.id, "name": row.name, "category": row.category or ""}
+        for row in db.query(Exercise).all() if row.id not in hidden
+    ]
+    parsed["matches"] = teambuildr.match_names(teambuildr.imported_names(parsed), library)
+    return parsed
 
 @app.post("/api/exercises/bulk", response_model=ExerciseImportResponse)
 def import_exercises(body: ExerciseImportRequest, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):

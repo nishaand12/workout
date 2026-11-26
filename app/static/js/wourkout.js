@@ -2657,7 +2657,7 @@ function buildView() {
           <div class="crumbs">Calendars / ${esc(currentTarget.name)}</div>
           <div class="athlete-pick">
             <button type="button" class="athlete-name" id="build-athlete" onclick="toggleAthleteMenu(event)">${esc(currentTarget.name)} ▾</button>
-            ${state.athleteMenu ? `<div class="menu athlete-menu" id="build-athlete-menu">${buildAthletes().map((a) => `<button type="button" class="${a.id === state.athleteId ? "on" : ""}" onclick="switchAthlete('${esc(a.id)}')">${a.id === state.athleteId ? "✓ " : ""}${esc(a.name)}${noCalendarAthlete(a) ? ` <span class="muted">· no calendar</span>` : ""}</button>`).join("")}${state.role === "coach" ? `<button type="button" class="athlete-menu-new" onclick="openNewCalendar(event)">+ Create new calendar</button>` : ""}</div>` : ""}
+            ${state.athleteMenu ? `<div class="menu athlete-menu" id="build-athlete-menu">${buildAthletes().map((a) => `<button type="button" class="${a.id === state.athleteId ? "on" : ""}" onclick="switchAthlete('${esc(a.id)}')">${a.id === state.athleteId ? "✓ " : ""}${esc(a.name)}${noCalendarAthlete(a) ? ` <span class="muted">· no calendar</span>` : ""}</button>`).join("")}${state.role === "coach" ? `<button type="button" class="athlete-menu-new" onclick="openNewCalendar(event)">+ Create new calendar</button>` : ""}${state.role === "coach" && currentTarget.isCalendar ? `<button type="button" class="athlete-menu-new" onclick="openTeamBuildrImport(event)">⇪ Import TeamBuildr PDF into ${esc(currentTarget.name)}</button>` : ""}</div>` : ""}
           </div>
         </div>
         <div class="sub-actions">
@@ -7342,6 +7342,281 @@ function libraryImportHtml(m) {
     <button class="full" type="button" onclick="state.modal=null;render()">${m.result ? "Close" : "Cancel"}</button>
   </div></div>`;
 }
+// ---- TeamBuildr import ------------------------------------------------------------------
+// The server reads the PDF and suggests library matches; nothing is saved until the coach
+// has checked the exercises and picked a start date. The days then go through the same
+// autosave Build uses, so they save exactly as hand-built days do.
+function openTeamBuildrImport(ev) {
+  if (ev) ev.stopPropagation();
+  state.athleteMenu = false;
+  const target = athlete();
+  if (!target || !target.isCalendar) { toast("Open a calendar in Build first"); return; }
+  state.modal = { type: "tb-import", step: "pick", target: target.id, targetName: target.name, busy: false };
+  render();
+}
+async function loadTeamBuildrFile(input) {
+  const file = input && input.files && input.files[0];
+  const m = state.modal;
+  if (!file || !m || m.type !== "tb-import") return;
+  m.busy = true;
+  m.fileName = file.name;
+  render();
+  try {
+    const body = await file.arrayBuffer();
+    const headers = { "Content-Type": "application/pdf" };
+    if (state.auth && state.auth.token) headers.Authorization = "Bearer " + state.auth.token;
+    const res = await fetch("/api/import/teambuildr", { method: "POST", headers, body });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || "That PDF could not be read");
+    setTeamBuildrData(m, data);
+  } catch (err) {
+    m.busy = false;
+    m.error = err.message || "That PDF could not be read";
+  }
+  if (state.modal === m) render();
+}
+// The first date on or after today that falls on the same weekday as the PDF's first day.
+function teamBuildrDefaultStart(firstDate) {
+  const want = new Date(firstDate + "T12:00:00").getDay();
+  let d = APP_TODAY;
+  for (let i = 0; i < 7; i++) {
+    if (new Date(d + "T12:00:00").getDay() === want) return d;
+    d = addDays(d, 1);
+  }
+  return APP_TODAY;
+}
+const TB_CATEGORY = { lift: "Strength", circuit: "Circuit" };
+function setTeamBuildrData(m, data) {
+  m.data = data;
+  m.step = "review";
+  m.busy = false;
+  m.error = "";
+  m.placement = "bottom";
+  m.start = teamBuildrDefaultStart(data.days[0].date);
+  m.choices = {};
+  m.kinds = {};
+  data.days.forEach((d) => d.items.forEach((it) => {
+    if (it.kind === "note" || m.kinds[it.name]) return;
+    m.kinds[it.name] = it.kind === "text" ? (it.category || "Warm up") : (TB_CATEGORY[it.kind] || "Strength");
+  }));
+  Object.keys(data.matches || {}).forEach((name) => {
+    const match = data.matches[name];
+    const top = (match.suggestions || [])[0];
+    if (match.status === "exact" && match.match) m.choices[name] = { mode: "existing", id: match.match.id, name: match.match.name };
+    else if (top && top.score >= 0.9) m.choices[name] = { mode: "existing", id: top.id, name: top.name };
+    else m.choices[name] = { mode: "new", name, category: m.kinds[name] || "Strength" };
+  });
+}
+function teamBuildrTargetDate(m, date) {
+  return addDays(m.start, daysBetween(m.data.days[0].date, date));
+}
+function pickTeamBuildrMatch(name, value) {
+  const m = state.modal;
+  if (!m || !m.choices) return;
+  const match = (m.data.matches || {})[name] || {};
+  if (value === "new") m.choices[name] = { mode: "new", name, category: m.kinds[name] || "Strength" };
+  else if (value === "other") m.choices[name] = { mode: "other", name: "", id: null };
+  else {
+    const id = parseInt(String(value).replace(/^s:/, ""), 10);
+    const hit = (match.suggestions || []).find((row) => row.id === id) || (match.match && match.match.id === id ? match.match : null);
+    if (hit) m.choices[name] = { mode: "existing", id: hit.id, name: hit.name };
+  }
+  render();
+}
+function setTeamBuildrOther(name, typed) {
+  const m = state.modal;
+  if (!m || !m.choices) return;
+  const want = String(typed || "").trim().toLowerCase();
+  const hit = (state.serverExercises || []).find((row) => !row.hidden && String(row.name || "").toLowerCase() === want);
+  m.choices[name] = hit ? { mode: "existing", id: hit.id, name: hit.name, other: true } : { mode: "other", name: typed, id: null };
+  render();
+}
+function setTeamBuildrCategory(name, category) {
+  const m = state.modal;
+  if (m && m.choices && m.choices[name]) m.choices[name].category = category;
+}
+// One imported item as a Build item, under the library name the coach chose.
+function teamBuildrItem(it, choices) {
+  const pick = choices[it.name];
+  const name = pick && pick.name ? pick.name : it.name;
+  if (it.kind === "note") {
+    const note = fromCatalog({ name: "Note", type: "note" });
+    note.note = it.note || "";
+    return note;
+  }
+  if (it.kind === "circuit") {
+    const c = fromCatalog({ name, type: "circuit" });
+    resizeSets(c, it.rounds || 1);
+    c.reps = Array(c.sets).fill("1");
+    c.letter = it.letter || "A";
+    c.detail = it.detail || "";
+    c.note = it.note || "";
+    c.completionOnly = true;
+    return c;
+  }
+  const out = fromCatalog({ name, type: "lift" });
+  if (it.kind === "text") {
+    resizeSets(out, 1);
+    out.letter = "";
+    out.completionOnly = true;
+    out.textOnly = true;
+    out.note = it.note || "";
+    return out;
+  }
+  const sets = Math.max(1, Math.min(10, it.sets || 1));
+  resizeSets(out, sets);
+  // A set past the end of the list repeats the last one (a "3 x 8" row may print fewer cells).
+  // A blank set inside the list stays blank: RPE often applies to the last sets only.
+  const pad = (arr, fill) => Array.from({ length: sets }, (_, i) => {
+    const list = arr || [];
+    if (i < list.length) return list[i] == null || String(list[i]) === "" ? fill : String(list[i]);
+    const last = list.filter((v) => v != null && String(v) !== "").slice(-1)[0];
+    return last != null ? String(last) : fill;
+  });
+  out.letter = it.letter || "A";
+  out.dose = 2;
+  out.reps = pad(it.reps, "1");
+  out.trackReps = it.track_reps !== false;
+  out.trackTime = (it.times || []).length > 0;
+  out.times = out.trackTime ? pad(it.times, "") : Array(sets).fill("");
+  out.trackDistance = false;
+  out.distances = Array(sets).fill("");
+  out.perSide = !!it.per_side;
+  out.completionOnly = false;
+  out.textOnly = false;
+  out.props = (out.props || []).filter((key) => key !== "intensity");
+  if ((it.intensities || []).some((v) => v)) {
+    out.intensities = pad(it.intensities, "");
+    out.intensityKind = it.intensity_kind || "rpe";
+    out.props.push("intensity");
+  }
+  // The PDF is the prescription: a library default load of 0 is not a load.
+  if ((out.loads || []).every((v) => v === "" || v == null || Number(v) === 0)) {
+    out.loads = Array(sets).fill("");
+    out.props = out.props.filter((key) => key !== "load");
+  }
+  out.note = it.note || "";
+  return out;
+}
+function teamBuildrUnresolved(m) {
+  return Object.keys(m.choices || {}).filter((name) => m.choices[name].mode === "other");
+}
+async function runTeamBuildrImport() {
+  const m = state.modal;
+  if (!m || m.type !== "tb-import" || !m.data || m.busy) return;
+  const open = teamBuildrUnresolved(m);
+  if (open.length) { toast("Pick a library exercise for " + open[0]); return; }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(m.start || "")) { toast("Choose a start date"); return; }
+  if (state.athleteId !== m.target) { toast("Open " + m.targetName + " in Build to import into it"); return; }
+  m.busy = true;
+  render();
+  try {
+    const creating = Object.keys(m.choices).filter((name) => m.choices[name].mode === "new");
+    for (const name of creating) {
+      const made = await ensureExercise(name, m.choices[name].category || "Strength");
+      if (made && made.id) rememberCreatedExercise(made);
+    }
+    if (m.data.days.some((d) => d.items.some((it) => it.kind === "note"))) {
+      const note = await ensureExercise("Note", "Notes");
+      if (note && note.id) rememberCreatedExercise(note);
+    }
+    snapshot();
+    let count = 0;
+    m.data.days.forEach((d) => {
+      const date = teamBuildrTargetDate(m, d.date);
+      const day = ensureDay(date, m.target);
+      const items = d.items.map((it) => teamBuildrItem(it, m.choices));
+      day.items = m.placement === "replace" ? items : (day.items || []).concat(items);
+      count += items.length;
+      noteDayEdit(date, m.target);
+    });
+    flushAutosaves();
+    const days = m.data.days.length;
+    const start = m.start;
+    state.modal = null;
+    state.weekStart = sundayOf(start);
+    state.buildOrigin = null;
+    state.buildWeekCount = 0;
+    state.buildJumpWeek = sundayOf(start);
+    toast(`Imported ${days} day${days === 1 ? "" : "s"} (${count} items) from ${fmtShort(start)}. Saving…`);
+    render();
+  } catch (err) {
+    m.busy = false;
+    toast(err.message || "Could not import that program");
+    render();
+  }
+}
+function teamBuildrMatchRow(m, name) {
+  const match = (m.data.matches || {})[name] || {};
+  const choice = m.choices[name] || {};
+  const sel = (value, label) => `<option value="${esc(value)}" ${value === (choice.mode === "new" ? "new" : choice.mode === "other" || choice.other ? "other" : "s:" + choice.id) ? "selected" : ""}>${esc(label)}</option>`;
+  const options = (match.suggestions || []).map((row) => sel("s:" + row.id, row.name + " (" + Math.round(row.score * 100) + "% match)")).join("")
+    + sel("new", "Create new: " + name) + sel("other", "Another library exercise…");
+  const other = choice.mode === "other" || choice.other
+    ? `<input class="field tb-other" list="tb-library" placeholder="Type a library exercise" aria-label="Library exercise for ${esc(name)}" value="${esc(choice.name || "")}" onchange="setTeamBuildrOther(${esc(JSON.stringify(name))}, this.value)">`
+    : "";
+  const category = choice.mode === "new"
+    ? `<select class="field tb-cat" aria-label="Category for ${esc(name)}" onchange="setTeamBuildrCategory(${esc(JSON.stringify(name))}, this.value)">${EXERCISE_CATEGORIES.filter((c) => c !== "Questionnaire" && c !== "Notes").map((c) => `<option ${c === (choice.category || "Strength") ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>`
+    : "";
+  return `<tr><td class="tb-name">${esc(name)}</td><td><select class="field" aria-label="Library match for ${esc(name)}" onchange="pickTeamBuildrMatch(${esc(JSON.stringify(name))}, this.value)">${options}</select>${other}${category}</td></tr>`;
+}
+function teamBuildrImportHtml(m) {
+  const close = `<button class="full" type="button" onclick="state.modal=null;render()">Cancel</button>`;
+  if (m.step === "pick" || !m.data) {
+    return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render()}"><div class="modal edit-modal import-modal" onclick="event.stopPropagation()">
+      <h3>Import a TeamBuildr program</h3>
+      <div class="sub">In TeamBuildr, print the athlete's workouts and save them as a PDF. Choose that PDF here. Nothing is added to ${esc(m.targetName)} until you have checked it.</div>
+      <label class="pill file-btn tb-pick">${m.busy ? "Reading " + esc(m.fileName || "PDF") + "…" : "Choose PDF"}<input type="file" accept="application/pdf,.pdf" ${m.busy ? "disabled" : ""} onchange="loadTeamBuildrFile(this)"></label>
+      ${m.error ? `<div class="import-errors">${esc(m.error)}</div>` : ""}
+      ${close}
+    </div></div>`;
+  }
+  const days = m.data.days;
+  const last = teamBuildrTargetDate(m, days[days.length - 1].date);
+  const cal = state.calendars[m.target] || {};
+  const busyDays = days.filter((d) => {
+    const existing = cal[teamBuildrTargetDate(m, d.date)];
+    return existing && (existing.items || []).length;
+  }).length;
+  const names = Object.keys(m.choices);
+  const exact = names.filter((name) => ((m.data.matches || {})[name] || {}).status === "exact");
+  const check = names.filter((name) => exact.indexOf(name) < 0);
+  const creating = names.filter((name) => m.choices[name].mode === "new").length;
+  const preview = days.map((d) => {
+    const items = d.items.map((it) => teamBuildrItem(it, m.choices));
+    const rows = items.map((it) => it.type === "note"
+      ? `<div class="tb-item tb-note">${esc(String(it.note || "").split("\n")[0])}</div>`
+      : `<div class="tb-item">${it.letter ? `<b class="tb-letter">${esc(it.letter)}</b>` : `<span class="tb-letter"></span>`}<span>${esc(it.name)}</span><span class="tb-sub">${esc(isTextOnlyItem(it) ? String(it.note || "").split("\n")[0] : scriptLine(it, { plain: true }))}</span></div>`).join("");
+    return `<div class="tb-day"><div class="tb-day-h">${esc(fmtDay(teamBuildrTargetDate(m, d.date)))} <span class="tb-sub">from ${esc(fmtShort(d.date))}</span></div>${rows}</div>`;
+  }).join("");
+  const libraryOptions = (state.serverExercises || []).filter((row) => !row.hidden).map((row) => `<option value="${esc(row.name)}"></option>`).join("");
+  const unresolved = teamBuildrUnresolved(m).length;
+  return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render()}"><div class="modal edit-modal import-modal tb-modal" onclick="event.stopPropagation()">
+    <h3>Import into ${esc(m.targetName)}</h3>
+    <div class="sub">${esc(m.fileName || "TeamBuildr PDF")}${m.data.athlete ? " · " + esc(m.data.athlete) : ""} · ${days.length} day${days.length === 1 ? "" : "s"}, ${esc(fmtShort(days[0].date))} – ${esc(fmtShort(days[days.length - 1].date))}</div>
+    <div class="tb-section">
+      <label class="edit-field"><span>Start on</span><input class="field" type="date" value="${esc(m.start)}" onchange="state.modal.start=this.value;render()"></label>
+      <div class="hint">Lands on ${esc(fmtDay(m.start))} – ${esc(fmtDay(last))}, keeping TeamBuildr's spacing between days.${busyDays ? ` ${busyDays} of those days already have workouts.` : ""}</div>
+      <div class="row">
+        <label class="chk"><input type="radio" name="tb-place" ${m.placement !== "replace" ? "checked" : ""} onchange="state.modal.placement='bottom'"> Add below what is there</label>
+        <label class="chk"><input type="radio" name="tb-place" ${m.placement === "replace" ? "checked" : ""} onchange="state.modal.placement='replace'"> Replace what is there</label>
+      </div>
+    </div>
+    <div class="tb-section">
+      <div class="tb-section-h">Exercises</div>
+      <div class="hint">${exact.length} matched your library by name.${check.length ? ` Check the ${check.length} below: pick a library match or create a new exercise.` : ""}${creating ? ` ${creating} new exercise${creating === 1 ? "" : "s"} will be added to your library.` : ""}</div>
+      ${check.length ? `<div class="import-scroll"><table class="import-table tb-matches">${check.map((name) => teamBuildrMatchRow(m, name)).join("")}</table></div>` : ""}
+      <datalist id="tb-library">${libraryOptions}</datalist>
+    </div>
+    ${(m.data.warnings || []).length ? `<div class="import-errors"><b>Check these:</b>${m.data.warnings.map((w) => `<div>${esc(w)}</div>`).join("")}</div>` : ""}
+    <div class="tb-section">
+      <div class="tb-section-h">Preview</div>
+      <div class="import-scroll tb-preview">${preview}</div>
+    </div>
+    <button class="full save" type="button" ${m.busy || unresolved ? "disabled" : ""} onclick="runTeamBuildrImport()">${m.busy ? "Importing…" : `Import ${days.length} day${days.length === 1 ? "" : "s"}`}</button>
+    ${close}
+  </div></div>`;
+}
 function exportData() {
   const blob = new Blob([JSON.stringify({ calendars: state.calendars, athletes: state.athletes, coaches: state.coaches }, null, 2)], { type: "application/json" });
   const a = document.createElement("a");
@@ -7750,6 +8025,9 @@ function dayItemType(category, parsed) {
   if (lower.indexOf("circuit") >= 0) return "circuit";
   const known = canonicalCategory(raw);
   if (known === "Strength" || known === "Warm up" || known === "Speed/agility/cardio" || known === "Cooldown") return "lift";
+  // Days saved since dose2 mark their lifts, so a lift with a two-line note under a category
+  // this app does not name (say "Plyometrics") stays a lift instead of being read as a circuit.
+  if (parsed && (parsed.flags || []).indexOf("dose2") >= 0) return "lift";
   if (parsed && parsed.plainLines && parsed.plainLines.length > 1) return "circuit";
   return "lift";
 }
@@ -9829,6 +10107,7 @@ function modalHtml() {
   if (m.type === "install") return installHelpHtml(m);
   if (m.type === "chain") return chainEditorHtml(m);
   if (m.type === "library-import") return libraryImportHtml(m);
+  if (m.type === "tb-import") return teamBuildrImportHtml(m);
   if (m.type === "questionnaire") return questionnaireEditorHtml(m);
   if (m.type === "question") return questionEditorHtml(m);
   if (m.type === "chain-scope") return chainScopeHtml(m);
@@ -9983,6 +10262,12 @@ window.editorClick = editorClick;
 window.blurWeekNote = blurWeekNote;
 window.openEditor = openEditor;
 window.setLetter = setLetter;
+window.openTeamBuildrImport = openTeamBuildrImport;
+window.loadTeamBuildrFile = loadTeamBuildrFile;
+window.pickTeamBuildrMatch = pickTeamBuildrMatch;
+window.setTeamBuildrOther = setTeamBuildrOther;
+window.setTeamBuildrCategory = setTeamBuildrCategory;
+window.runTeamBuildrImport = runTeamBuildrImport;
 window.openLibraryImport = openLibraryImport;
 window.previewLibraryImport = previewLibraryImport;
 window.loadLibraryFile = loadLibraryFile;

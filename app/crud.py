@@ -1262,7 +1262,8 @@ def _workout_exercise_values(item, idx: int) -> dict:
         "prescription_text": presc,
         "prescribed_sets": 3 if p_sets is None else p_sets,
         "target_reps": str(t_reps if t_reps is not None else "10"),
-        "target_weight": str(_payload_get(item, "target_weight", "0") or "0"),
+        # A load left blank stays blank; reading it back as "0" showed a 0 load on every one-set lift.
+        "target_weight": "0" if _payload_get(item, "target_weight", None) is None else str(_payload_get(item, "target_weight")),
         "rest_seconds": _payload_get(item, "rest_seconds", 0) or 0,
         "notes": _payload_get(item, "notes", "") or "",
         "is_ea": bool(_payload_get(item, "is_ea", False)),

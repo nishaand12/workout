@@ -59,7 +59,10 @@ vm.createContext(sandbox);
 const source = fs.readFileSync("app/static/js/build-order.js", "utf8") + "\n" + fs.readFileSync("app/static/js/wourkout.js", "utf8") + `
 globalThis.__lib = {
   state, item, ensureDay, parseTable, rosterFromText, rosterPreview, uploadPreviewHtml, importUsers, usersView,
-  libraryRowsFromText, libraryImportPreview, openLibraryImport, previewLibraryImport, runLibraryImport, modalHtml
+  libraryRowsFromText, libraryImportPreview, openLibraryImport, previewLibraryImport, runLibraryImport, modalHtml,
+  setTeamBuildrData, teamBuildrDefaultStart, teamBuildrTargetDate, teamBuildrItem, teamBuildrImportHtml, pickTeamBuildrMatch,
+  setTeamBuildrOther, runTeamBuildrImport, openTeamBuildrImport, itemNotes, workoutToDayItems, scriptLine, isTextOnlyItem, buildView,
+  addDays, sundayOf, today: () => APP_TODAY
 };
 globalThis.__setApi = (fn) => { api = fn; };
 globalThis.__extra = {};
@@ -192,6 +195,138 @@ state.gymContext = {
   assert.equal(state.modal.type, "library-import");
   assert.ok(lib.modalHtml().includes("Row 1: Odd: bad"));
   state.modal = null;
+}
+
+// ---- TeamBuildr review: defaults, date shift, items, and the import itself ----
+{
+  state.serverExercises = [
+    { id: 21, name: "Back Squat", category: "Strength" },
+    { id: 22, name: "Single Arm Dumbbell Overhead Press", category: "Strength" },
+    { id: 23, name: "Pull-Up", category: "Strength" }
+  ];
+  const data = {
+    athlete: "Nishaan Dulay",
+    warnings: [],
+    days: [
+      { date: "2026-02-16", items: [
+        { kind: "text", letter: "", name: "Cardio Warm Up", note: "5 minutes easy", category: "Warm up" },
+        { kind: "lift", letter: "A", name: "Back Squat", sets: 4, reps: ["8", "8", "8", "8"], track_reps: true, times: [], per_side: false,
+          intensities: ["", "", "7-8", "8-9"], intensity_kind: "rpe", note: "Last 2 sets @ 8-9 RPE" },
+        { kind: "lift", letter: "B", name: "Single Leg Foam Roller Bridge", sets: 2, reps: ["1", "1"], track_reps: false, times: ["25", "ALAP"], per_side: true, intensities: [], intensity_kind: "", note: "" }
+      ] },
+      { date: "2026-02-18", items: [
+        { kind: "note", letter: "", name: "Note", note: "Foot/Ankle Strength\nAnywhere, any day" },
+        { kind: "circuit", letter: "D", name: "Upper Body Pump", rounds: 3, detail: "Bicep Curl - 1x10\nTricep Ext. - 1x10", note: "" },
+        { kind: "lift", letter: "E", name: "Pull Up", sets: 3, reps: ["3-5", "3-5", "AMAP"], track_reps: true, times: [], per_side: false, intensities: [], intensity_kind: "", note: "3 seconds down" }
+      ] }
+    ],
+    matches: {
+      "Cardio Warm Up": { status: "new", match: null, suggestions: [] },
+      "Back Squat": { status: "exact", match: { id: 21, name: "Back Squat" }, suggestions: [] },
+      "Single Leg Foam Roller Bridge": { status: "suggest", match: null, suggestions: [{ id: 22, name: "Single Arm Dumbbell Overhead Press", score: 0.62 }] },
+      "Upper Body Pump": { status: "new", match: null, suggestions: [] },
+      "Pull Up": { status: "suggest", match: null, suggestions: [{ id: 23, name: "Pull-Up", score: 0.93 }] }
+    }
+  };
+  // The start keeps the PDF's weekday: the first Monday (or Sunday) on or after today.
+  const monday = lib.teamBuildrDefaultStart("2026-02-16");
+  const sunday = lib.teamBuildrDefaultStart("2026-07-05");
+  assert.equal(new Date(monday + "T12:00:00").getDay(), 1);
+  assert.equal(new Date(sunday + "T12:00:00").getDay(), 0);
+  for (const d of [monday, sunday]) assert.ok(d >= lib.today() && d <= lib.addDays(lib.today(), 6));
+
+  state.athleteId = "cal:11";
+  state.calendars["cal:11"] = state.calendars["cal:11"] || {};
+  state.calendarLoaded["cal:11"] = true;
+  lib.openTeamBuildrImport();
+  const m = state.modal;
+  assert.equal(m.type, "tb-import");
+  assert.equal(m.targetName, "Fall block");
+  m.fileName = "Feb.pdf";
+  lib.setTeamBuildrData(m, data);
+  assert.equal(m.start, monday);
+  const D1 = m.start;
+  const D2 = lib.addDays(m.start, 2);
+  assert.equal(lib.teamBuildrTargetDate(m, "2026-02-18"), D2);
+  // Exact and strong suggestions are taken; a weak one starts as a new exercise with its kind's category.
+  assert.deepEqual(JSON.parse(JSON.stringify(m.choices)), {
+    "Cardio Warm Up": { mode: "new", name: "Cardio Warm Up", category: "Warm up" },
+    "Back Squat": { mode: "existing", id: 21, name: "Back Squat" },
+    "Single Leg Foam Roller Bridge": { mode: "new", name: "Single Leg Foam Roller Bridge", category: "Strength" },
+    "Upper Body Pump": { mode: "new", name: "Upper Body Pump", category: "Circuit" },
+    "Pull Up": { mode: "existing", id: 23, name: "Pull-Up" }
+  });
+  let html = lib.modalHtml();
+  assert.ok(html.includes("1 matched your library by name"));
+  assert.ok(html.includes("Create new: Single Leg Foam Roller Bridge"));
+  assert.ok(html.includes("62% match"));
+  assert.ok(html.includes("Lands on"));
+  // "Another library exercise" must name a real one before the import is allowed.
+  lib.pickTeamBuildrMatch("Single Leg Foam Roller Bridge", "other");
+  assert.ok(lib.modalHtml().includes("Import 2 days") && lib.modalHtml().includes("disabled"));
+  lib.setTeamBuildrOther("Single Leg Foam Roller Bridge", "nope");
+  assert.equal(m.choices["Single Leg Foam Roller Bridge"].mode, "other");
+  lib.setTeamBuildrOther("Single Leg Foam Roller Bridge", "back squat");
+  assert.equal(m.choices["Single Leg Foam Roller Bridge"].id, 21);
+  lib.pickTeamBuildrMatch("Single Leg Foam Roller Bridge", "new");
+
+  // Items come out as Build items and survive a save and reload.
+  const squat = lib.teamBuildrItem(data.days[0].items[1], m.choices);
+  assert.equal(lib.scriptLine(squat, { plain: true }).startsWith("4 x 8"), true);
+  const bridge = lib.teamBuildrItem(data.days[0].items[2], m.choices);
+  assert.equal(bridge.perSide, true);
+  assert.equal(bridge.trackTime, true);
+  assert.equal(bridge.trackReps, false);
+  const warm = lib.teamBuildrItem(data.days[0].items[0], m.choices);
+  assert.ok(lib.isTextOnlyItem(warm));
+  const pull = lib.teamBuildrItem(data.days[1].items[2], m.choices);
+  assert.equal(pull.name, "Pull-Up");
+  const pump = lib.teamBuildrItem(data.days[1].items[1], m.choices);
+  assert.equal(pump.type, "circuit");
+  assert.equal(pump.sets, 3);
+  const reload = (it, category) => lib.workoutToDayItems({ exercises: [{ id: 1, exercise_id: 1, superset_group: it.letter, order_index: 0,
+    prescribed_sets: it.sets, target_reps: it.reps.join(","), target_weight: "", notes: lib.itemNotes(it), exercise: { name: it.name, category } }] })[0];
+  const squatBack = reload(squat, "Strength");
+  assert.deepEqual(JSON.parse(JSON.stringify(squatBack.intensities)), ["", "", "7-8", "8-9"]);
+  assert.equal(squatBack.intensityKind, "rpe");
+  assert.equal(squatBack.note, "Last 2 sets @ 8-9 RPE");
+  const bridgeBack = reload(bridge, "Strength");
+  assert.deepEqual(JSON.parse(JSON.stringify(bridgeBack.times)), ["25", "ALAP"]);
+  assert.equal(bridgeBack.perSide, true);
+  assert.equal(bridgeBack.trackReps, false);
+  assert.ok(lib.isTextOnlyItem(reload(warm, "Warm up")));
+  assert.equal(reload(pump, "Circuit").detail, "Bicep Curl - 1x10\nTricep Ext. - 1x10");
+  // A lift with a two-line note, under a category the app does not name, stays a lift on reload.
+  const leap = lib.teamBuildrItem({ kind: "lift", letter: "B", name: "Leap", sets: 3, reps: ["20", "20", "20"], track_reps: true, times: [],
+    per_side: false, intensities: [], intensity_kind: "", note: "10 each side\nScissor the feet" }, m.choices);
+  const leapBack = reload(leap, "Plyometrics");
+  assert.equal(leapBack.type, "lift");
+  assert.equal(lib.scriptLine(leapBack, { plain: true }).startsWith("3 x 20"), true);
+
+  // Import: new exercises are made first with their category, then the days land from the start date.
+  lib.ensureDay(D2, "cal:11").items = [lib.item({ name: "Already here" })];
+  const made = [];
+  reply = async (method, url, body) => {
+    if (method === "POST" && url === "/api/exercises") { made.push(body); return { id: 100 + made.length, name: body.name, category: body.category }; }
+    return {};
+  };
+  m.placement = "bottom";
+  calls.length = 0;
+  await lib.runTeamBuildrImport();
+  assert.deepEqual(made.map((b) => b.name + ":" + b.category).sort(), ["Cardio Warm Up:Warm up", "Note:Notes", "Single Leg Foam Roller Bridge:Strength", "Upper Body Pump:Circuit"]);
+  assert.equal(state.modal, null);
+  const first = lib.ensureDay(D1, "cal:11");
+  assert.deepEqual(first.items.map((it) => it.name), ["Cardio Warm Up", "Back Squat", "Single Leg Foam Roller Bridge"]);
+  assert.equal(first.edited, true);
+  const second = lib.ensureDay(D2, "cal:11");
+  assert.deepEqual(second.items.map((it) => it.name), ["Already here", "Note", "Upper Body Pump", "Pull-Up"]);
+  assert.equal(state.weekStart, lib.sundayOf(D1));
+  assert.ok(state.toast.includes("Imported 2 days"));
+  // The Build menu offers the import only on a calendar.
+  state.athleteMenu = true;
+  state.view = "build";
+  assert.ok(lib.buildView().includes("Import TeamBuildr PDF into Fall block"));
+  state.athleteMenu = false;
 }
 
 console.log("imports ui tests passed");

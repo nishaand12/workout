@@ -786,3 +786,16 @@ table.data tr:hover td { background: #fafafa; }
 .import-table th, .import-table td { padding: 4px 8px; border-bottom: 1px solid #333; text-align: left; vertical-align: top; }
 .import-table th { position: sticky; top: 0; background: #2a2a2a; }
 .import-errors { margin: 8px 0; padding: 8px; border: 1px solid #7f1d1d; border-radius: 6px; color: #fca5a5; font-size: 12px; }
+.tb-modal .tb-section { margin: 10px 0; }
+.tb-modal .tb-section-h { font-weight: 700; margin-bottom: 4px; }
+.tb-modal .tb-matches td { vertical-align: middle; }
+.tb-modal .tb-matches .field { margin: 2px 0; width: 100%; }
+.tb-modal .tb-name { width: 38%; font-weight: 600; }
+.tb-preview { max-height: 260px; padding: 6px 8px; }
+.tb-day { margin-bottom: 8px; }
+.tb-day-h { font-weight: 700; margin: 4px 0; }
+.tb-item { display: grid; grid-template-columns: 18px minmax(120px, 1fr) 1.2fr; gap: 6px; font-size: 12px; padding: 1px 0; }
+.tb-item .tb-letter { color: #9ab; }
+.tb-sub { color: #999; font-size: 11px; font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tb-note { display: block; color: #d8cfae; font-style: italic; padding-left: 24px; }
+.tb-pick { display: inline-block; margin: 10px 0; }

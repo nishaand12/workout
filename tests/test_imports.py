@@ -156,6 +156,19 @@ class ImportTests(unittest.TestCase):
         too_many = self.client.post("/api/exercises/bulk", json={"rows": [{"name": f"x{i}"} for i in range(2001)]}, headers=auth)
         self.assertEqual(too_many.status_code, 400)
 
+    def test_a_blank_load_stays_blank(self):
+        auth, _ = self._gym_coach()
+        ex = self.client.post("/api/exercises", json={"name": f"Blank Load {self.stamp}"}, headers=auth).json()
+        made = self.client.post("/api/workouts", json={
+            "title": "One set", "program_name": "wourkout", "calendar_date": "2026-12-01", "scheduled_date": "2026-12-01",
+            "exercises": [
+                {"exercise_id": ex["id"], "prescribed_sets": 1, "target_reps": "15", "target_weight": ""},
+                {"exercise_id": ex["id"], "prescribed_sets": 1, "target_reps": "5"},
+            ],
+        }, headers=auth)
+        self.assertEqual(made.status_code, 201, made.text)
+        self.assertEqual([e["target_weight"] for e in made.json()["exercises"]], ["", "0"])
+
 
 if __name__ == "__main__":
     unittest.main()
