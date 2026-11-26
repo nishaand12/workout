@@ -260,6 +260,11 @@
 .entry-day.on.has::after { background: #fff; }
 
 .entry-list { padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+/* A coach's note in the workout reads as a note, always visible, with no letter or tick. */
+.entry-note { border-left: 3px solid #c9b16a; background: #fbf7ea; color: #4b4331; border-radius: 6px; padding: 8px 12px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.45; }
+.ui-page .ex.ex-note .ex-note-text { color: var(--ui-muted); -webkit-line-clamp: unset; display: block; }
+.ui-page .ex.ex-note { border-left-color: #c9b16a; }
+.entry-rest { color: var(--ui-muted); font-size: 13px; padding: 6px 12px; border-left: 3px solid #cbd5e1; }
 .entry-ex { border: 1px solid var(--ui-border); border-radius: 8px; background: var(--ui-surface); transition: border-color .12s, box-shadow .12s; }
 .entry-ex:hover { border-color: var(--ui-border-strong); }
 .entry-ex.open { border-color: var(--ui-border-strong); box-shadow: var(--ui-shadow-card); }
@@ -699,3 +704,4 @@ button.month-cell:hover { border-color: #555; }
 }
 .app-return h2 { margin: 0 0 8px; font-size: 20px; }
 .app-return p { margin: 0 0 20px; color: var(--ui-text-2); font-size: 15px; line-height: 1.5; }
+.ui-page .sets td.set-n .set-check { color: #15803d; font-weight: 700; }

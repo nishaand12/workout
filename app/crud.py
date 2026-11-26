@@ -107,6 +107,63 @@ async def verify_supabase_token(access_token: str) -> Optional[dict]:
         logger.warning(f"Supabase token verification error: {exc}")
     return None
 
+def is_placeholder_email(email: str) -> bool:
+    """Bulk uploads without an email get a made-up @gymN.wourkout.app address nobody can receive."""
+    return (email or "").strip().lower().endswith(".wourkout.app")
+
+
+def _invite_redirect(redirect_to: Optional[str]) -> Optional[str]:
+    url = (redirect_to or "").strip()
+    return url if url.startswith(("https://", "http://")) else None
+
+
+def send_login_invite(email: str, name: str = "", redirect_to: Optional[str] = None) -> dict:
+    """Email an athlete a link that opens wourkout and asks them to choose a password.
+
+    Supabase sends the email. Someone who already has a Supabase login (say, from Google)
+    cannot be invited again, so they get a set-password email instead. Supabase only follows
+    a redirect_to on its allowed Redirect URLs list; anything else goes to the project Site URL.
+    Returns {"status": sent | reset_sent | not_configured | no_email | failed, "message": ...}.
+    """
+    email = (email or "").strip().lower()
+    if not email or is_placeholder_email(email):
+        return {"status": "no_email", "message": "No invite sent: this athlete has no real email address."}
+    if not settings.SUPABASE_URL or not settings.SUPABASE_SERVICE_ROLE_KEY:
+        return {"status": "not_configured", "message": "No invite sent: email is not set up on the server (SUPABASE_SERVICE_ROLE_KEY)."}
+    key = settings.SUPABASE_SERVICE_ROLE_KEY
+    headers = {"apikey": key, "Authorization": f"Bearer {key}"}
+    params = {}
+    redirect = _invite_redirect(redirect_to)
+    if redirect:
+        params["redirect_to"] = redirect
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            res = client.post(
+                f"{settings.SUPABASE_URL}/auth/v1/invite",
+                params=params,
+                headers=headers,
+                json={"email": email, "data": {"full_name": (name or "").strip()}},
+            )
+            if res.status_code in (200, 201):
+                return {"status": "sent", "message": f"Invite emailed to {email}."}
+            text = res.text.lower()
+            if res.status_code in (400, 409, 422) and ("already" in text or "registered" in text or "exists" in text):
+                again = client.post(f"{settings.SUPABASE_URL}/auth/v1/recover", params=params, headers=headers, json={"email": email})
+                if again.status_code in (200, 201):
+                    return {"status": "reset_sent", "message": f"{email} already has a login, so a set-password email was sent instead."}
+                logger.warning(f"Supabase recover failed ({again.status_code}): {again.text[:300]}")
+                if again.status_code == 429:
+                    return {"status": "failed", "message": "No email sent: too many emails were sent recently. Try again in a little while."}
+                return {"status": "failed", "message": f"{email} already has a login, but the set-password email could not be sent."}
+            logger.warning(f"Supabase invite failed ({res.status_code}): {res.text[:300]}")
+            if res.status_code == 429:
+                return {"status": "failed", "message": "No invite sent: too many emails were sent recently. Try again in a little while."}
+            return {"status": "failed", "message": "The invite email could not be sent. Try Send invite again from Manage Users."}
+    except Exception as exc:
+        logger.warning(f"Supabase invite error: {exc}")
+        return {"status": "failed", "message": "The invite email could not be sent. Try Send invite again from Manage Users."}
+
+
 def get_user_by_email_or_username(db: Session, identifier: str) -> Optional[User]:
     ident = (identifier or "").strip().lower()
     if not ident:
@@ -714,6 +771,7 @@ def _replace_chain_members(db: Session, chain: ExerciseChain, members) -> None:
             time=_member_seconds(member),
             distance=_blank_text(_member_attr(member, "distance")),
             notes=_blank_text(_member_attr(member, "notes")),
+            per_side=bool(_member_attr(member, "per_side")),
         ))
 
 
@@ -823,6 +881,25 @@ def _placed_notes(exercise: Exercise, sets: int, member_notes, note_category: bo
         exercise.default_notes = saved
 
 
+def _notes_flag(notes: str, flag: str, on: bool) -> str:
+    """Set or clear one flag on the Flags: line of a placed exercise's notes."""
+    out = []
+    found = False
+    for line in (notes or "").split("\n"):
+        if line.startswith("Flags:"):
+            found = True
+            flags = [f for f in line[len("Flags:"):].split(",") if f and f != flag]
+            if on:
+                flags.append(flag)
+            if flags:
+                out.append("Flags:" + ",".join(flags))
+            continue
+        out.append(line)
+    if on and not found:
+        out.append("Flags:" + flag)
+    return "\n".join(line for line in out if line)
+
+
 def _new_chain_member(workout: Workout, exercise: Exercise, chain_id: int, instance: str, name: str, kind: str, index: int, member, letter: str) -> WorkoutExercise:
     category = (exercise.category or "").lower()
     note = category in ("note", "notes")
@@ -847,6 +924,12 @@ def _new_chain_member(workout: Workout, exercise: Exercise, chain_id: int, insta
         digits = "".join(ch for ch in str(exercise.default_rest) if ch.isdigit())
         rest_seconds = int(digits or "0")
     target_reps = "" if note else ",".join([str(reps)] * max(sets, 1))[:50]
+    placed_notes = (
+        _notes_with_dose(_placed_notes(exercise, max(sets, 1), _member_attr(member, "notes"), note), sets, dose)
+        if dose else _placed_notes(exercise, max(sets, 1), _member_attr(member, "notes"), note)
+    )
+    if _member_attr(member, "per_side") and not note:
+        placed_notes = _notes_flag(placed_notes, "perSide", True)
     return WorkoutExercise(
         workout_id=workout.id,
         exercise_id=exercise.id,
@@ -857,10 +940,7 @@ def _new_chain_member(workout: Workout, exercise: Exercise, chain_id: int, insta
         target_reps=target_reps or ("" if note else "1"),
         target_weight=loads[:50],
         rest_seconds=rest_seconds,
-        notes=(
-            _notes_with_dose(_placed_notes(exercise, max(sets, 1), _member_attr(member, "notes"), note), sets, dose)
-            if dose else _placed_notes(exercise, max(sets, 1), _member_attr(member, "notes"), note)
-        ),
+        notes=placed_notes,
         is_ea=False,
         chain_id=chain_id,
         chain_instance=instance,
@@ -895,6 +975,8 @@ def _apply_explicit_member_prescription(we: WorkoutExercise, exercise: Exercise,
     dose = _member_dose(member, exercise)
     if dose:
         we.notes = _notes_with_dose(we.notes or "", we.prescribed_sets or 1, dose)
+    if not note:
+        we.notes = _notes_flag(we.notes or "", "perSide", bool(_member_attr(member, "per_side")))
     if not note:
         rep = ((we.target_reps or "").split(",")[0] or "")
         we.prescription_text = f"{we.prescribed_sets} X {rep}"[:100]
@@ -1813,7 +1895,8 @@ def delete_user(db: Session, user_id: int):
     block = access.coach_removal_block(db, user)
     if block:
         return block
-    _drop_orphan_calendar(db, user)
+    # The calendar stays: athletes and calendars are separate, so removing a person never removes programming.
+    user.calendar_id = None
     db.delete(user)
     db.commit()
     return "deleted"
@@ -2072,10 +2155,9 @@ def sync_group_day_to_members(db: Session, workout: Optional[Workout]):
 def create_assignment(db: Session, assign_in: WorkoutAssignmentCreate):
     calendar_id = assign_in.calendar_id
     if not calendar_id and assign_in.user_id:
-        # A day pinned to one athlete lands on the calendar they follow.
+        # A day pinned to one athlete lands on the calendar they follow, if they follow one.
         target = get_user(db, assign_in.user_id)
-        personal = ensure_personal_calendar(db, target, commit=False) if target else None
-        calendar_id = personal.id if personal else None
+        calendar_id = target.calendar_id if target and get_calendar(db, target.calendar_id) else None
     assign = WorkoutAssignment(
         workout_id=assign_in.workout_id,
         assigned_by_coach_id=assign_in.assigned_by_coach_id,
@@ -2799,7 +2881,19 @@ def remove_gym_coach(db: Session, admin: User, user_id: int) -> str:
     return "deleted"
 
 
-def add_gym_athlete(db: Session, actor: User, name: str, email: str, team_id: int) -> tuple:
+def _athlete_start_calendar(db: Session, actor: User, user: User, calendar_id: Optional[int], new_calendar: bool) -> None:
+    """Put a newly added athlete on the calendar the coach picked, on a new one, or on none."""
+    if new_calendar:
+        calendar = Calendar(gym_id=actor.gym_id, coach_id=actor.id, name=(user.name or user.email or "Athlete").strip()[:255])
+        db.add(calendar)
+        db.flush()
+        user.calendar_id = calendar.id
+    elif calendar_id:
+        user.calendar_id = require_calendar(db, actor, calendar_id).id
+
+
+def add_gym_athlete(db: Session, actor: User, name: str, email: str, team_id: int,
+                    calendar_id: Optional[int] = None, new_calendar: bool = False) -> tuple:
     access.require_gym(actor)
     team = db.query(Group).filter(Group.id == team_id).first()
     if access.is_admin(actor) and team and team.gym_id == actor.gym_id:
@@ -2839,6 +2933,7 @@ def add_gym_athlete(db: Session, actor: User, name: str, email: str, team_id: in
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not user.is_coach and not user.is_admin:
         user.role = "athlete"
+    _athlete_start_calendar(db, actor, user, calendar_id, new_calendar)
     db.commit()
     db.refresh(user)
     return user, password
@@ -2972,7 +3067,6 @@ def get_calendar_schedule(
     if viewer is not None and not access.can_see_user(db, viewer, target_user):
         raise HTTPException(status_code=403, detail="You cannot view that athlete's schedule.")
 
-    ensure_personal_calendar(db, target_user)
     direct_rows = db.query(WorkoutAssignment).filter(
         _athlete_rows_clause(target_user)
     ).order_by(WorkoutAssignment.scheduled_date.asc(), WorkoutAssignment.id.desc()).all()
@@ -3051,8 +3145,8 @@ def _staff_user(user: User) -> bool:
 
 # ---------------------------------------------------------------------------
 # Calendars. A named programme of dated workouts. An athlete follows one at a
-# time and sees it live. Every athlete gets a personal calendar, named after
-# them, the first time one is needed; a coach can move them onto a shared one.
+# time and sees it live. Athletes and calendars are separate things: an athlete
+# may follow no calendar, and deleting either one never deletes the other.
 # ---------------------------------------------------------------------------
 def _athlete_like(user: User) -> bool:
     return bool(user.team_id or "athlete" in user.roles or (user.role or "") in ("athlete", "student"))
@@ -3175,7 +3269,7 @@ def _calendar_athlete(db: Session, viewer: User, user_id: int) -> User:
 
 
 def update_calendar(db: Session, viewer: User, calendar_id: int, name: Optional[str] = None, athlete_ids: Optional[List[int]] = None) -> Calendar:
-    """Rename, and set exactly who follows the calendar. An athlete taken off it goes back to a personal one."""
+    """Rename, and set exactly who follows the calendar. An athlete taken off it follows no calendar."""
     calendar = require_calendar(db, viewer, calendar_id)
     if not _staff_user(viewer):
         raise HTTPException(status_code=403, detail="Only a coach can change a calendar.")
@@ -3193,7 +3287,7 @@ def update_calendar(db: Session, viewer: User, calendar_id: int, name: Optional[
             if uid in wanted:
                 continue
             _calendar_athlete(db, viewer, uid)
-            user.calendar_id = personal_calendar_for(db, user, exclude_id=calendar.id).id
+            user.calendar_id = None
     db.commit()
     db.refresh(calendar)
     return calendar
@@ -3203,10 +3297,9 @@ def delete_calendar(db: Session, viewer: User, calendar_id: int) -> None:
     calendar = require_calendar(db, viewer, calendar_id)
     if not _staff_user(viewer):
         raise HTTPException(status_code=403, detail="Only a coach can delete a calendar.")
-    followers = calendar_athletes(db, calendar.id)
-    if followers:
-        names = ", ".join(u.name for u in followers[:5]) + (" and more" if len(followers) > 5 else "")
-        raise HTTPException(status_code=409, detail=f"Move {names} to another calendar first.")
+    # Anyone on it is left with no calendar until a coach gives them one. Their accounts and logs stay.
+    for follower in calendar_athletes(db, calendar.id):
+        follower.calendar_id = None
     db.query(WeekNote).filter(WeekNote.calendar_id == calendar.id).delete(synchronize_session="fetch")
     db.query(Phase).filter(Phase.calendar_id == calendar.id).delete(synchronize_session="fetch")
     db.query(WorkoutAssignment).filter(WorkoutAssignment.calendar_id == calendar.id).delete(synchronize_session="fetch")
@@ -3214,32 +3307,35 @@ def delete_calendar(db: Session, viewer: User, calendar_id: int) -> None:
     db.commit()
 
 
-def _drop_orphan_calendar(db: Session, user: User) -> None:
-    """A calendar only this athlete followed goes with them."""
-    if not user.calendar_id:
-        return
-    others = db.query(User).filter(User.calendar_id == user.calendar_id, User.id != user.id).count()
-    calendar = get_calendar(db, user.calendar_id)
-    user.calendar_id = None
-    if others or not calendar:
-        return
-    db.query(WeekNote).filter(WeekNote.calendar_id == calendar.id).delete(synchronize_session="fetch")
-    db.query(Phase).filter(Phase.calendar_id == calendar.id).delete(synchronize_session="fetch")
-    db.query(WorkoutAssignment).filter(WorkoutAssignment.calendar_id == calendar.id).delete(synchronize_session="fetch")
-    db.delete(calendar)
-
-
 def migrate_to_calendars(db: Session) -> None:
     """One-time move onto calendars; safe to run again.
 
-    Every athlete gets a personal calendar holding the days pinned to them. A group's
-    own days become a calendar named after the group that nobody follows yet: members
-    already hold a copy of each group day, and any member missing a day gets one.
+    An athlete with days still pinned to them from before calendars gets a personal
+    calendar holding those days. An athlete with nothing left to move keeps no calendar,
+    because following no calendar is allowed. A group's own days become a calendar named
+    after the group that nobody follows yet: members already hold a copy of each group
+    day, and any member missing a day gets one.
     """
-    athletes = [u for u in db.query(User).filter(User.gym_id.isnot(None), User.calendar_id.is_(None)).all() if _athlete_like(u)]
-    for user in athletes:
-        ensure_personal_calendar(db, user, commit=False)
-    db.flush()
+    legacy_user_ids = {row.user_id for row in db.query(WorkoutAssignment.user_id).filter(
+        WorkoutAssignment.calendar_id.is_(None), WorkoutAssignment.user_id.isnot(None)
+    ).all()}
+    legacy_user_ids |= {row.user_id for row in db.query(WeekNote.user_id).filter(
+        WeekNote.calendar_id.is_(None), WeekNote.user_id.isnot(None)
+    ).all()}
+    legacy_group_ids = {row.group_id for row in db.query(WorkoutAssignment.group_id).filter(
+        WorkoutAssignment.calendar_id.is_(None), WorkoutAssignment.group_id.isnot(None)
+    ).all()}
+    for gid in legacy_group_ids:
+        group = get_group(db, gid)
+        if group:
+            legacy_user_ids |= {member.id for member in _group_athletes(db, group)}
+    if legacy_user_ids:
+        athletes = [u for u in db.query(User).filter(
+            User.id.in_(legacy_user_ids), User.gym_id.isnot(None), User.calendar_id.is_(None)
+        ).all() if _athlete_like(u)]
+        for user in athletes:
+            ensure_personal_calendar(db, user, commit=False)
+        db.flush()
 
     direct = db.query(WorkoutAssignment).filter(
         WorkoutAssignment.calendar_id.is_(None), WorkoutAssignment.user_id.isnot(None)
@@ -3314,7 +3410,7 @@ def _week_note_target(db: Session, viewer: User, user_id: Optional[int], group_i
         raise HTTPException(status_code=404, detail="User not found")
     if not access.can_see_user(db, viewer, target):
         raise HTTPException(status_code=403, detail="You cannot view that athlete's calendar.")
-    calendar = ensure_personal_calendar(db, target)
+    calendar = get_calendar(db, target.calendar_id)
     return target.id, None, (calendar.id if calendar else None)
 
 
@@ -4113,7 +4209,7 @@ def remove_athlete(db: Session, actor: User, user_id: int) -> str:
             athlete.role = "admin" if athlete.is_admin else "coach"
         db.commit()
         return "demoted"
-    _drop_orphan_calendar(db, athlete)
+    athlete.calendar_id = None
     db.delete(athlete)
     db.commit()
     return "deleted"
@@ -4190,13 +4286,6 @@ def gym_context(db: Session, user: User) -> dict:
     else:
         raise HTTPException(status_code=403, detail="Athlete accounts do not have coach tools.")
     codes = list_join_codes(db, user)
-    made = False
-    for person in athletes:
-        if _athlete_like(person) and not person.calendar_id:
-            ensure_personal_calendar(db, person, commit=False)
-            made = True
-    if made:
-        db.commit()
     return {
         "gym_id": gym.id,
         "gym_name": gym.name,

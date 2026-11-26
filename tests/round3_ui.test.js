@@ -405,6 +405,10 @@ sandbox.ensureBuildWindow();
 assert.equal(state.buildOrigin, sandbox.addDays(todayWeek, -28));
 assert.equal(state.buildWeekCount, 12);
 assert.equal(state.buildJumpWeek, todayWeek);
+// Ada follows no calendar, so Build asks for one instead of drawing weeks.
+assert.equal(state.athleteId, "u7");
+assert.ok(sandbox.buildView().includes("isn't on a calendar"));
+state.athleteId = "cal:4";
 const html = sandbox.buildView();
 assert.ok(!html.includes("Load Earlier"));
 assert.ok(html.includes('data-week="' + todayWeek + '"'));
@@ -495,8 +499,17 @@ assert.ok(sandbox.buildView().includes("week-note"));
   assert.equal(state.logs[bareKey].cells[0].done, true);
   sandbox.logCell(bareKey, 0, "w", "20", bareDate, bare.id, 0);
   assert.equal(state.logs[bareKey].cells[0].done, true);
+  // A set the athlete typed a number into stays done: there is no Done box to untick.
   sandbox.logCell(bareKey, 0, "done", false, bareDate, bare.id, 0);
-  assert.equal(state.logs[bareKey].cells[0].done, false);
+  assert.equal(state.logs[bareKey].cells[0].done, true);
+  // Typing a weight into an untouched set marks it done, and keeps the prescribed reps with it.
+  sandbox.logCell(bareKey, 1, "w", "25", bareDate, bare.id, 0);
+  assert.equal(state.logs[bareKey].cells[1].done, true);
+  assert.equal(state.logs[bareKey].cells[1].entered.r, "8");
+  // Clearing it again leaves the set not done and the reps box back on the coach's number.
+  sandbox.logCell(bareKey, 1, "w", "", bareDate, bare.id, 0);
+  assert.equal(state.logs[bareKey].cells[1].done, false);
+  assert.ok(!("r" in state.logs[bareKey].cells[1].entered));
 
   // A warm-up or cooldown is a text block with one tick.
   const plank = sandbox.item({ name: "Plank", type: "lift", sets: 3, reps: ["30"], props: [], completionOnly: true, textOnly: true, note: "Hold tight" });
@@ -513,7 +526,8 @@ assert.ok(sandbox.buildView().includes("week-note"));
   state.entryItem = carry.id;
   const carryHtml = sandbox.entryItem("ath", bareDate, carry);
   assert.ok(carryHtml.includes("<table"));
-  assert.equal((carryHtml.match(/aria-label="Done set/g) || []).length, 3);
+  assert.equal((carryHtml.match(/aria-label="Done set/g) || []).length, 0);
+  assert.ok(carryHtml.includes("Complete all sets"));
   assert.ok(carryHtml.includes('aria-label="Reps set 2"'));
   assert.ok(!carryHtml.includes("Weight"));
   const carryKey = "ath:" + bareDate + ":" + carry.id;

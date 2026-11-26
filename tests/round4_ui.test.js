@@ -375,8 +375,11 @@ await (async () => {
   assert.equal(state.modal.fields.find((f) => f.key === "ath_7").value, "");
   assert.equal(state.modal.fields.find((f) => f.key === "ath_7").label, "Now on Sam Lee");
   state.modal = null;
+  // A calendar people are on can be deleted too; the warning names who is left with none.
   lib.askDeleteCalendar("cal:11");
-  assert.equal(state.modal, null);
+  assert.equal(state.modal.type, "confirm");
+  assert.ok(state.modal.body.includes("will have no calendar until you give them one"));
+  state.modal = null;
   lib.askDeleteCalendar("cal:12");
   assert.equal(state.modal.type, "confirm");
   assert.ok(lib.modalHtml().includes("Delete calendar"));

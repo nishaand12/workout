@@ -24,11 +24,11 @@ When running locally, access the app from any device on your Tailnet (e.g., iPho
 * **Roster & Cohort Management:**
   * Organize athletes into training groups (e.g. *Varsity Strength Cohort*, *Speed & Agility Track*, *Personal Training (1-on-1)*).
   * Assign / remove athletes from groups with instant UI updates.
-  * Register new athletes and coaches.
+  * Register new athletes and coaches. A new athlete gets an invite email (sent by Supabase) with a link that opens the site and asks them to choose a password; **Send invite** in Manage Users sends it again.
 * **Calendars:**
-  * A calendar is a named programme of dated workouts. Every athlete starts on a personal calendar named after them; a coach can move any athlete onto a shared calendar from Manage Calendars, Manage Users, or the Athletes tab.
-  * An athlete follows exactly one calendar at a time and sees it live, so an edit to the calendar reaches everyone on it. Set logs stay per athlete.
-  * A calendar can be renamed or deleted once nobody follows it.
+  * A calendar is a named programme of dated workouts. When a coach adds an athlete they pick the athlete's calendar: an existing one, a new one named after them, or none yet. A coach can move any athlete onto another calendar from Manage Calendars, Manage Users, the Athletes tab, or Build.
+  * An athlete follows at most one calendar at a time and sees it live, so an edit to the calendar reaches everyone on it. Set logs stay per athlete.
+  * Athletes and calendars are separate: removing an athlete keeps their calendar, and deleting a calendar leaves the people on it with no calendar (their accounts and logs stay). Nothing makes a calendar behind the coach's back.
 * **Programming builder (phases):**
   * From the Build calendar's left rail, drag across a small calendar of empty day boxes to group days or weeks into a phase, then name it, colour it, and add notes.
   * A phase tints the week banners it covers and shows its notes above each of those weeks' own notes. Phases are per calendar and coaches only.

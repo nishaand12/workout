@@ -111,6 +111,7 @@ class ChainMemberInput(BaseModel):
     time: Optional[str] = None
     distance: Optional[str] = None
     notes: Optional[str] = None
+    per_side: Optional[bool] = False
 
 class ChainWrite(BaseModel):
     name: str
@@ -141,6 +142,7 @@ class ChainMemberResponse(BaseModel):
     time: Optional[str] = None
     distance: Optional[str] = None
     notes: Optional[str] = None
+    per_side: Optional[bool] = False
     exercise: ChainMemberExercise
     model_config = ConfigDict(from_attributes=True)
 
@@ -612,10 +614,24 @@ class GymMemberCreate(BaseModel):
     name: str
     email: str
     team_id: Optional[int] = None
+    # Athletes only: an existing calendar to put them on, or new_calendar for one named after them.
+    calendar_id: Optional[int] = None
+    new_calendar: bool = False
+    # Where the invite email's link should land (this site). Supabase checks it against its allow list.
+    redirect_to: Optional[str] = None
 
 class GymMemberCreated(BaseModel):
     user: UserResponse
     temporary_password: Optional[str] = None
+    invite_status: Optional[str] = None
+    invite_message: Optional[str] = None
+
+class LoginInviteRequest(BaseModel):
+    redirect_to: Optional[str] = None
+
+class LoginInviteResponse(BaseModel):
+    status: str
+    message: str
 
 class BulkAthleteItem(BaseModel):
     name: str
@@ -624,6 +640,7 @@ class BulkAthleteItem(BaseModel):
 class BulkAthleteUploadRequest(BaseModel):
     team_id: int
     athletes: List[BulkAthleteItem] = []
+    redirect_to: Optional[str] = None
 
 class BulkAthleteUploadResponse(BaseModel):
     added_count: int

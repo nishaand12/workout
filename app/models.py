@@ -266,6 +266,8 @@ class ExerciseChainMember(Base):
     time = Column(String(50), nullable=True)
     distance = Column(String(50), nullable=True)
     notes = Column(Text, nullable=True)
+    # Reps count each side: "8" reads as 8/side.
+    per_side = Column(Boolean, default=False)
 
     chain = relationship("ExerciseChain", back_populates="members")
     exercise = relationship("Exercise")
