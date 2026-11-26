@@ -324,6 +324,8 @@ const state = {
   trackMenu: false,
   letterMenu: false,
   selLetterMenu: null,
+  uploadPreview: null,
+  libraryImport: null,
   optionsMenu: false,
   supersetMenu: false,
   dayMenu: null,
@@ -2655,7 +2657,7 @@ function buildView() {
           <div class="crumbs">Calendars / ${esc(currentTarget.name)}</div>
           <div class="athlete-pick">
             <button type="button" class="athlete-name" id="build-athlete" onclick="toggleAthleteMenu(event)">${esc(currentTarget.name)} ▾</button>
-            ${state.athleteMenu ? `<div class="menu athlete-menu" id="build-athlete-menu">${buildAthletes().map((a) => `<button type="button" class="${a.id === state.athleteId ? "on" : ""}" onclick="switchAthlete('${esc(a.id)}')">${a.id === state.athleteId ? "✓ " : ""}${esc(a.name)}${noCalendarAthlete(a) ? ` <span class="muted">· no calendar</span>` : ""}</button>`).join("")}${state.role === "coach" ? `<button type="button" class="athlete-menu-new" onclick="openNewCalendar(event)">+ Create new calendar</button>` : ""}</div>` : ""}
+            ${state.athleteMenu ? `<div class="menu athlete-menu" id="build-athlete-menu">${buildAthletes().map((a) => `<button type="button" class="${a.id === state.athleteId ? "on" : ""}" onclick="switchAthlete('${esc(a.id)}')">${a.id === state.athleteId ? "✓ " : ""}${esc(a.name)}${noCalendarAthlete(a) ? ` <span class="muted">· no calendar</span>` : ""}</button>`).join("")}${state.role === "coach" ? `<button type="button" class="athlete-menu-new" onclick="openNewCalendar(event)">+ Create new calendar</button>` : ""}${state.role === "coach" && currentTarget.isCalendar ? `<button type="button" class="athlete-menu-new" onclick="openTeamBuildrImport(event)">⇪ Import TeamBuildr PDF into ${esc(currentTarget.name)}</button>` : ""}</div>` : ""}
           </div>
         </div>
         <div class="sub-actions">
@@ -6858,12 +6860,19 @@ function usersView() {
     const options = byTeam
       ? teams.map((t) => `<option value="${t.id}" ${String(t.id) === String(state.toolForm.uploadTeamId || teams[0].id) ? "selected" : ""}>${esc(t.name)}</option>`).join("")
       : state.groups.map((g) => `<option value="${esc(g)}" ${g === (state.toolForm.uploadGroup || state.groups[0]) ? "selected" : ""}>${esc(g)}</option>`).join("");
-    main = `${uiHead("", "Upload athletes", "Paste one athlete per line, like <code>Sam Lee</code> or <code>Jo Kim, jo@gym.com</code>. Each gets an account in the group you choose.", "")}
+    const preview = state.uploadPreview;
+    main = `${uiHead("", "Upload athletes", "Paste one athlete per line, like <code>Sam Lee</code> or <code>Jo Kim, jo@gym.com</code>, paste cells copied from a spreadsheet, or choose a CSV file. A first row of headings such as <code>First name, Last name, Email</code> is used to find the columns. Each athlete gets an account in the group you choose.", "")}
       ${options ? `<section class="ui-card"><div class="ui-card-body ui-form">
         ${uiField("Group", `<select id="uploadGroup" class="select" onchange="state.toolForm.${byTeam ? "uploadTeamId" : "uploadGroup"}=this.value">${options}</select>`)}
-        ${uiField("Athletes", `<textarea id="uploadBox" class="textarea" style="min-height:180px" placeholder="Sam Lee&#10;Jo Kim, jo@gym.com"></textarea>`)}
-        <div><button class="btn btn-primary" type="button" onclick="importUsers()">Import athletes</button></div>
-      </div></section>` : `<section class="ui-card">${uiEmpty("Create a group first", "Uploaded athletes are placed in a group.", `<button class="btn btn-primary" type="button" onclick="state.userTab='groups';render()">Go to groups</button>`)}</section>`}`;
+        ${byTeam && ctx ? uiField("Calendar for new athletes", newAthleteCalendarSelect(ctx, "upload-calendar", "uploadCalendar", "A new calendar for each, named after them")) : ""}
+        ${uiField("Athletes", `<textarea id="uploadBox" class="textarea" style="min-height:180px" data-focus="upload-box" placeholder="Sam Lee&#10;Jo Kim, jo@gym.com" oninput="state.toolForm.uploadText=this.value;if(state.uploadPreview){state.uploadPreview=null;render()}">${esc(state.toolForm.uploadText || "")}</textarea>`)}
+        <div class="ui-inline">
+          <label class="btn btn-secondary file-btn">Choose CSV file<input type="file" accept=".csv,.txt,text/csv,text/plain" onchange="loadUploadFile(this)"></label>
+          <button class="btn btn-secondary" type="button" onclick="previewUpload()">Preview</button>
+          ${preview ? `<button class="btn btn-primary" type="button" onclick="importUsers()" ${preview.ready ? "" : "disabled"}>Import ${preview.ready} athlete${preview.ready === 1 ? "" : "s"}</button>` : ""}
+        </div>
+      </div></section>
+      ${preview ? uploadPreviewHtml(preview) : ""}` : `<section class="ui-card">${uiEmpty("Create a group first", "Uploaded athletes are placed in a group.", `<button class="btn btn-primary" type="button" onclick="state.userTab='groups';render()">Go to groups</button>`)}</section>`}`;
   } else if (state.userTab === "export") {
     main = `${uiHead("", "Export data", "Download calendars and the roster as a JSON file.", "")}
       <section class="ui-card"><div class="ui-card-body ui-inline" style="justify-content:space-between"><span>Everything on this gym's calendars, plus every athlete and coach.</span><button class="btn btn-primary" type="button" onclick="exportData()">Download</button></div></section>`;
@@ -6921,15 +6930,16 @@ function usersView() {
   </div></section>`;
 }
 // Where a new athlete starts: an existing calendar, a new one named after them, or none yet.
-function newAthleteCalendarSelect(ctx) {
+function newAthleteCalendarSelect(ctx, elementId, formKey, newLabel) {
   const calendars = (ctx && ctx.calendars) || [];
-  const chosen = state.toolForm.userCalendar == null ? "new" : String(state.toolForm.userCalendar);
+  const key = formKey || "userCalendar";
+  const chosen = state.toolForm[key] == null ? "new" : String(state.toolForm[key]);
   const first = (state.toolForm.first || "").trim();
   const last = (state.toolForm.last || "").trim();
   const named = (first + " " + last).trim();
   const opt = (value, label) => `<option value="${esc(value)}" ${chosen === String(value) ? "selected" : ""}>${esc(label)}</option>`;
-  return `<select class="select" id="user-calendar" aria-label="Calendar for the new athlete" onchange="state.toolForm.userCalendar=this.value">
-    ${opt("new", named ? "New calendar: " + named : "New calendar named after them")}
+  return `<select class="select" id="${elementId || "user-calendar"}" aria-label="Calendar for new athletes" onchange="state.toolForm.${key}=this.value">
+    ${opt("new", newLabel || (named ? "New calendar: " + named : "New calendar named after them"))}
     ${opt("", "No calendar yet")}
     ${calendars.map((c) => opt(c.id, c.name + (c.athlete_count ? " (" + c.athlete_count + ")" : ""))).join("")}
   </select>`;
@@ -6961,12 +6971,145 @@ function parseRosterLine(line) {
   const parts = name.split(" ");
   return { first: parts[0], last: parts.slice(1).join(" "), email };
 }
+// ---- Roster and library imports ------------------------------------------------------
+// One reader for CSV files and cells pasted from a spreadsheet: tabs or commas, quoted cells,
+// any line ending. Blank rows are dropped.
+function parseTable(text) {
+  const src = String(text || "").replace(/^\ufeff/, "");
+  const firstLine = src.split(/\r?\n/).find((line) => line.trim()) || "";
+  const delim = firstLine.indexOf("\t") >= 0 ? "\t" : (firstLine.indexOf(",") >= 0 ? "," : (firstLine.indexOf(";") >= 0 ? ";" : ","));
+  const rows = [];
+  let row = [];
+  let cell = "";
+  let quoted = false;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (quoted) {
+      if (ch === '"' && src[i + 1] === '"') { cell += '"'; i++; }
+      else if (ch === '"') quoted = false;
+      else cell += ch;
+      continue;
+    }
+    if (ch === '"' && cell.trim() === "") { cell = ""; quoted = true; }
+    else if (ch === delim) { row.push(cell.trim()); cell = ""; }
+    else if (ch === "\n" || ch === "\r") {
+      if (ch === "\r" && src[i + 1] === "\n") i++;
+      row.push(cell.trim());
+      rows.push(row);
+      row = [];
+      cell = "";
+    } else cell += ch;
+  }
+  row.push(cell.trim());
+  rows.push(row);
+  return rows.filter((r) => r.some((c) => c !== ""));
+}
+function headerKey(cell) {
+  return String(cell || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const ROSTER_HEADERS = {
+  name: ["name", "full name", "athlete", "athlete name", "client", "client name", "player"],
+  first: ["first", "first name", "firstname", "given name"],
+  last: ["last", "last name", "lastname", "surname", "family name"],
+  email: ["email", "e mail", "email address", "e mail address", "mail"]
+};
+// People from pasted text or a CSV. A heading row picks the columns; without one each line is
+// read the old way: an email anywhere on it, the rest is the name.
+function rosterFromText(text) {
+  const rows = parseTable(text);
+  if (!rows.length) return [];
+  const columns = {};
+  rows[0].forEach((cell, index) => {
+    const key = headerKey(cell);
+    Object.keys(ROSTER_HEADERS).forEach((field) => {
+      if (columns[field] == null && ROSTER_HEADERS[field].indexOf(key) >= 0) columns[field] = index;
+    });
+  });
+  const hasHeader = (columns.name != null || columns.first != null || columns.email != null) && !rows[0].some((cell) => EMAIL_RE.test(cell));
+  if (!hasHeader) {
+    return String(text || "").split(/\r?\n/).map((line) => parseRosterLine(line.replace(/\t/g, " "))).filter(Boolean);
+  }
+  return rows.slice(1).map((row) => {
+    const pick = (field) => (columns[field] != null ? String(row[columns[field]] || "").trim() : "");
+    let first = pick("first");
+    let last = pick("last");
+    const full = pick("name");
+    if (!first && !last && full) {
+      const parts = full.split(/\s+/);
+      first = parts[0] || "";
+      last = parts.slice(1).join(" ");
+    }
+    const email = pick("email");
+    if (!first && !last && email) first = email.split("@")[0];
+    return { first, last, email };
+  }).filter((p) => p.first || p.last || p.email);
+}
+// What each row will do: be made, join the group (already in the gym), or be skipped and why.
+function rosterPreview(people, ctx) {
+  const known = {};
+  ((ctx && ctx.athletes) || []).forEach((a) => { if (a.email) known[String(a.email).toLowerCase()] = a; });
+  const seen = {};
+  const rows = (people || []).map((p) => {
+    const name = ((p.first || "") + " " + (p.last || "")).trim();
+    const email = String(p.email || "").trim();
+    const key = email ? email.toLowerCase() : "name:" + name.toLowerCase();
+    let status = "new";
+    if (!name) status = "no-name";
+    else if (email && !EMAIL_RE.test(email)) status = "bad-email";
+    else if (seen[key]) status = "duplicate";
+    else if (email && known[email.toLowerCase()]) status = "existing";
+    seen[key] = true;
+    return { first: p.first || "", last: p.last || "", name, email, status };
+  });
+  return { rows, ready: rows.filter((r) => r.status === "new" || r.status === "existing").length };
+}
+const ROSTER_STATUS = {
+  "new": ["green", "New"],
+  existing: ["blue", "Already here: joins the group"],
+  duplicate: ["amber", "Skipped: listed twice"],
+  "bad-email": ["red", "Skipped: email looks wrong"],
+  "no-name": ["red", "Skipped: no name"]
+};
+function uploadPreviewHtml(preview) {
+  const body = preview.rows.map((r) => {
+    const tag = ROSTER_STATUS[r.status] || ["", r.status];
+    return `<tr><td>${esc(r.name || "—")}</td><td>${esc(r.email || "—")}</td><td><span class="ui-badge ${tag[0]}">${esc(tag[1])}</span></td></tr>`;
+  }).join("");
+  const noEmail = preview.rows.filter((r) => r.status === "new" && !r.email).length;
+  return `<section class="ui-card">
+    ${uiCardHead("Preview", preview.rows.length)}
+    ${noEmail ? `<div class="ui-card-body ui-hint" style="padding-bottom:0">${noEmail} without an email can't be sent an invite. Add one later from Athletes → Edit, then Send invite.</div>` : ""}
+    <div class="ui-table-wrap"><table class="ui-table"><thead><tr><th>Name</th><th>Email</th><th></th></tr></thead><tbody>${body}</tbody></table></div>
+  </section>`;
+}
+function loadUploadFile(input) {
+  const file = input && input.files && input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    state.toolForm.uploadText = String(reader.result || "");
+    previewUpload();
+  };
+  reader.onerror = () => toast("Could not read that file");
+  reader.readAsText(file);
+}
+function previewUpload() {
+  const box = document.getElementById("uploadBox");
+  if (box) state.toolForm.uploadText = box.value;
+  const people = rosterFromText(state.toolForm.uploadText || "");
+  if (!people.length) { state.uploadPreview = null; toast("Paste at least one name"); render(); return; }
+  state.uploadPreview = rosterPreview(people, state.gymContext);
+  render();
+}
 async function importUsers() {
   const box = document.getElementById("uploadBox");
+  if (box) state.toolForm.uploadText = box.value;
   const select = document.getElementById("uploadGroup");
   const rawVal = ((select && select.value) || state.toolForm.uploadTeamId || state.toolForm.uploadGroup || "").trim();
   if (!rawVal) { toast("Choose a group"); return; }
-  const people = (box ? box.value : "").split("\n").map(parseRosterLine).filter(Boolean);
+  const preview = state.uploadPreview || rosterPreview(rosterFromText(state.toolForm.uploadText || ""), state.gymContext);
+  const people = preview.rows.filter((r) => r.status === "new" || r.status === "existing");
   if (!people.length) { toast("Paste at least one name"); return; }
 
   const ctx = state.gymContext;
@@ -6974,18 +7117,23 @@ async function importUsers() {
   const teamObj = teams.find((t) => String(t.id) === rawVal || t.name === rawVal);
 
   if (teamObj && state.auth && state.auth.token) {
+    const calEl = document.getElementById("upload-calendar");
+    const calChoice = calEl ? calEl.value : (state.toolForm.uploadCalendar == null ? "new" : String(state.toolForm.uploadCalendar));
     try {
       const payload = {
         team_id: teamObj.id,
         redirect_to: inviteRedirect(),
+        calendar_id: calChoice && calChoice !== "new" ? parseInt(calChoice, 10) : null,
+        new_calendar: calChoice === "new",
         athletes: people.map((p) => ({
-          name: (p.first + " " + p.last).trim(),
+          name: p.name,
           email: p.email || null
         }))
       };
       const res = await api("POST", "/api/gym/athletes/bulk", payload);
       await loadGymContext();
-      if (box) box.value = "";
+      state.toolForm.uploadText = "";
+      state.uploadPreview = null;
       state.toolForm.uploadTeamId = String(teamObj.id);
       state.userTab = "athletes";
       const count = (res && res.added_count) || people.length;
@@ -7005,18 +7153,469 @@ async function importUsers() {
 
   people.forEach((person) => {
     const id = uid();
-    const name = (person.first + " " + person.last).trim();
     state.athletes.push({
       id, first: person.first, last: person.last, email: person.email,
       activity: "N/A", groups: rawVal, cals: "All"
     });
-    ATHLETES.push({ id, name, email: person.email });
+    ATHLETES.push({ id, name: person.name, email: person.email });
     state.calendars[id] = {};
   });
   state.toolForm.uploadGroup = rawVal;
+  state.toolForm.uploadText = "";
+  state.uploadPreview = null;
   state.userTab = "groups";
   toast(people.length + " athlete" + (people.length === 1 ? "" : "s") + " added to " + rawVal);
   render();
+}
+// A spreadsheet of exercises: headings pick the columns, and a sheet without headings is read
+// as one exercise name per row.
+const LIBRARY_HEADERS = {
+  name: ["name", "exercise", "exercise name", "movement", "title"],
+  category: ["category", "type", "exercise type", "category name"],
+  default_sets: ["sets", "default sets", "set"],
+  default_reps: ["reps", "default reps", "repetitions", "rep"],
+  default_load: ["load", "weight", "default load", "load kg", "load lbs"],
+  default_rest: ["rest", "rest s", "rest seconds", "rest sec", "default rest"],
+  default_time: ["time", "time s", "seconds", "duration", "default time"],
+  default_distance: ["distance", "default distance"],
+  default_notes: ["notes", "note", "cues", "coaching cues", "description", "instructions"],
+  video_url: ["video", "video url", "video link", "link", "url", "youtube", "youtube link"]
+};
+const LIBRARY_FIELD_LABEL = {
+  category: "Category", default_sets: "Sets", default_reps: "Reps", default_load: "Load", default_rest: "Rest",
+  default_time: "Time", default_distance: "Distance", default_notes: "Notes", video_url: "Video"
+};
+function libraryRowsFromText(text) {
+  const table = parseTable(text);
+  if (!table.length) return { rows: [], columns: [] };
+  const columns = {};
+  table[0].forEach((cell, index) => {
+    const key = headerKey(cell);
+    Object.keys(LIBRARY_HEADERS).forEach((field) => {
+      if (columns[field] == null && LIBRARY_HEADERS[field].indexOf(key) >= 0) columns[field] = index;
+    });
+  });
+  const headed = columns.name != null;
+  const body = headed ? table.slice(1) : table;
+  if (!headed) columns.name = 0;
+  const rows = body.map((cells, index) => {
+    const row = { line: index + (headed ? 2 : 1) };
+    Object.keys(columns).forEach((field) => {
+      const value = String(cells[columns[field]] == null ? "" : cells[columns[field]]).trim();
+      if (value) row[field] = value;
+    });
+    if (row.category) {
+      const canon = canonicalCategory(row.category);
+      row.categoryFrom = row.category;
+      row.category = EXERCISE_CATEGORIES.indexOf(canon) >= 0 ? canon : "Strength";
+    }
+    if (row.default_sets != null) {
+      const n = parseInt(row.default_sets, 10);
+      if (isNaN(n)) delete row.default_sets;
+      else row.default_sets = Math.max(0, Math.min(10, n));
+    }
+    return row;
+  }).filter((row) => Object.keys(row).some((key) => key !== "line"));
+  return { rows, columns: Object.keys(columns).filter((field) => field !== "name") };
+}
+function libraryImportPreview(parsed) {
+  const known = {};
+  (state.serverExercises || []).forEach((row) => { known[String(row.name || "").toLowerCase()] = row; });
+  const seen = {};
+  const rows = parsed.rows.map((row) => {
+    const key = String(row.name || "").toLowerCase();
+    let status = "new";
+    if (!row.name) status = "no-name";
+    else if (seen[key]) status = "duplicate";
+    else if (known[key]) status = known[key].hidden ? "hidden" : "existing";
+    seen[key] = true;
+    return Object.assign({ status }, row);
+  });
+  return { rows, columns: parsed.columns };
+}
+function openLibraryImport() {
+  state.modal = { type: "library-import", text: "", onExisting: "skip", preview: null, result: null, busy: false };
+  state.pendingFocus = "library-import-box";
+  render();
+}
+function previewLibraryImport() {
+  const m = state.modal;
+  if (!m || m.type !== "library-import") return;
+  const box = document.getElementById("library-import-box");
+  if (box) m.text = box.value;
+  const parsed = libraryRowsFromText(m.text);
+  if (!parsed.rows.length) { toast("Paste or choose a file with at least one exercise"); return; }
+  m.preview = libraryImportPreview(parsed);
+  m.result = null;
+  render();
+}
+function loadLibraryFile(input) {
+  const file = input && input.files && input.files[0];
+  const m = state.modal;
+  if (!file || !m) return;
+  const reader = new FileReader();
+  reader.onload = () => { m.text = String(reader.result || ""); previewLibraryImport(); };
+  reader.onerror = () => toast("Could not read that file");
+  reader.readAsText(file);
+}
+async function runLibraryImport() {
+  const m = state.modal;
+  if (!m || m.type !== "library-import" || !m.preview || m.busy) return;
+  const rows = m.preview.rows
+    .filter((row) => row.status === "new" || row.status === "existing" || row.status === "hidden")
+    .map((row) => {
+      const out = {};
+      ["name"].concat(Object.keys(LIBRARY_FIELD_LABEL)).forEach((field) => { if (row[field] != null && row[field] !== "") out[field] = row[field]; });
+      return out;
+    });
+  if (!rows.length) { toast("Nothing to import"); return; }
+  m.busy = true;
+  render();
+  try {
+    const res = await api("POST", "/api/exercises/bulk", { rows, on_existing: m.onExisting });
+    await loadExercises();
+    const parts = [];
+    if (res.created) parts.push(res.created + " added");
+    if (res.updated) parts.push(res.updated + " updated");
+    if (res.skipped) parts.push(res.skipped + " already there");
+    if (res.unhidden) parts.push(res.unhidden + " shown again");
+    toast(parts.length ? "Exercises: " + parts.join(", ") : "No exercises changed");
+    if (res.errors && res.errors.length) {
+      m.result = res;
+      m.busy = false;
+      if (state.modal === m) render();
+      return;
+    }
+    state.modal = null;
+    render();
+  } catch (err) {
+    m.busy = false;
+    toast(err.message || "Could not import those exercises");
+    render();
+  }
+}
+const LIBRARY_STATUS = {
+  "new": ["green", "New"],
+  existing: ["blue", "In library"],
+  hidden: ["blue", "Hidden: shows again"],
+  duplicate: ["amber", "Listed twice"],
+  "no-name": ["red", "No name"]
+};
+function libraryImportHtml(m) {
+  const preview = m.preview;
+  let table = "";
+  if (preview) {
+    const cols = preview.columns;
+    const head = `<tr><th>Exercise</th>${cols.map((field) => `<th>${esc(LIBRARY_FIELD_LABEL[field])}</th>`).join("")}<th></th></tr>`;
+    const body = preview.rows.map((row) => {
+      const tag = LIBRARY_STATUS[row.status] || ["", row.status];
+      const cells = cols.map((field) => {
+        let value = row[field] == null ? "" : String(row[field]);
+        if (field === "category" && row.categoryFrom && row.categoryFrom !== row.category) value = row.categoryFrom + " → " + row.category;
+        return `<td>${esc(value.length > 40 ? value.slice(0, 40) + "…" : value)}</td>`;
+      }).join("");
+      return `<tr><td>${esc(row.name || "—")}</td>${cells}<td><span class="ui-badge ${tag[0]}">${esc(tag[1])}</span></td></tr>`;
+    }).join("");
+    const counts = { "new": 0, existing: 0, hidden: 0 };
+    preview.rows.forEach((row) => { if (counts[row.status] != null) counts[row.status] += 1; });
+    const already = counts.existing + counts.hidden;
+    table = `<div class="import-summary">${counts["new"]} new · ${already} already in the library</div>
+      ${already ? `<div class="row import-existing">For names already in the library:
+        <label class="chk"><input type="radio" name="lib-existing" ${m.onExisting !== "update" ? "checked" : ""} onchange="state.modal.onExisting='skip'"> Leave them as they are</label>
+        <label class="chk"><input type="radio" name="lib-existing" ${m.onExisting === "update" ? "checked" : ""} onchange="state.modal.onExisting='update'"> Fill in from the file (blank cells change nothing)</label></div>` : ""}
+      <div class="import-scroll"><table class="import-table">${head}${body}</table></div>`;
+  }
+  const errors = m.result && m.result.errors && m.result.errors.length
+    ? `<div class="import-errors"><b>Not imported:</b>${m.result.errors.map((e) => `<div>Row ${e.row}: ${esc(e.message)}</div>`).join("")}</div>`
+    : "";
+  return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render()}"><div class="modal edit-modal import-modal" onclick="event.stopPropagation()">
+    <h3>Import exercises</h3>
+    <div class="sub">Paste cells from a spreadsheet or choose a CSV file. A heading row picks the columns: Name, Category, Sets, Reps, Load, Rest, Time, Distance, Notes, Video. Without headings, each row is one exercise name.</div>
+    <textarea class="field" id="library-import-box" data-focus="library-import-box" rows="6" placeholder="Name&#9;Category&#9;Reps&#9;Video&#10;Goblet Squat&#9;Strength&#9;8&#9;https://youtu.be/..." oninput="state.modal.text=this.value;if(state.modal.preview){state.modal.preview=null;render()}">${esc(m.text || "")}</textarea>
+    <div class="row">
+      <label class="pill file-btn">Choose CSV file<input type="file" accept=".csv,.txt,text/csv,text/plain" onchange="loadLibraryFile(this)"></label>
+      <button type="button" class="pill" onclick="previewLibraryImport()">Preview</button>
+    </div>
+    ${table}
+    ${errors}
+    ${preview ? `<button class="full save" type="button" ${m.busy ? "disabled" : ""} onclick="runLibraryImport()">${m.busy ? "Importing…" : "Import"}</button>` : ""}
+    <button class="full" type="button" onclick="state.modal=null;render()">${m.result ? "Close" : "Cancel"}</button>
+  </div></div>`;
+}
+// ---- TeamBuildr import ------------------------------------------------------------------
+// The server reads the PDF and suggests library matches; nothing is saved until the coach
+// has checked the exercises and picked a start date. The days then go through the same
+// autosave Build uses, so they save exactly as hand-built days do.
+function openTeamBuildrImport(ev) {
+  if (ev) ev.stopPropagation();
+  state.athleteMenu = false;
+  const target = athlete();
+  if (!target || !target.isCalendar) { toast("Open a calendar in Build first"); return; }
+  state.modal = { type: "tb-import", step: "pick", target: target.id, targetName: target.name, busy: false };
+  render();
+}
+async function loadTeamBuildrFile(input) {
+  const file = input && input.files && input.files[0];
+  const m = state.modal;
+  if (!file || !m || m.type !== "tb-import") return;
+  m.busy = true;
+  m.fileName = file.name;
+  render();
+  try {
+    const body = await file.arrayBuffer();
+    const headers = { "Content-Type": "application/pdf" };
+    if (state.auth && state.auth.token) headers.Authorization = "Bearer " + state.auth.token;
+    const res = await fetch("/api/import/teambuildr", { method: "POST", headers, body });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || "That PDF could not be read");
+    setTeamBuildrData(m, data);
+  } catch (err) {
+    m.busy = false;
+    m.error = err.message || "That PDF could not be read";
+  }
+  if (state.modal === m) render();
+}
+// The first date on or after today that falls on the same weekday as the PDF's first day.
+function teamBuildrDefaultStart(firstDate) {
+  const want = new Date(firstDate + "T12:00:00").getDay();
+  let d = APP_TODAY;
+  for (let i = 0; i < 7; i++) {
+    if (new Date(d + "T12:00:00").getDay() === want) return d;
+    d = addDays(d, 1);
+  }
+  return APP_TODAY;
+}
+const TB_CATEGORY = { lift: "Strength", circuit: "Circuit" };
+function setTeamBuildrData(m, data) {
+  m.data = data;
+  m.step = "review";
+  m.busy = false;
+  m.error = "";
+  m.placement = "bottom";
+  m.start = teamBuildrDefaultStart(data.days[0].date);
+  m.choices = {};
+  m.kinds = {};
+  data.days.forEach((d) => d.items.forEach((it) => {
+    if (it.kind === "note" || m.kinds[it.name]) return;
+    m.kinds[it.name] = it.kind === "text" ? (it.category || "Warm up") : (TB_CATEGORY[it.kind] || "Strength");
+  }));
+  Object.keys(data.matches || {}).forEach((name) => {
+    const match = data.matches[name];
+    const top = (match.suggestions || [])[0];
+    if (match.status === "exact" && match.match) m.choices[name] = { mode: "existing", id: match.match.id, name: match.match.name };
+    else if (top && top.score >= 0.9) m.choices[name] = { mode: "existing", id: top.id, name: top.name };
+    else m.choices[name] = { mode: "new", name, category: m.kinds[name] || "Strength" };
+  });
+}
+function teamBuildrTargetDate(m, date) {
+  return addDays(m.start, daysBetween(m.data.days[0].date, date));
+}
+function pickTeamBuildrMatch(name, value) {
+  const m = state.modal;
+  if (!m || !m.choices) return;
+  const match = (m.data.matches || {})[name] || {};
+  if (value === "new") m.choices[name] = { mode: "new", name, category: m.kinds[name] || "Strength" };
+  else if (value === "other") m.choices[name] = { mode: "other", name: "", id: null };
+  else {
+    const id = parseInt(String(value).replace(/^s:/, ""), 10);
+    const hit = (match.suggestions || []).find((row) => row.id === id) || (match.match && match.match.id === id ? match.match : null);
+    if (hit) m.choices[name] = { mode: "existing", id: hit.id, name: hit.name };
+  }
+  render();
+}
+function setTeamBuildrOther(name, typed) {
+  const m = state.modal;
+  if (!m || !m.choices) return;
+  const want = String(typed || "").trim().toLowerCase();
+  const hit = (state.serverExercises || []).find((row) => !row.hidden && String(row.name || "").toLowerCase() === want);
+  m.choices[name] = hit ? { mode: "existing", id: hit.id, name: hit.name, other: true } : { mode: "other", name: typed, id: null };
+  render();
+}
+function setTeamBuildrCategory(name, category) {
+  const m = state.modal;
+  if (m && m.choices && m.choices[name]) m.choices[name].category = category;
+}
+// One imported item as a Build item, under the library name the coach chose.
+function teamBuildrItem(it, choices) {
+  const pick = choices[it.name];
+  const name = pick && pick.name ? pick.name : it.name;
+  if (it.kind === "note") {
+    const note = fromCatalog({ name: "Note", type: "note" });
+    note.note = it.note || "";
+    return note;
+  }
+  if (it.kind === "circuit") {
+    const c = fromCatalog({ name, type: "circuit" });
+    resizeSets(c, it.rounds || 1);
+    c.reps = Array(c.sets).fill("1");
+    c.letter = it.letter || "A";
+    c.detail = it.detail || "";
+    c.note = it.note || "";
+    c.completionOnly = true;
+    return c;
+  }
+  const out = fromCatalog({ name, type: "lift" });
+  if (it.kind === "text") {
+    resizeSets(out, 1);
+    out.letter = "";
+    out.completionOnly = true;
+    out.textOnly = true;
+    out.note = it.note || "";
+    return out;
+  }
+  const sets = Math.max(1, Math.min(10, it.sets || 1));
+  resizeSets(out, sets);
+  // A set past the end of the list repeats the last one (a "3 x 8" row may print fewer cells).
+  // A blank set inside the list stays blank: RPE often applies to the last sets only.
+  const pad = (arr, fill) => Array.from({ length: sets }, (_, i) => {
+    const list = arr || [];
+    if (i < list.length) return list[i] == null || String(list[i]) === "" ? fill : String(list[i]);
+    const last = list.filter((v) => v != null && String(v) !== "").slice(-1)[0];
+    return last != null ? String(last) : fill;
+  });
+  out.letter = it.letter || "A";
+  out.dose = 2;
+  out.reps = pad(it.reps, "1");
+  out.trackReps = it.track_reps !== false;
+  out.trackTime = (it.times || []).length > 0;
+  out.times = out.trackTime ? pad(it.times, "") : Array(sets).fill("");
+  out.trackDistance = false;
+  out.distances = Array(sets).fill("");
+  out.perSide = !!it.per_side;
+  out.completionOnly = false;
+  out.textOnly = false;
+  out.props = (out.props || []).filter((key) => key !== "intensity");
+  if ((it.intensities || []).some((v) => v)) {
+    out.intensities = pad(it.intensities, "");
+    out.intensityKind = it.intensity_kind || "rpe";
+    out.props.push("intensity");
+  }
+  // The PDF is the prescription: a library default load of 0 is not a load.
+  if ((out.loads || []).every((v) => v === "" || v == null || Number(v) === 0)) {
+    out.loads = Array(sets).fill("");
+    out.props = out.props.filter((key) => key !== "load");
+  }
+  out.note = it.note || "";
+  return out;
+}
+function teamBuildrUnresolved(m) {
+  return Object.keys(m.choices || {}).filter((name) => m.choices[name].mode === "other");
+}
+async function runTeamBuildrImport() {
+  const m = state.modal;
+  if (!m || m.type !== "tb-import" || !m.data || m.busy) return;
+  const open = teamBuildrUnresolved(m);
+  if (open.length) { toast("Pick a library exercise for " + open[0]); return; }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(m.start || "")) { toast("Choose a start date"); return; }
+  if (state.athleteId !== m.target) { toast("Open " + m.targetName + " in Build to import into it"); return; }
+  m.busy = true;
+  render();
+  try {
+    const creating = Object.keys(m.choices).filter((name) => m.choices[name].mode === "new");
+    for (const name of creating) {
+      const made = await ensureExercise(name, m.choices[name].category || "Strength");
+      if (made && made.id) rememberCreatedExercise(made);
+    }
+    if (m.data.days.some((d) => d.items.some((it) => it.kind === "note"))) {
+      const note = await ensureExercise("Note", "Notes");
+      if (note && note.id) rememberCreatedExercise(note);
+    }
+    snapshot();
+    let count = 0;
+    m.data.days.forEach((d) => {
+      const date = teamBuildrTargetDate(m, d.date);
+      const day = ensureDay(date, m.target);
+      const items = d.items.map((it) => teamBuildrItem(it, m.choices));
+      day.items = m.placement === "replace" ? items : (day.items || []).concat(items);
+      count += items.length;
+      noteDayEdit(date, m.target);
+    });
+    flushAutosaves();
+    const days = m.data.days.length;
+    const start = m.start;
+    state.modal = null;
+    state.weekStart = sundayOf(start);
+    state.buildOrigin = null;
+    state.buildWeekCount = 0;
+    state.buildJumpWeek = sundayOf(start);
+    toast(`Imported ${days} day${days === 1 ? "" : "s"} (${count} items) from ${fmtShort(start)}. Saving…`);
+    render();
+  } catch (err) {
+    m.busy = false;
+    toast(err.message || "Could not import that program");
+    render();
+  }
+}
+function teamBuildrMatchRow(m, name) {
+  const match = (m.data.matches || {})[name] || {};
+  const choice = m.choices[name] || {};
+  const sel = (value, label) => `<option value="${esc(value)}" ${value === (choice.mode === "new" ? "new" : choice.mode === "other" || choice.other ? "other" : "s:" + choice.id) ? "selected" : ""}>${esc(label)}</option>`;
+  const options = (match.suggestions || []).map((row) => sel("s:" + row.id, row.name + " (" + Math.round(row.score * 100) + "% match)")).join("")
+    + sel("new", "Create new: " + name) + sel("other", "Another library exercise…");
+  const other = choice.mode === "other" || choice.other
+    ? `<input class="field tb-other" list="tb-library" placeholder="Type a library exercise" aria-label="Library exercise for ${esc(name)}" value="${esc(choice.name || "")}" onchange="setTeamBuildrOther(${esc(JSON.stringify(name))}, this.value)">`
+    : "";
+  const category = choice.mode === "new"
+    ? `<select class="field tb-cat" aria-label="Category for ${esc(name)}" onchange="setTeamBuildrCategory(${esc(JSON.stringify(name))}, this.value)">${EXERCISE_CATEGORIES.filter((c) => c !== "Questionnaire" && c !== "Notes").map((c) => `<option ${c === (choice.category || "Strength") ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>`
+    : "";
+  return `<tr><td class="tb-name">${esc(name)}</td><td><select class="field" aria-label="Library match for ${esc(name)}" onchange="pickTeamBuildrMatch(${esc(JSON.stringify(name))}, this.value)">${options}</select>${other}${category}</td></tr>`;
+}
+function teamBuildrImportHtml(m) {
+  const close = `<button class="full" type="button" onclick="state.modal=null;render()">Cancel</button>`;
+  if (m.step === "pick" || !m.data) {
+    return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render()}"><div class="modal edit-modal import-modal" onclick="event.stopPropagation()">
+      <h3>Import a TeamBuildr program</h3>
+      <div class="sub">In TeamBuildr, print the athlete's workouts and save them as a PDF. Choose that PDF here. Nothing is added to ${esc(m.targetName)} until you have checked it.</div>
+      <label class="pill file-btn tb-pick">${m.busy ? "Reading " + esc(m.fileName || "PDF") + "…" : "Choose PDF"}<input type="file" accept="application/pdf,.pdf" ${m.busy ? "disabled" : ""} onchange="loadTeamBuildrFile(this)"></label>
+      ${m.error ? `<div class="import-errors">${esc(m.error)}</div>` : ""}
+      ${close}
+    </div></div>`;
+  }
+  const days = m.data.days;
+  const last = teamBuildrTargetDate(m, days[days.length - 1].date);
+  const cal = state.calendars[m.target] || {};
+  const busyDays = days.filter((d) => {
+    const existing = cal[teamBuildrTargetDate(m, d.date)];
+    return existing && (existing.items || []).length;
+  }).length;
+  const names = Object.keys(m.choices);
+  const exact = names.filter((name) => ((m.data.matches || {})[name] || {}).status === "exact");
+  const check = names.filter((name) => exact.indexOf(name) < 0);
+  const creating = names.filter((name) => m.choices[name].mode === "new").length;
+  const preview = days.map((d) => {
+    const items = d.items.map((it) => teamBuildrItem(it, m.choices));
+    const rows = items.map((it) => it.type === "note"
+      ? `<div class="tb-item tb-note">${esc(String(it.note || "").split("\n")[0])}</div>`
+      : `<div class="tb-item">${it.letter ? `<b class="tb-letter">${esc(it.letter)}</b>` : `<span class="tb-letter"></span>`}<span>${esc(it.name)}</span><span class="tb-sub">${esc(isTextOnlyItem(it) ? String(it.note || "").split("\n")[0] : scriptLine(it, { plain: true }))}</span></div>`).join("");
+    return `<div class="tb-day"><div class="tb-day-h">${esc(fmtDay(teamBuildrTargetDate(m, d.date)))} <span class="tb-sub">from ${esc(fmtShort(d.date))}</span></div>${rows}</div>`;
+  }).join("");
+  const libraryOptions = (state.serverExercises || []).filter((row) => !row.hidden).map((row) => `<option value="${esc(row.name)}"></option>`).join("");
+  const unresolved = teamBuildrUnresolved(m).length;
+  return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render()}"><div class="modal edit-modal import-modal tb-modal" onclick="event.stopPropagation()">
+    <h3>Import into ${esc(m.targetName)}</h3>
+    <div class="sub">${esc(m.fileName || "TeamBuildr PDF")}${m.data.athlete ? " · " + esc(m.data.athlete) : ""} · ${days.length} day${days.length === 1 ? "" : "s"}, ${esc(fmtShort(days[0].date))} – ${esc(fmtShort(days[days.length - 1].date))}</div>
+    <div class="tb-section">
+      <label class="edit-field"><span>Start on</span><input class="field" type="date" value="${esc(m.start)}" onchange="state.modal.start=this.value;render()"></label>
+      <div class="hint">Lands on ${esc(fmtDay(m.start))} – ${esc(fmtDay(last))}, keeping TeamBuildr's spacing between days.${busyDays ? ` ${busyDays} of those days already have workouts.` : ""}</div>
+      <div class="row">
+        <label class="chk"><input type="radio" name="tb-place" ${m.placement !== "replace" ? "checked" : ""} onchange="state.modal.placement='bottom'"> Add below what is there</label>
+        <label class="chk"><input type="radio" name="tb-place" ${m.placement === "replace" ? "checked" : ""} onchange="state.modal.placement='replace'"> Replace what is there</label>
+      </div>
+    </div>
+    <div class="tb-section">
+      <div class="tb-section-h">Exercises</div>
+      <div class="hint">${exact.length} matched your library by name.${check.length ? ` Check the ${check.length} below: pick a library match or create a new exercise.` : ""}${creating ? ` ${creating} new exercise${creating === 1 ? "" : "s"} will be added to your library.` : ""}</div>
+      ${check.length ? `<div class="import-scroll"><table class="import-table tb-matches">${check.map((name) => teamBuildrMatchRow(m, name)).join("")}</table></div>` : ""}
+      <datalist id="tb-library">${libraryOptions}</datalist>
+    </div>
+    ${(m.data.warnings || []).length ? `<div class="import-errors"><b>Check these:</b>${m.data.warnings.map((w) => `<div>${esc(w)}</div>`).join("")}</div>` : ""}
+    <div class="tb-section">
+      <div class="tb-section-h">Preview</div>
+      <div class="import-scroll tb-preview">${preview}</div>
+    </div>
+    <button class="full save" type="button" ${m.busy || unresolved ? "disabled" : ""} onclick="runTeamBuildrImport()">${m.busy ? "Importing…" : `Import ${days.length} day${days.length === 1 ? "" : "s"}`}</button>
+    ${close}
+  </div></div>`;
 }
 function exportData() {
   const blob = new Blob([JSON.stringify({ calendars: state.calendars, athletes: state.athletes, coaches: state.coaches }, null, 2)], { type: "application/json" });
@@ -7426,6 +8025,9 @@ function dayItemType(category, parsed) {
   if (lower.indexOf("circuit") >= 0) return "circuit";
   const known = canonicalCategory(raw);
   if (known === "Strength" || known === "Warm up" || known === "Speed/agility/cardio" || known === "Cooldown") return "lift";
+  // Days saved since dose2 mark their lifts, so a lift with a two-line note under a category
+  // this app does not name (say "Plyometrics") stays a lift instead of being read as a circuit.
+  if (parsed && (parsed.flags || []).indexOf("dose2") >= 0) return "lift";
   if (parsed && parsed.plainLines && parsed.plainLines.length > 1) return "circuit";
   return "lift";
 }
@@ -7676,7 +8278,7 @@ function liftsView() {
   }).join("");
   return `<section class="stage ui-page"><div class="ui-wrap">
     ${uiHead("Coach tools", "Exercise library", `${total} exercise${total === 1 ? "" : "s"} in your library. Defaults here fill in when an exercise is added to a calendar.`,
-      `<button class="btn btn-secondary" type="button" onclick="openQuestionnaireEditor()">New questionnaire</button><button class="btn btn-secondary" type="button" onclick="openChainEditor()">New chain</button>`)}
+      `<button class="btn btn-secondary" type="button" onclick="openLibraryImport()">Import</button><button class="btn btn-secondary" type="button" onclick="openQuestionnaireEditor()">New questionnaire</button><button class="btn btn-secondary" type="button" onclick="openChainEditor()">New chain</button>`)}
     <section class="ui-card">
       <div class="ui-card-body ui-inline">
         <div class="ui-search"><input class="input" placeholder="Search exercises and chains" aria-label="Search exercises" data-focus="lift-q" value="${esc(state.liftQ)}" oninput="state.liftQ=this.value;render()"></div>
@@ -9504,6 +10106,8 @@ function modalHtml() {
   if (m.type === "edit") return editModalHtml(m);
   if (m.type === "install") return installHelpHtml(m);
   if (m.type === "chain") return chainEditorHtml(m);
+  if (m.type === "library-import") return libraryImportHtml(m);
+  if (m.type === "tb-import") return teamBuildrImportHtml(m);
   if (m.type === "questionnaire") return questionnaireEditorHtml(m);
   if (m.type === "question") return questionEditorHtml(m);
   if (m.type === "chain-scope") return chainScopeHtml(m);
@@ -9658,6 +10262,18 @@ window.editorClick = editorClick;
 window.blurWeekNote = blurWeekNote;
 window.openEditor = openEditor;
 window.setLetter = setLetter;
+window.openTeamBuildrImport = openTeamBuildrImport;
+window.loadTeamBuildrFile = loadTeamBuildrFile;
+window.pickTeamBuildrMatch = pickTeamBuildrMatch;
+window.setTeamBuildrOther = setTeamBuildrOther;
+window.setTeamBuildrCategory = setTeamBuildrCategory;
+window.runTeamBuildrImport = runTeamBuildrImport;
+window.openLibraryImport = openLibraryImport;
+window.previewLibraryImport = previewLibraryImport;
+window.loadLibraryFile = loadLibraryFile;
+window.runLibraryImport = runLibraryImport;
+window.loadUploadFile = loadUploadFile;
+window.previewUpload = previewUpload;
 window.placeOnCalendar = placeOnCalendar;
 window.newCalendarFor = newCalendarFor;
 window.sendAthleteInvite = sendAthleteInvite;

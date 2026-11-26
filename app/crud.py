@@ -625,6 +625,71 @@ def update_exercise(db: Session, exercise_id: int, exercise_in: ExerciseUpdate):
     db.refresh(ex)
     return ex
 
+EXERCISE_IMPORT_MAX_ROWS = 2000
+
+
+def bulk_import_exercises(db: Session, user: User, rows: list, on_existing: str = "skip") -> dict:
+    """Add a spreadsheet of exercises to the library in one go.
+
+    A name already in the library is skipped, or with on_existing="update" gets the cells the
+    file filled in (blank cells leave what is there). One this coach had hidden comes back into
+    their library either way, since they asked for it by name. A name listed twice in the file
+    counts once. A row that cannot be saved is reported with its row number; the rest go in.
+    """
+    _require_library_coach(user)
+    if len(rows or []) > EXERCISE_IMPORT_MAX_ROWS:
+        raise HTTPException(status_code=400, detail=f"Import up to {EXERCISE_IMPORT_MAX_ROWS} exercises at a time.")
+    update = on_existing == "update"
+    hidden = set(hidden_exercise_ids(db, user))
+    created = updated = skipped = unhidden = 0
+    errors = []
+    seen = set()
+    for index, row in enumerate(rows or [], start=1):
+        filled = {
+            key: value for key, value in row.model_dump(exclude_unset=True).items()
+            if value is not None and not (isinstance(value, str) and not value.strip())
+        }
+        name = str(filled.pop("name", "") or "").strip()
+        if not name:
+            errors.append({"row": index, "message": "No name"})
+            continue
+        key = name.lower()
+        if key in seen:
+            skipped += 1
+            continue
+        seen.add(key)
+        existing = db.query(Exercise).filter(func.lower(Exercise.name) == key).first()
+        try:
+            if existing is None:
+                payload = prepare_exercise_write(ExerciseCreate(name=name, **filled).model_dump())
+                payload["name"] = name[:255]
+                exercise = Exercise(**payload)
+                db.add(exercise)
+                db.flush()
+                if "question" in (exercise.category or "").lower():
+                    _seed_questionnaire_items(db, exercise)
+                created += 1
+                continue
+            if existing.id in hidden:
+                db.query(CoachHiddenExercise).filter(
+                    CoachHiddenExercise.user_id == user.id,
+                    CoachHiddenExercise.exercise_id == existing.id,
+                ).delete()
+                hidden.discard(existing.id)
+                unhidden += 1
+            if not update or not filled:
+                skipped += 1
+                continue
+            for field, value in prepare_exercise_write(filled, existing=existing).items():
+                if field in filled or field in ("intensity_kind", "intensity_value", "category"):
+                    setattr(existing, field, value)
+            updated += 1
+        except HTTPException as exc:
+            errors.append({"row": index, "message": f"{name}: {exc.detail}"})
+    db.commit()
+    return {"created": created, "updated": updated, "skipped": skipped, "unhidden": unhidden, "errors": errors}
+
+
 CHAIN_KINDS = ("Warm up", "Circuit", "Cooldown")
 
 
@@ -1197,7 +1262,8 @@ def _workout_exercise_values(item, idx: int) -> dict:
         "prescription_text": presc,
         "prescribed_sets": 3 if p_sets is None else p_sets,
         "target_reps": str(t_reps if t_reps is not None else "10"),
-        "target_weight": str(_payload_get(item, "target_weight", "0") or "0"),
+        # A load left blank stays blank; reading it back as "0" showed a 0 load on every one-set lift.
+        "target_weight": "0" if _payload_get(item, "target_weight", None) is None else str(_payload_get(item, "target_weight")),
         "rest_seconds": _payload_get(item, "rest_seconds", 0) or 0,
         "notes": _payload_get(item, "notes", "") or "",
         "is_ea": bool(_payload_get(item, "is_ea", False)),
@@ -2939,13 +3005,18 @@ def add_gym_athlete(db: Session, actor: User, name: str, email: str, team_id: in
     return user, password
 
 
-def bulk_add_gym_athletes(db: Session, actor: User, team_id: int, items: list) -> dict:
+def bulk_add_gym_athletes(db: Session, actor: User, team_id: int, items: list,
+                          calendar_id: Optional[int] = None, new_calendar: bool = False) -> dict:
+    """Add a roster. Each newly made athlete starts on the batch's calendar choice: a calendar of
+    their own, one shared calendar, or none. People already in the gym keep the calendar they have."""
     access.require_gym(actor)
     team = db.query(Group).filter(Group.id == team_id).first()
     if access.is_admin(actor) and team and team.gym_id == actor.gym_id:
         pass
     else:
         access.assert_leads_team(db, actor, team)
+    if calendar_id and not new_calendar:
+        require_calendar(db, actor, calendar_id)
     created = []
     for raw in items:
         def _field(key: str) -> str:
@@ -2996,6 +3067,8 @@ def bulk_add_gym_athletes(db: Session, actor: User, team_id: int, items: list) -
         place_athlete_on_team(db, user, team, allow_move=True, commit=False)
         if not user.is_coach and not user.is_admin:
             user.role = "athlete"
+        if password:
+            _athlete_start_calendar(db, actor, user, calendar_id, new_calendar)
         db.commit()
         db.refresh(user)
         created.append({"user": user, "temporary_password": password})

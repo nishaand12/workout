@@ -705,3 +705,7 @@ button.month-cell:hover { border-color: #555; }
 .app-return h2 { margin: 0 0 8px; font-size: 20px; }
 .app-return p { margin: 0 0 20px; color: var(--ui-text-2); font-size: 15px; line-height: 1.5; }
 .ui-page .sets td.set-n .set-check { color: #15803d; font-weight: 700; }
+/* Imports: a file picker that looks like a button, and preview tables. */
+.file-btn { position: relative; cursor: pointer; }
+.file-btn input[type=file] { position: absolute; inset: 0; opacity: 0; width: 100%; cursor: pointer; }
+.import-scroll { max-height: 420px; overflow: auto; }
