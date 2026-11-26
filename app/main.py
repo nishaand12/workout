@@ -1290,7 +1290,10 @@ def add_athletes_bulk(
     db: Session = Depends(get_db),
     current_user: crud.User = Depends(require_auth),
 ):
-    result = crud.bulk_add_gym_athletes(db, current_user, body.team_id, body.athletes)
+    result = crud.bulk_add_gym_athletes(
+        db, current_user, body.team_id, body.athletes,
+        calendar_id=body.calendar_id, new_calendar=body.new_calendar,
+    )
     for row in result["users"]:
         user = row["user"]
         if row.get("temporary_password") and not crud.is_placeholder_email(user.email):

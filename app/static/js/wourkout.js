@@ -324,6 +324,8 @@ const state = {
   trackMenu: false,
   letterMenu: false,
   selLetterMenu: null,
+  uploadPreview: null,
+  libraryImport: null,
   optionsMenu: false,
   supersetMenu: false,
   dayMenu: null,
@@ -6858,12 +6860,19 @@ function usersView() {
     const options = byTeam
       ? teams.map((t) => `<option value="${t.id}" ${String(t.id) === String(state.toolForm.uploadTeamId || teams[0].id) ? "selected" : ""}>${esc(t.name)}</option>`).join("")
       : state.groups.map((g) => `<option value="${esc(g)}" ${g === (state.toolForm.uploadGroup || state.groups[0]) ? "selected" : ""}>${esc(g)}</option>`).join("");
-    main = `${uiHead("", "Upload athletes", "Paste one athlete per line, like <code>Sam Lee</code> or <code>Jo Kim, jo@gym.com</code>. Each gets an account in the group you choose.", "")}
+    const preview = state.uploadPreview;
+    main = `${uiHead("", "Upload athletes", "Paste one athlete per line, like <code>Sam Lee</code> or <code>Jo Kim, jo@gym.com</code>, paste cells copied from a spreadsheet, or choose a CSV file. A first row of headings such as <code>First name, Last name, Email</code> is used to find the columns. Each athlete gets an account in the group you choose.", "")}
       ${options ? `<section class="ui-card"><div class="ui-card-body ui-form">
         ${uiField("Group", `<select id="uploadGroup" class="select" onchange="state.toolForm.${byTeam ? "uploadTeamId" : "uploadGroup"}=this.value">${options}</select>`)}
-        ${uiField("Athletes", `<textarea id="uploadBox" class="textarea" style="min-height:180px" placeholder="Sam Lee&#10;Jo Kim, jo@gym.com"></textarea>`)}
-        <div><button class="btn btn-primary" type="button" onclick="importUsers()">Import athletes</button></div>
-      </div></section>` : `<section class="ui-card">${uiEmpty("Create a group first", "Uploaded athletes are placed in a group.", `<button class="btn btn-primary" type="button" onclick="state.userTab='groups';render()">Go to groups</button>`)}</section>`}`;
+        ${byTeam && ctx ? uiField("Calendar for new athletes", newAthleteCalendarSelect(ctx, "upload-calendar", "uploadCalendar", "A new calendar for each, named after them")) : ""}
+        ${uiField("Athletes", `<textarea id="uploadBox" class="textarea" style="min-height:180px" data-focus="upload-box" placeholder="Sam Lee&#10;Jo Kim, jo@gym.com" oninput="state.toolForm.uploadText=this.value;if(state.uploadPreview){state.uploadPreview=null;render()}">${esc(state.toolForm.uploadText || "")}</textarea>`)}
+        <div class="ui-inline">
+          <label class="btn btn-secondary file-btn">Choose CSV file<input type="file" accept=".csv,.txt,text/csv,text/plain" onchange="loadUploadFile(this)"></label>
+          <button class="btn btn-secondary" type="button" onclick="previewUpload()">Preview</button>
+          ${preview ? `<button class="btn btn-primary" type="button" onclick="importUsers()" ${preview.ready ? "" : "disabled"}>Import ${preview.ready} athlete${preview.ready === 1 ? "" : "s"}</button>` : ""}
+        </div>
+      </div></section>
+      ${preview ? uploadPreviewHtml(preview) : ""}` : `<section class="ui-card">${uiEmpty("Create a group first", "Uploaded athletes are placed in a group.", `<button class="btn btn-primary" type="button" onclick="state.userTab='groups';render()">Go to groups</button>`)}</section>`}`;
   } else if (state.userTab === "export") {
     main = `${uiHead("", "Export data", "Download calendars and the roster as a JSON file.", "")}
       <section class="ui-card"><div class="ui-card-body ui-inline" style="justify-content:space-between"><span>Everything on this gym's calendars, plus every athlete and coach.</span><button class="btn btn-primary" type="button" onclick="exportData()">Download</button></div></section>`;
@@ -6921,15 +6930,16 @@ function usersView() {
   </div></section>`;
 }
 // Where a new athlete starts: an existing calendar, a new one named after them, or none yet.
-function newAthleteCalendarSelect(ctx) {
+function newAthleteCalendarSelect(ctx, elementId, formKey, newLabel) {
   const calendars = (ctx && ctx.calendars) || [];
-  const chosen = state.toolForm.userCalendar == null ? "new" : String(state.toolForm.userCalendar);
+  const key = formKey || "userCalendar";
+  const chosen = state.toolForm[key] == null ? "new" : String(state.toolForm[key]);
   const first = (state.toolForm.first || "").trim();
   const last = (state.toolForm.last || "").trim();
   const named = (first + " " + last).trim();
   const opt = (value, label) => `<option value="${esc(value)}" ${chosen === String(value) ? "selected" : ""}>${esc(label)}</option>`;
-  return `<select class="select" id="user-calendar" aria-label="Calendar for the new athlete" onchange="state.toolForm.userCalendar=this.value">
-    ${opt("new", named ? "New calendar: " + named : "New calendar named after them")}
+  return `<select class="select" id="${elementId || "user-calendar"}" aria-label="Calendar for new athletes" onchange="state.toolForm.${key}=this.value">
+    ${opt("new", newLabel || (named ? "New calendar: " + named : "New calendar named after them"))}
     ${opt("", "No calendar yet")}
     ${calendars.map((c) => opt(c.id, c.name + (c.athlete_count ? " (" + c.athlete_count + ")" : ""))).join("")}
   </select>`;
@@ -6961,12 +6971,145 @@ function parseRosterLine(line) {
   const parts = name.split(" ");
   return { first: parts[0], last: parts.slice(1).join(" "), email };
 }
+// ---- Roster and library imports ------------------------------------------------------
+// One reader for CSV files and cells pasted from a spreadsheet: tabs or commas, quoted cells,
+// any line ending. Blank rows are dropped.
+function parseTable(text) {
+  const src = String(text || "").replace(/^\ufeff/, "");
+  const firstLine = src.split(/\r?\n/).find((line) => line.trim()) || "";
+  const delim = firstLine.indexOf("\t") >= 0 ? "\t" : (firstLine.indexOf(",") >= 0 ? "," : (firstLine.indexOf(";") >= 0 ? ";" : ","));
+  const rows = [];
+  let row = [];
+  let cell = "";
+  let quoted = false;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (quoted) {
+      if (ch === '"' && src[i + 1] === '"') { cell += '"'; i++; }
+      else if (ch === '"') quoted = false;
+      else cell += ch;
+      continue;
+    }
+    if (ch === '"' && cell.trim() === "") { cell = ""; quoted = true; }
+    else if (ch === delim) { row.push(cell.trim()); cell = ""; }
+    else if (ch === "\n" || ch === "\r") {
+      if (ch === "\r" && src[i + 1] === "\n") i++;
+      row.push(cell.trim());
+      rows.push(row);
+      row = [];
+      cell = "";
+    } else cell += ch;
+  }
+  row.push(cell.trim());
+  rows.push(row);
+  return rows.filter((r) => r.some((c) => c !== ""));
+}
+function headerKey(cell) {
+  return String(cell || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const ROSTER_HEADERS = {
+  name: ["name", "full name", "athlete", "athlete name", "client", "client name", "player"],
+  first: ["first", "first name", "firstname", "given name"],
+  last: ["last", "last name", "lastname", "surname", "family name"],
+  email: ["email", "e mail", "email address", "e mail address", "mail"]
+};
+// People from pasted text or a CSV. A heading row picks the columns; without one each line is
+// read the old way: an email anywhere on it, the rest is the name.
+function rosterFromText(text) {
+  const rows = parseTable(text);
+  if (!rows.length) return [];
+  const columns = {};
+  rows[0].forEach((cell, index) => {
+    const key = headerKey(cell);
+    Object.keys(ROSTER_HEADERS).forEach((field) => {
+      if (columns[field] == null && ROSTER_HEADERS[field].indexOf(key) >= 0) columns[field] = index;
+    });
+  });
+  const hasHeader = (columns.name != null || columns.first != null || columns.email != null) && !rows[0].some((cell) => EMAIL_RE.test(cell));
+  if (!hasHeader) {
+    return String(text || "").split(/\r?\n/).map((line) => parseRosterLine(line.replace(/\t/g, " "))).filter(Boolean);
+  }
+  return rows.slice(1).map((row) => {
+    const pick = (field) => (columns[field] != null ? String(row[columns[field]] || "").trim() : "");
+    let first = pick("first");
+    let last = pick("last");
+    const full = pick("name");
+    if (!first && !last && full) {
+      const parts = full.split(/\s+/);
+      first = parts[0] || "";
+      last = parts.slice(1).join(" ");
+    }
+    const email = pick("email");
+    if (!first && !last && email) first = email.split("@")[0];
+    return { first, last, email };
+  }).filter((p) => p.first || p.last || p.email);
+}
+// What each row will do: be made, join the group (already in the gym), or be skipped and why.
+function rosterPreview(people, ctx) {
+  const known = {};
+  ((ctx && ctx.athletes) || []).forEach((a) => { if (a.email) known[String(a.email).toLowerCase()] = a; });
+  const seen = {};
+  const rows = (people || []).map((p) => {
+    const name = ((p.first || "") + " " + (p.last || "")).trim();
+    const email = String(p.email || "").trim();
+    const key = email ? email.toLowerCase() : "name:" + name.toLowerCase();
+    let status = "new";
+    if (!name) status = "no-name";
+    else if (email && !EMAIL_RE.test(email)) status = "bad-email";
+    else if (seen[key]) status = "duplicate";
+    else if (email && known[email.toLowerCase()]) status = "existing";
+    seen[key] = true;
+    return { first: p.first || "", last: p.last || "", name, email, status };
+  });
+  return { rows, ready: rows.filter((r) => r.status === "new" || r.status === "existing").length };
+}
+const ROSTER_STATUS = {
+  "new": ["green", "New"],
+  existing: ["blue", "Already here: joins the group"],
+  duplicate: ["amber", "Skipped: listed twice"],
+  "bad-email": ["red", "Skipped: email looks wrong"],
+  "no-name": ["red", "Skipped: no name"]
+};
+function uploadPreviewHtml(preview) {
+  const body = preview.rows.map((r) => {
+    const tag = ROSTER_STATUS[r.status] || ["", r.status];
+    return `<tr><td>${esc(r.name || "—")}</td><td>${esc(r.email || "—")}</td><td><span class="ui-badge ${tag[0]}">${esc(tag[1])}</span></td></tr>`;
+  }).join("");
+  const noEmail = preview.rows.filter((r) => r.status === "new" && !r.email).length;
+  return `<section class="ui-card">
+    ${uiCardHead("Preview", preview.rows.length)}
+    ${noEmail ? `<div class="ui-card-body ui-hint" style="padding-bottom:0">${noEmail} without an email can't be sent an invite. Add one later from Athletes → Edit, then Send invite.</div>` : ""}
+    <div class="ui-table-wrap"><table class="ui-table"><thead><tr><th>Name</th><th>Email</th><th></th></tr></thead><tbody>${body}</tbody></table></div>
+  </section>`;
+}
+function loadUploadFile(input) {
+  const file = input && input.files && input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    state.toolForm.uploadText = String(reader.result || "");
+    previewUpload();
+  };
+  reader.onerror = () => toast("Could not read that file");
+  reader.readAsText(file);
+}
+function previewUpload() {
+  const box = document.getElementById("uploadBox");
+  if (box) state.toolForm.uploadText = box.value;
+  const people = rosterFromText(state.toolForm.uploadText || "");
+  if (!people.length) { state.uploadPreview = null; toast("Paste at least one name"); render(); return; }
+  state.uploadPreview = rosterPreview(people, state.gymContext);
+  render();
+}
 async function importUsers() {
   const box = document.getElementById("uploadBox");
+  if (box) state.toolForm.uploadText = box.value;
   const select = document.getElementById("uploadGroup");
   const rawVal = ((select && select.value) || state.toolForm.uploadTeamId || state.toolForm.uploadGroup || "").trim();
   if (!rawVal) { toast("Choose a group"); return; }
-  const people = (box ? box.value : "").split("\n").map(parseRosterLine).filter(Boolean);
+  const preview = state.uploadPreview || rosterPreview(rosterFromText(state.toolForm.uploadText || ""), state.gymContext);
+  const people = preview.rows.filter((r) => r.status === "new" || r.status === "existing");
   if (!people.length) { toast("Paste at least one name"); return; }
 
   const ctx = state.gymContext;
@@ -6974,18 +7117,23 @@ async function importUsers() {
   const teamObj = teams.find((t) => String(t.id) === rawVal || t.name === rawVal);
 
   if (teamObj && state.auth && state.auth.token) {
+    const calEl = document.getElementById("upload-calendar");
+    const calChoice = calEl ? calEl.value : (state.toolForm.uploadCalendar == null ? "new" : String(state.toolForm.uploadCalendar));
     try {
       const payload = {
         team_id: teamObj.id,
         redirect_to: inviteRedirect(),
+        calendar_id: calChoice && calChoice !== "new" ? parseInt(calChoice, 10) : null,
+        new_calendar: calChoice === "new",
         athletes: people.map((p) => ({
-          name: (p.first + " " + p.last).trim(),
+          name: p.name,
           email: p.email || null
         }))
       };
       const res = await api("POST", "/api/gym/athletes/bulk", payload);
       await loadGymContext();
-      if (box) box.value = "";
+      state.toolForm.uploadText = "";
+      state.uploadPreview = null;
       state.toolForm.uploadTeamId = String(teamObj.id);
       state.userTab = "athletes";
       const count = (res && res.added_count) || people.length;
@@ -7005,15 +7153,16 @@ async function importUsers() {
 
   people.forEach((person) => {
     const id = uid();
-    const name = (person.first + " " + person.last).trim();
     state.athletes.push({
       id, first: person.first, last: person.last, email: person.email,
       activity: "N/A", groups: rawVal, cals: "All"
     });
-    ATHLETES.push({ id, name, email: person.email });
+    ATHLETES.push({ id, name: person.name, email: person.email });
     state.calendars[id] = {};
   });
   state.toolForm.uploadGroup = rawVal;
+  state.toolForm.uploadText = "";
+  state.uploadPreview = null;
   state.userTab = "groups";
   toast(people.length + " athlete" + (people.length === 1 ? "" : "s") + " added to " + rawVal);
   render();
@@ -9658,6 +9807,8 @@ window.editorClick = editorClick;
 window.blurWeekNote = blurWeekNote;
 window.openEditor = openEditor;
 window.setLetter = setLetter;
+window.loadUploadFile = loadUploadFile;
+window.previewUpload = previewUpload;
 window.placeOnCalendar = placeOnCalendar;
 window.newCalendarFor = newCalendarFor;
 window.sendAthleteInvite = sendAthleteInvite;

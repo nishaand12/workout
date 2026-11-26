@@ -641,6 +641,9 @@ class BulkAthleteUploadRequest(BaseModel):
     team_id: int
     athletes: List[BulkAthleteItem] = []
     redirect_to: Optional[str] = None
+    # Where each newly made athlete starts: one shared calendar, or new_calendar for one each.
+    calendar_id: Optional[int] = None
+    new_calendar: bool = False
 
 class BulkAthleteUploadResponse(BaseModel):
     added_count: int

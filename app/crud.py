@@ -2939,13 +2939,18 @@ def add_gym_athlete(db: Session, actor: User, name: str, email: str, team_id: in
     return user, password
 
 
-def bulk_add_gym_athletes(db: Session, actor: User, team_id: int, items: list) -> dict:
+def bulk_add_gym_athletes(db: Session, actor: User, team_id: int, items: list,
+                          calendar_id: Optional[int] = None, new_calendar: bool = False) -> dict:
+    """Add a roster. Each newly made athlete starts on the batch's calendar choice: a calendar of
+    their own, one shared calendar, or none. People already in the gym keep the calendar they have."""
     access.require_gym(actor)
     team = db.query(Group).filter(Group.id == team_id).first()
     if access.is_admin(actor) and team and team.gym_id == actor.gym_id:
         pass
     else:
         access.assert_leads_team(db, actor, team)
+    if calendar_id and not new_calendar:
+        require_calendar(db, actor, calendar_id)
     created = []
     for raw in items:
         def _field(key: str) -> str:
@@ -2996,6 +3001,8 @@ def bulk_add_gym_athletes(db: Session, actor: User, team_id: int, items: list) -
         place_athlete_on_team(db, user, team, allow_move=True, commit=False)
         if not user.is_coach and not user.is_admin:
             user.role = "athlete"
+        if password:
+            _athlete_start_calendar(db, actor, user, calendar_id, new_calendar)
         db.commit()
         db.refresh(user)
         created.append({"user": user, "temporary_password": password})
