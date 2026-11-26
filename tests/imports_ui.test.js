@@ -58,7 +58,8 @@ vm.createContext(sandbox);
 
 const source = fs.readFileSync("app/static/js/build-order.js", "utf8") + "\n" + fs.readFileSync("app/static/js/wourkout.js", "utf8") + `
 globalThis.__lib = {
-  state, item, ensureDay, parseTable, rosterFromText, rosterPreview, uploadPreviewHtml, importUsers, usersView
+  state, item, ensureDay, parseTable, rosterFromText, rosterPreview, uploadPreviewHtml, importUsers, usersView,
+  libraryRowsFromText, libraryImportPreview, openLibraryImport, previewLibraryImport, runLibraryImport, modalHtml
 };
 globalThis.__setApi = (fn) => { api = fn; };
 globalThis.__extra = {};
@@ -149,6 +150,48 @@ state.gymContext = {
   assert.equal(sent.body.new_calendar, false);
   assert.equal(state.uploadPreview, null);
   assert.ok(state.toast.includes("1 invite email sent"));
+}
+
+// ---- exercise library: headings pick the columns; a bare list is names ----
+{
+  const parsed = lib.libraryRowsFromText("Exercise Name,Type,Sets,Reps,Coaching Cues,YouTube Link,Ignored\nGoblet Squat,Lower Body,3,8,Chest up,https://youtu.be/g,x\nSkip,warmup,two,,,\n,,,,,");
+  assert.deepEqual(parsed.columns.sort(), ["category", "default_notes", "default_reps", "default_sets", "video_url"]);
+  assert.deepEqual(JSON.parse(JSON.stringify(parsed.rows)), [
+    { line: 2, name: "Goblet Squat", category: "Strength", categoryFrom: "Lower Body", default_sets: 3, default_reps: "8", default_notes: "Chest up", video_url: "https://youtu.be/g" },
+    { line: 3, name: "Skip", category: "Warm up", categoryFrom: "warmup" }
+  ]);
+  const bare = lib.libraryRowsFromText("Plank\nBear Crawl\n");
+  assert.deepEqual(bare.rows.map((r) => r.name), ["Plank", "Bear Crawl"]);
+  assert.deepEqual(bare.columns, []);
+  state.serverExercises = [{ id: 1, name: "Plank" }, { id: 2, name: "Hidden Hop", hidden: true }];
+  const preview = lib.libraryImportPreview(lib.libraryRowsFromText("Name\nplank\nHidden Hop\nNew One\nnew one"));
+  assert.deepEqual(preview.rows.map((r) => r.status), ["existing", "hidden", "new", "duplicate"]);
+
+  lib.openLibraryImport();
+  state.modal.text = "Name,Reps\nplank,12\nNew One,5\nNew One,6";
+  lib.previewLibraryImport();
+  let html = lib.modalHtml();
+  assert.ok(html.includes("1 new · 1 already in the library"));
+  assert.ok(html.includes("Fill in from the file"));
+  state.modal.onExisting = "update";
+  reply = async (method, url) => url === "/api/exercises/bulk" ? { created: 1, updated: 1, skipped: 0, unhidden: 0, errors: [] } : {};
+  calls.length = 0;
+  await lib.runLibraryImport();
+  const sent = calls.find((c) => c.url === "/api/exercises/bulk");
+  assert.equal(sent.body.on_existing, "update");
+  assert.deepEqual(JSON.parse(JSON.stringify(sent.body.rows)), [{ name: "plank", default_reps: "12" }, { name: "New One", default_reps: "5" }]);
+  assert.equal(state.modal, null);
+  assert.ok(state.toast.includes("1 added") && state.toast.includes("1 updated"));
+
+  // A row the server refuses keeps the dialog open with its row number.
+  lib.openLibraryImport();
+  state.modal.text = "Name\nOdd";
+  lib.previewLibraryImport();
+  reply = async (method, url) => url === "/api/exercises/bulk" ? { created: 0, updated: 0, skipped: 0, unhidden: 0, errors: [{ row: 1, message: "Odd: bad" }] } : {};
+  await lib.runLibraryImport();
+  assert.equal(state.modal.type, "library-import");
+  assert.ok(lib.modalHtml().includes("Row 1: Odd: bad"));
+  state.modal = null;
 }
 
 console.log("imports ui tests passed");

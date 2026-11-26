@@ -33,7 +33,7 @@ from app.schemas import (
     AuthConfigResponse, UserRegister, UserLogin, Token,
     PasswordResetRequest, PasswordResetConfirm, SupabaseAuthSync,
     ViewSwitch, GymCreate, JoinCodeCreate, JoinCodeRedeem, JoinCodeResponse,
-    GymContext, GymMemberCreate, GymMemberCreated, MoveTeamRequest, LoginInviteRequest, LoginInviteResponse,
+    GymContext, GymMemberCreate, GymMemberCreated, MoveTeamRequest, ExerciseImportRequest, ExerciseImportResponse, LoginInviteRequest, LoginInviteResponse,
     GymSavedItem, GymItemCreate, GymItemUpdate, HideExerciseRequest, HideChainRequest,
     ProgrammingUse, ProgrammingRemoved,
     CoachAssignRequest, AthleteNoteRequest, ScheduleItem,
@@ -372,6 +372,10 @@ def create_exercise(exercise_in: ExerciseCreate, db: Session = Depends(get_db)):
     if existing:
         raise HTTPException(status_code=400, detail="Exercise with this name already exists")
     return crud.create_exercise(db, exercise_in)
+
+@app.post("/api/exercises/bulk", response_model=ExerciseImportResponse)
+def import_exercises(body: ExerciseImportRequest, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    return crud.bulk_import_exercises(db, current_user, body.rows, body.on_existing)
 
 @app.put("/api/exercises/{exercise_id}", response_model=ExerciseResponse)
 def update_exercise(exercise_id: int, exercise_in: ExerciseUpdate, db: Session = Depends(get_db)):

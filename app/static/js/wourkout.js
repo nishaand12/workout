@@ -7167,6 +7167,181 @@ async function importUsers() {
   toast(people.length + " athlete" + (people.length === 1 ? "" : "s") + " added to " + rawVal);
   render();
 }
+// A spreadsheet of exercises: headings pick the columns, and a sheet without headings is read
+// as one exercise name per row.
+const LIBRARY_HEADERS = {
+  name: ["name", "exercise", "exercise name", "movement", "title"],
+  category: ["category", "type", "exercise type", "category name"],
+  default_sets: ["sets", "default sets", "set"],
+  default_reps: ["reps", "default reps", "repetitions", "rep"],
+  default_load: ["load", "weight", "default load", "load kg", "load lbs"],
+  default_rest: ["rest", "rest s", "rest seconds", "rest sec", "default rest"],
+  default_time: ["time", "time s", "seconds", "duration", "default time"],
+  default_distance: ["distance", "default distance"],
+  default_notes: ["notes", "note", "cues", "coaching cues", "description", "instructions"],
+  video_url: ["video", "video url", "video link", "link", "url", "youtube", "youtube link"]
+};
+const LIBRARY_FIELD_LABEL = {
+  category: "Category", default_sets: "Sets", default_reps: "Reps", default_load: "Load", default_rest: "Rest",
+  default_time: "Time", default_distance: "Distance", default_notes: "Notes", video_url: "Video"
+};
+function libraryRowsFromText(text) {
+  const table = parseTable(text);
+  if (!table.length) return { rows: [], columns: [] };
+  const columns = {};
+  table[0].forEach((cell, index) => {
+    const key = headerKey(cell);
+    Object.keys(LIBRARY_HEADERS).forEach((field) => {
+      if (columns[field] == null && LIBRARY_HEADERS[field].indexOf(key) >= 0) columns[field] = index;
+    });
+  });
+  const headed = columns.name != null;
+  const body = headed ? table.slice(1) : table;
+  if (!headed) columns.name = 0;
+  const rows = body.map((cells, index) => {
+    const row = { line: index + (headed ? 2 : 1) };
+    Object.keys(columns).forEach((field) => {
+      const value = String(cells[columns[field]] == null ? "" : cells[columns[field]]).trim();
+      if (value) row[field] = value;
+    });
+    if (row.category) {
+      const canon = canonicalCategory(row.category);
+      row.categoryFrom = row.category;
+      row.category = EXERCISE_CATEGORIES.indexOf(canon) >= 0 ? canon : "Strength";
+    }
+    if (row.default_sets != null) {
+      const n = parseInt(row.default_sets, 10);
+      if (isNaN(n)) delete row.default_sets;
+      else row.default_sets = Math.max(0, Math.min(10, n));
+    }
+    return row;
+  }).filter((row) => Object.keys(row).some((key) => key !== "line"));
+  return { rows, columns: Object.keys(columns).filter((field) => field !== "name") };
+}
+function libraryImportPreview(parsed) {
+  const known = {};
+  (state.serverExercises || []).forEach((row) => { known[String(row.name || "").toLowerCase()] = row; });
+  const seen = {};
+  const rows = parsed.rows.map((row) => {
+    const key = String(row.name || "").toLowerCase();
+    let status = "new";
+    if (!row.name) status = "no-name";
+    else if (seen[key]) status = "duplicate";
+    else if (known[key]) status = known[key].hidden ? "hidden" : "existing";
+    seen[key] = true;
+    return Object.assign({ status }, row);
+  });
+  return { rows, columns: parsed.columns };
+}
+function openLibraryImport() {
+  state.modal = { type: "library-import", text: "", onExisting: "skip", preview: null, result: null, busy: false };
+  state.pendingFocus = "library-import-box";
+  render();
+}
+function previewLibraryImport() {
+  const m = state.modal;
+  if (!m || m.type !== "library-import") return;
+  const box = document.getElementById("library-import-box");
+  if (box) m.text = box.value;
+  const parsed = libraryRowsFromText(m.text);
+  if (!parsed.rows.length) { toast("Paste or choose a file with at least one exercise"); return; }
+  m.preview = libraryImportPreview(parsed);
+  m.result = null;
+  render();
+}
+function loadLibraryFile(input) {
+  const file = input && input.files && input.files[0];
+  const m = state.modal;
+  if (!file || !m) return;
+  const reader = new FileReader();
+  reader.onload = () => { m.text = String(reader.result || ""); previewLibraryImport(); };
+  reader.onerror = () => toast("Could not read that file");
+  reader.readAsText(file);
+}
+async function runLibraryImport() {
+  const m = state.modal;
+  if (!m || m.type !== "library-import" || !m.preview || m.busy) return;
+  const rows = m.preview.rows
+    .filter((row) => row.status === "new" || row.status === "existing" || row.status === "hidden")
+    .map((row) => {
+      const out = {};
+      ["name"].concat(Object.keys(LIBRARY_FIELD_LABEL)).forEach((field) => { if (row[field] != null && row[field] !== "") out[field] = row[field]; });
+      return out;
+    });
+  if (!rows.length) { toast("Nothing to import"); return; }
+  m.busy = true;
+  render();
+  try {
+    const res = await api("POST", "/api/exercises/bulk", { rows, on_existing: m.onExisting });
+    await loadExercises();
+    const parts = [];
+    if (res.created) parts.push(res.created + " added");
+    if (res.updated) parts.push(res.updated + " updated");
+    if (res.skipped) parts.push(res.skipped + " already there");
+    if (res.unhidden) parts.push(res.unhidden + " shown again");
+    toast(parts.length ? "Exercises: " + parts.join(", ") : "No exercises changed");
+    if (res.errors && res.errors.length) {
+      m.result = res;
+      m.busy = false;
+      if (state.modal === m) render();
+      return;
+    }
+    state.modal = null;
+    render();
+  } catch (err) {
+    m.busy = false;
+    toast(err.message || "Could not import those exercises");
+    render();
+  }
+}
+const LIBRARY_STATUS = {
+  "new": ["green", "New"],
+  existing: ["blue", "In library"],
+  hidden: ["blue", "Hidden: shows again"],
+  duplicate: ["amber", "Listed twice"],
+  "no-name": ["red", "No name"]
+};
+function libraryImportHtml(m) {
+  const preview = m.preview;
+  let table = "";
+  if (preview) {
+    const cols = preview.columns;
+    const head = `<tr><th>Exercise</th>${cols.map((field) => `<th>${esc(LIBRARY_FIELD_LABEL[field])}</th>`).join("")}<th></th></tr>`;
+    const body = preview.rows.map((row) => {
+      const tag = LIBRARY_STATUS[row.status] || ["", row.status];
+      const cells = cols.map((field) => {
+        let value = row[field] == null ? "" : String(row[field]);
+        if (field === "category" && row.categoryFrom && row.categoryFrom !== row.category) value = row.categoryFrom + " → " + row.category;
+        return `<td>${esc(value.length > 40 ? value.slice(0, 40) + "…" : value)}</td>`;
+      }).join("");
+      return `<tr><td>${esc(row.name || "—")}</td>${cells}<td><span class="ui-badge ${tag[0]}">${esc(tag[1])}</span></td></tr>`;
+    }).join("");
+    const counts = { "new": 0, existing: 0, hidden: 0 };
+    preview.rows.forEach((row) => { if (counts[row.status] != null) counts[row.status] += 1; });
+    const already = counts.existing + counts.hidden;
+    table = `<div class="import-summary">${counts["new"]} new · ${already} already in the library</div>
+      ${already ? `<div class="row import-existing">For names already in the library:
+        <label class="chk"><input type="radio" name="lib-existing" ${m.onExisting !== "update" ? "checked" : ""} onchange="state.modal.onExisting='skip'"> Leave them as they are</label>
+        <label class="chk"><input type="radio" name="lib-existing" ${m.onExisting === "update" ? "checked" : ""} onchange="state.modal.onExisting='update'"> Fill in from the file (blank cells change nothing)</label></div>` : ""}
+      <div class="import-scroll"><table class="import-table">${head}${body}</table></div>`;
+  }
+  const errors = m.result && m.result.errors && m.result.errors.length
+    ? `<div class="import-errors"><b>Not imported:</b>${m.result.errors.map((e) => `<div>Row ${e.row}: ${esc(e.message)}</div>`).join("")}</div>`
+    : "";
+  return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render()}"><div class="modal edit-modal import-modal" onclick="event.stopPropagation()">
+    <h3>Import exercises</h3>
+    <div class="sub">Paste cells from a spreadsheet or choose a CSV file. A heading row picks the columns: Name, Category, Sets, Reps, Load, Rest, Time, Distance, Notes, Video. Without headings, each row is one exercise name.</div>
+    <textarea class="field" id="library-import-box" data-focus="library-import-box" rows="6" placeholder="Name&#9;Category&#9;Reps&#9;Video&#10;Goblet Squat&#9;Strength&#9;8&#9;https://youtu.be/..." oninput="state.modal.text=this.value;if(state.modal.preview){state.modal.preview=null;render()}">${esc(m.text || "")}</textarea>
+    <div class="row">
+      <label class="pill file-btn">Choose CSV file<input type="file" accept=".csv,.txt,text/csv,text/plain" onchange="loadLibraryFile(this)"></label>
+      <button type="button" class="pill" onclick="previewLibraryImport()">Preview</button>
+    </div>
+    ${table}
+    ${errors}
+    ${preview ? `<button class="full save" type="button" ${m.busy ? "disabled" : ""} onclick="runLibraryImport()">${m.busy ? "Importing…" : "Import"}</button>` : ""}
+    <button class="full" type="button" onclick="state.modal=null;render()">${m.result ? "Close" : "Cancel"}</button>
+  </div></div>`;
+}
 function exportData() {
   const blob = new Blob([JSON.stringify({ calendars: state.calendars, athletes: state.athletes, coaches: state.coaches }, null, 2)], { type: "application/json" });
   const a = document.createElement("a");
@@ -7825,7 +8000,7 @@ function liftsView() {
   }).join("");
   return `<section class="stage ui-page"><div class="ui-wrap">
     ${uiHead("Coach tools", "Exercise library", `${total} exercise${total === 1 ? "" : "s"} in your library. Defaults here fill in when an exercise is added to a calendar.`,
-      `<button class="btn btn-secondary" type="button" onclick="openQuestionnaireEditor()">New questionnaire</button><button class="btn btn-secondary" type="button" onclick="openChainEditor()">New chain</button>`)}
+      `<button class="btn btn-secondary" type="button" onclick="openLibraryImport()">Import</button><button class="btn btn-secondary" type="button" onclick="openQuestionnaireEditor()">New questionnaire</button><button class="btn btn-secondary" type="button" onclick="openChainEditor()">New chain</button>`)}
     <section class="ui-card">
       <div class="ui-card-body ui-inline">
         <div class="ui-search"><input class="input" placeholder="Search exercises and chains" aria-label="Search exercises" data-focus="lift-q" value="${esc(state.liftQ)}" oninput="state.liftQ=this.value;render()"></div>
@@ -9653,6 +9828,7 @@ function modalHtml() {
   if (m.type === "edit") return editModalHtml(m);
   if (m.type === "install") return installHelpHtml(m);
   if (m.type === "chain") return chainEditorHtml(m);
+  if (m.type === "library-import") return libraryImportHtml(m);
   if (m.type === "questionnaire") return questionnaireEditorHtml(m);
   if (m.type === "question") return questionEditorHtml(m);
   if (m.type === "chain-scope") return chainScopeHtml(m);
@@ -9807,6 +9983,10 @@ window.editorClick = editorClick;
 window.blurWeekNote = blurWeekNote;
 window.openEditor = openEditor;
 window.setLetter = setLetter;
+window.openLibraryImport = openLibraryImport;
+window.previewLibraryImport = previewLibraryImport;
+window.loadLibraryFile = loadLibraryFile;
+window.runLibraryImport = runLibraryImport;
 window.loadUploadFile = loadUploadFile;
 window.previewUpload = previewUpload;
 window.placeOnCalendar = placeOnCalendar;

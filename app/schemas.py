@@ -30,6 +30,21 @@ class ExerciseCreate(ExerciseBase):
     rir: Optional[str] = None
     pct_1rm: Optional[str] = None
 
+class ExerciseImportRequest(BaseModel):
+    rows: List[ExerciseCreate] = []
+    on_existing: str = "skip"  # or "update": fill in the cells the file has
+
+class ExerciseImportError(BaseModel):
+    row: int
+    message: str
+
+class ExerciseImportResponse(BaseModel):
+    created: int = 0
+    updated: int = 0
+    skipped: int = 0
+    unhidden: int = 0
+    errors: List[ExerciseImportError] = []
+
 class ExerciseUpdate(BaseModel):
     name: Optional[str] = None
     category: Optional[str] = None

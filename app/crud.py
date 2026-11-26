@@ -625,6 +625,71 @@ def update_exercise(db: Session, exercise_id: int, exercise_in: ExerciseUpdate):
     db.refresh(ex)
     return ex
 
+EXERCISE_IMPORT_MAX_ROWS = 2000
+
+
+def bulk_import_exercises(db: Session, user: User, rows: list, on_existing: str = "skip") -> dict:
+    """Add a spreadsheet of exercises to the library in one go.
+
+    A name already in the library is skipped, or with on_existing="update" gets the cells the
+    file filled in (blank cells leave what is there). One this coach had hidden comes back into
+    their library either way, since they asked for it by name. A name listed twice in the file
+    counts once. A row that cannot be saved is reported with its row number; the rest go in.
+    """
+    _require_library_coach(user)
+    if len(rows or []) > EXERCISE_IMPORT_MAX_ROWS:
+        raise HTTPException(status_code=400, detail=f"Import up to {EXERCISE_IMPORT_MAX_ROWS} exercises at a time.")
+    update = on_existing == "update"
+    hidden = set(hidden_exercise_ids(db, user))
+    created = updated = skipped = unhidden = 0
+    errors = []
+    seen = set()
+    for index, row in enumerate(rows or [], start=1):
+        filled = {
+            key: value for key, value in row.model_dump(exclude_unset=True).items()
+            if value is not None and not (isinstance(value, str) and not value.strip())
+        }
+        name = str(filled.pop("name", "") or "").strip()
+        if not name:
+            errors.append({"row": index, "message": "No name"})
+            continue
+        key = name.lower()
+        if key in seen:
+            skipped += 1
+            continue
+        seen.add(key)
+        existing = db.query(Exercise).filter(func.lower(Exercise.name) == key).first()
+        try:
+            if existing is None:
+                payload = prepare_exercise_write(ExerciseCreate(name=name, **filled).model_dump())
+                payload["name"] = name[:255]
+                exercise = Exercise(**payload)
+                db.add(exercise)
+                db.flush()
+                if "question" in (exercise.category or "").lower():
+                    _seed_questionnaire_items(db, exercise)
+                created += 1
+                continue
+            if existing.id in hidden:
+                db.query(CoachHiddenExercise).filter(
+                    CoachHiddenExercise.user_id == user.id,
+                    CoachHiddenExercise.exercise_id == existing.id,
+                ).delete()
+                hidden.discard(existing.id)
+                unhidden += 1
+            if not update or not filled:
+                skipped += 1
+                continue
+            for field, value in prepare_exercise_write(filled, existing=existing).items():
+                if field in filled or field in ("intensity_kind", "intensity_value", "category"):
+                    setattr(existing, field, value)
+            updated += 1
+        except HTTPException as exc:
+            errors.append({"row": index, "message": f"{name}: {exc.detail}"})
+    db.commit()
+    return {"created": created, "updated": updated, "skipped": skipped, "unhidden": unhidden, "errors": errors}
+
+
 CHAIN_KINDS = ("Warm up", "Circuit", "Cooldown")
 
 

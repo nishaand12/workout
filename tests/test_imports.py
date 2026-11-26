@@ -91,6 +91,71 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(res.status_code, 403, res.text)
         self.assertNotIn("Gus", self._athletes(auth))
 
+    # ---- exercise library ----------------------------------------------------------------
+
+    def _library(self, auth):
+        return {e["name"]: e for e in self.client.get("/api/exercises", headers=auth).json()}
+
+    def test_library_import_adds_new_and_leaves_existing_alone(self):
+        auth, _ = self._gym_coach()
+        known = f"Known Lift {self.stamp}"
+        self.client.post("/api/exercises", json={"name": known, "category": "Strength", "default_reps": "5", "video_url": "https://youtu.be/old"}, headers=auth)
+        res = self.client.post("/api/exercises/bulk", json={"rows": [
+            {"name": f"New Hop {self.stamp}", "category": "Warm up", "default_sets": 2, "default_reps": "10", "video_url": "https://youtu.be/hop"},
+            {"name": known.upper(), "default_reps": "8"},
+            {"name": f"new hop {self.stamp}"},
+            {"name": "   "},
+        ]}, headers=auth)
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertEqual(res.json(), {"created": 1, "updated": 0, "skipped": 2, "unhidden": 0, "errors": [{"row": 4, "message": "No name"}]})
+        lib = self._library(auth)
+        hop = lib[f"New Hop {self.stamp}"]
+        self.assertEqual((hop["category"], hop["default_sets"], hop["default_reps"], hop["video_url"]), ("Warm up", 2, "10", "https://youtu.be/hop"))
+        self.assertEqual(lib[known]["default_reps"], "5")
+
+    def test_library_import_can_fill_in_existing_exercises(self):
+        auth, _ = self._gym_coach()
+        known = f"Fill Lift {self.stamp}"
+        self.client.post("/api/exercises", json={"name": known, "category": "Strength", "default_reps": "5", "default_notes": "Keep"}, headers=auth)
+        res = self.client.post("/api/exercises/bulk", json={"on_existing": "update", "rows": [
+            {"name": known, "default_reps": "8", "video_url": "https://youtu.be/new", "default_notes": ""},
+        ]}, headers=auth)
+        self.assertEqual(res.json()["updated"], 1)
+        row = self._library(auth)[known]
+        self.assertEqual((row["default_reps"], row["video_url"], row["default_notes"], row["category"]), ("8", "https://youtu.be/new", "Keep", "Strength"))
+
+    def test_library_import_shows_a_hidden_exercise_again(self):
+        auth, _ = self._gym_coach()
+        made = self.client.post("/api/exercises", json={"name": f"Hidden Lift {self.stamp}"}, headers=auth).json()
+        self.assertEqual(self.client.post("/api/gym/hidden-exercises", json={"exercise_id": made["id"]}, headers=auth).status_code, 201)
+        self.assertIn(made["id"], self.client.get("/api/gym/context", headers=auth).json()["hidden_exercise_ids"])
+        res = self.client.post("/api/exercises/bulk", json={"rows": [{"name": made["name"]}]}, headers=auth)
+        self.assertEqual(res.json()["unhidden"], 1)
+        ctx = self.client.get("/api/gym/context", headers=auth).json()
+        self.assertNotIn(made["id"], ctx.get("hidden_exercise_ids", []))
+
+    def test_library_import_reports_a_bad_row_and_keeps_the_rest(self):
+        auth, _ = self._gym_coach()
+        res = self.client.post("/api/exercises/bulk", json={"rows": [
+            {"name": f"Bad Intensity {self.stamp}", "intensity_kind": "speed", "intensity_value": "3"},
+            {"name": f"Fine {self.stamp}"},
+        ]}, headers=auth)
+        body = res.json()
+        self.assertEqual(body["created"], 1)
+        self.assertEqual(body["errors"][0]["row"], 1)
+        self.assertNotIn(f"Bad Intensity {self.stamp}", self._library(auth))
+
+    def test_library_import_is_for_coaches(self):
+        auth, team_id = self._gym_coach()
+        made = self.client.post("/api/gym/athletes/bulk", json={"team_id": team_id, "athletes": [{"name": "Ath"}]}, headers=auth).json()
+        row = made["users"][0]
+        login = self.client.post("/api/auth/login", json={"email_or_username": row["user"]["email"], "password": row["temporary_password"]})
+        athlete = self._auth(login.json()["access_token"])
+        res = self.client.post("/api/exercises/bulk", json={"rows": [{"name": f"Nope {self.stamp}"}]}, headers=athlete)
+        self.assertEqual(res.status_code, 403)
+        too_many = self.client.post("/api/exercises/bulk", json={"rows": [{"name": f"x{i}"} for i in range(2001)]}, headers=auth)
+        self.assertEqual(too_many.status_code, 400)
+
 
 if __name__ == "__main__":
     unittest.main()
