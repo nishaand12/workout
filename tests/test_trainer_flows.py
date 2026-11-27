@@ -859,13 +859,16 @@ class TrainerFlowTests(unittest.TestCase):
         self.assertFalse(cleared.json()["completion_only"])
 
         from app.database import SessionLocal
-        from app import crud
-        from app.models import Exercise
+        from app import crud, library
+        from app.models import Exercise, User
         db = SessionLocal()
         try:
             row = db.query(Exercise).filter(Exercise.id == ex["id"]).first()
-            self.assertNotIn("completionOnly", crud._tagged_defaults(row, 3))
-            row.completion_only = True
+            # Clearing it is this coach's own default. The shared list, and every other coach, keep it.
+            self.assertTrue(row.completion_only)
+            coach = db.query(User).filter(User.id == row.created_by).first()
+            mine = library.resolve_one(db, coach, row)
+            self.assertNotIn("completionOnly", crud._tagged_defaults(mine, 3))
             self.assertIn("Flags:dose2,completionOnly", crud._tagged_defaults(row, 3))
         finally:
             db.rollback()

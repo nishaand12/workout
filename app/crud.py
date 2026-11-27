@@ -16,6 +16,7 @@ from sqlalchemy import and_, or_, desc, asc, func
 
 from app.models import Exercise, ExerciseChain, ExerciseChainMember, Workout, WorkoutExercise, WorkoutSession, SetLog, PersonalRecord, User, Group, WorkoutAssignment, Gym, JoinCode, GymItem, GymHiddenExercise, CoachHiddenExercise, CoachHiddenChain, WeekNote, Calendar, Phase, Question, QuestionnaireItem
 from app import access
+from app import library
 from app.schemas import (
     ExerciseCreate, ExerciseUpdate, WorkoutCreate, WorkoutUpdate, PersonalRecordCreate,
     CopyWeekRequest, AddWorkoutToDayRequest, SaveProgramTemplateRequest,
@@ -602,9 +603,14 @@ def get_exercises(db: Session, skip: int = 0, limit: int = 1000, category: Optio
 def get_exercise(db: Session, exercise_id: int):
     return db.query(Exercise).filter(Exercise.id == exercise_id).first()
 
-def create_exercise(db: Session, exercise_in: ExerciseCreate):
+def create_exercise(db: Session, exercise_in: ExerciseCreate, user: Optional[User] = None):
+    """A new exercise goes straight into the shared list. What the coach filled in becomes its
+    shared defaults, the starting point for every gym."""
+    if user is not None:
+        library.require_library_coach(user)
     payload = prepare_exercise_write(exercise_in.model_dump())
     exercise = Exercise(**payload)
+    exercise.created_by = user.id if user is not None else None
     db.add(exercise)
     db.flush()
     if "question" in (exercise.category or "").lower():
@@ -613,17 +619,62 @@ def create_exercise(db: Session, exercise_in: ExerciseCreate):
     db.refresh(exercise)
     return exercise
 
-def update_exercise(db: Session, exercise_id: int, exercise_in: ExerciseUpdate):
+def _exercise_name_taken(db: Session, name: str, ignore_id: int) -> bool:
+    return db.query(Exercise.id).filter(func.lower(Exercise.name) == name.lower(), Exercise.id != ignore_id).first() is not None
+
+
+def _write_identity(db: Session, user: User, ex: Exercise, raw: dict) -> None:
+    """Rename or recategorise the shared row. Sending the name and category it already has is not
+    a change, so the editor can always send them."""
+    if "name" in raw and raw["name"] is not None:
+        name = str(raw["name"]).strip()[:255]
+        if not name:
+            raise HTTPException(status_code=400, detail="Name the exercise")
+        if name != ex.name:
+            library.require_identity_edit(user, ex)
+            if _exercise_name_taken(db, name, ex.id):
+                raise HTTPException(status_code=400, detail="Exercise with this name already exists")
+            ex.name = name
+    if "category" in raw and raw["category"] is not None:
+        category = canonical_category(raw["category"])
+        if category != canonical_category(ex.category):
+            library.require_identity_edit(user, ex)
+            ex.category = category
+            if category == "Notes":
+                ex.default_sets = 0
+                ex.intensity_kind = ""
+                ex.intensity_value = ""
+
+
+def _layered_write(raw: dict, view) -> dict:
+    """The default values a write names, cleaned the way the shared row always was."""
+    data = {key: value for key, value in raw.items() if key not in ("name", "category")}
+    prepared = prepare_exercise_write(data, existing=view)
+    notes = canonical_category(view.category) == "Notes"
+    return {
+        field: value for field, value in prepared.items()
+        if field in library.LAYERED_FIELDS
+        and (field in raw or field in library.INTENSITY or (notes and field == "default_sets"))
+    }
+
+
+def update_exercise(db: Session, user: User, exercise_id: int, exercise_in: ExerciseUpdate):
+    """Save an exercise from the editor. The name and category go to the shared row (its creator
+    or the app owner only). Defaults go to the layer `scope` names: the coach's own (the
+    default), their gym's (gym admins), or the shared list's (the app owner)."""
     ex = db.query(Exercise).filter(Exercise.id == exercise_id).first()
     if not ex:
         return None
     raw = exercise_in.model_dump(exclude_unset=True)
-    for field, val in prepare_exercise_write(raw, existing=ex).items():
-        if field in raw or field in ("intensity_kind", "intensity_value", "category", "default_sets"):
-            setattr(ex, field, val)
+    scope = library.require_scope(user, raw.pop("scope", None) or "coach")
+    reset = raw.pop("reset_fields", None) or []
+    _write_identity(db, user, ex, raw)
+    db.flush()
+    view = library.resolve_at(db, user, ex, scope)
+    library.write_defaults(db, user, ex, _layered_write(raw, view), scope, reset)
     db.commit()
     db.refresh(ex)
-    return ex
+    return library.resolve_one(db, user, ex)
 
 EXERCISE_IMPORT_MAX_ROWS = 2000
 
@@ -664,6 +715,7 @@ def bulk_import_exercises(db: Session, user: User, rows: list, on_existing: str 
                 payload = prepare_exercise_write(ExerciseCreate(name=name, **filled).model_dump())
                 payload["name"] = name[:255]
                 exercise = Exercise(**payload)
+                exercise.created_by = user.id
                 db.add(exercise)
                 db.flush()
                 if "question" in (exercise.category or "").lower():
@@ -680,9 +732,17 @@ def bulk_import_exercises(db: Session, user: User, rows: list, on_existing: str 
             if not update or not filled:
                 skipped += 1
                 continue
-            for field, value in prepare_exercise_write(filled, existing=existing).items():
-                if field in filled or field in ("intensity_kind", "intensity_value", "category"):
-                    setattr(existing, field, value)
+            # The file's values become this coach's own defaults. A new category changes the
+            # shared row, so only the exercise's creator (or the app owner) can do that.
+            if "category" in filled and canonical_category(filled["category"]) != canonical_category(existing.category):
+                if library.can_edit_identity(user, existing):
+                    _write_identity(db, user, existing, {"category": filled["category"]})
+                    db.flush()
+                else:
+                    errors.append({"row": index, "message": f"{name}: category not changed. Only the coach who added it can change that."})
+            filled.pop("category", None)
+            view = library.resolve_at(db, user, existing, "coach")
+            library.write_defaults(db, user, existing, _layered_write(filled, view), "coach")
             updated += 1
         except HTTPException as exc:
             errors.append({"row": index, "message": f"{name}: {exc.detail}"})
@@ -840,35 +900,48 @@ def _replace_chain_members(db: Session, chain: ExerciseChain, members) -> None:
         ))
 
 
-def _chain_name_taken(db: Session, name: str, ignore_id: Optional[int] = None) -> bool:
-    query = db.query(ExerciseChain).filter(ExerciseChain.name.ilike(name.strip()))
+def _chain_name_taken(db: Session, gym_id: Optional[int], name: str, ignore_id: Optional[int] = None) -> bool:
+    query = db.query(ExerciseChain).filter(ExerciseChain.gym_id == gym_id, func.lower(ExerciseChain.name) == name.strip().lower())
     if ignore_id is not None:
         query = query.filter(ExerciseChain.id != ignore_id)
     return query.first() is not None
 
 
-def list_chains(db: Session) -> List[ExerciseChain]:
-    return db.query(ExerciseChain).order_by(ExerciseChain.name.asc(), ExerciseChain.id.asc()).all()
+def present_chain(user: User, chain: ExerciseChain) -> ExerciseChain:
+    """Say whether this coach may change the chain. A plain attribute, never a column."""
+    chain.can_edit = library.can_edit_chain(user, chain)
+    return chain
 
 
-def create_chain(db: Session, chain_in: ChainWrite) -> ExerciseChain:
+def list_chains(db: Session, user: User) -> List[ExerciseChain]:
+    """The chains of this coach's gym. Other gyms' chains never show."""
+    if not user.gym_id or not _staff_user(user):
+        return []
+    rows = db.query(ExerciseChain).filter(ExerciseChain.gym_id == user.gym_id).order_by(
+        ExerciseChain.name.asc(), ExerciseChain.id.asc()
+    ).all()
+    return [present_chain(user, row) for row in rows]
+
+
+def create_chain(db: Session, user: User, chain_in: ChainWrite) -> ExerciseChain:
+    library.require_library_coach(user)
     name = (chain_in.name or "").strip()
     kind = canonical_chain_kind(chain_in.kind)
     if not name:
         raise HTTPException(status_code=400, detail="Name the chain")
     if not kind:
         raise HTTPException(status_code=400, detail="A chain is a warm-up, a circuit, or a cooldown")
-    if _chain_name_taken(db, name):
+    if _chain_name_taken(db, user.gym_id, name):
         raise HTTPException(status_code=400, detail="A chain with this name already exists")
     exercise_ids = _chain_member_ids(chain_in.members)
     _require_chain_exercises(db, exercise_ids)
-    chain = ExerciseChain(name=name, kind=kind)
+    chain = ExerciseChain(name=name, kind=kind, gym_id=user.gym_id, created_by=user.id)
     db.add(chain)
     db.flush()
     _replace_chain_members(db, chain, chain_in.members)
     db.commit()
     db.refresh(chain)
-    return chain
+    return present_chain(user, chain)
 
 
 def _we_has_set_logs(db: Session, workout_exercise_id: int) -> bool:
@@ -1136,9 +1209,10 @@ def _apply_chain_to_workout(db: Session, workout: Workout, chain_id: int, name: 
     return True
 
 
-def _workouts_for_chain_scope(db: Session, chain_id: int, scope: str, workout_id: Optional[int]) -> List[Workout]:
+def _workouts_for_chain_scope(db: Session, gym_id: int, chain_id: int, scope: str, workout_id: Optional[int]) -> List[Workout]:
+    """The days a chain edit rewrites. Never a day in another gym."""
     if scope == "one":
-        workout = db.query(Workout).filter(Workout.id == workout_id).first() if workout_id else None
+        workout = db.query(Workout).filter(Workout.id == workout_id, Workout.gym_id == gym_id).first() if workout_id else None
         if workout is None:
             raise HTTPException(status_code=400, detail="Choose the day this edit applies to")
         return [workout]
@@ -1146,17 +1220,18 @@ def _workouts_for_chain_scope(db: Session, chain_id: int, scope: str, workout_id
         row[0]
         for row in db.query(WorkoutExercise.workout_id).filter(WorkoutExercise.chain_id == chain_id).distinct().all()
     ]
-    workouts = db.query(Workout).filter(Workout.id.in_(ids or [-1])).all() if ids else []
+    workouts = db.query(Workout).filter(Workout.id.in_(ids or [-1]), Workout.gym_id == gym_id).all() if ids else []
     if scope == "everywhere":
         return workouts
     today = eastern_today_iso()
     return [workout for workout in workouts if (workout.calendar_date or "") >= today]
 
 
-def edit_chain(db: Session, chain_id: int, req: ChainEditRequest) -> dict:
-    chain = db.query(ExerciseChain).filter(ExerciseChain.id == chain_id).first()
-    if not chain:
-        raise HTTPException(status_code=404, detail="Chain not found")
+def edit_chain(db: Session, user: User, chain_id: int, req: ChainEditRequest) -> dict:
+    """Change a chain, on one day, on future days, or everywhere in this gym. Any coach in the gym
+    may change it on one day; the template belongs to the coach who made it and the gym's admins."""
+    library.require_library_coach(user)
+    chain = library.chain_in_gym(user, db.query(ExerciseChain).filter(ExerciseChain.id == chain_id).first())
     scope = (req.scope or "").strip().lower()
     source = (req.source or "").strip().lower()
     if scope not in ("one", "future", "everywhere"):
@@ -1169,10 +1244,14 @@ def edit_chain(db: Session, chain_id: int, req: ChainEditRequest) -> dict:
         raise HTTPException(status_code=400, detail="Name the chain")
     if not kind:
         raise HTTPException(status_code=400, detail="A chain is a warm-up, a circuit, or a cooldown")
-    if _chain_name_taken(db, name, ignore_id=chain.id):
+    if not (source == "day" and scope == "one"):
+        library.require_chain_edit(user, chain)
+    if _chain_name_taken(db, user.gym_id, name, ignore_id=chain.id):
         raise HTTPException(status_code=400, detail="A chain with this name already exists")
     exercise_ids = _chain_member_ids(req.members)
-    exercises = _require_chain_exercises(db, exercise_ids)
+    found = _require_chain_exercises(db, exercise_ids)
+    # Members a day gains take this coach's defaults, as they would placing the chain in Build.
+    exercises = {row.id: row for row in library.resolve_for(db, user, list(found.values()))}
     update_template = source == "library" or scope == "everywhere"
     if update_template:
         chain.name = name
@@ -1182,7 +1261,7 @@ def edit_chain(db: Session, chain_id: int, req: ChainEditRequest) -> dict:
     if source == "library" and scope == "one":
         workouts = []
     else:
-        workouts = _workouts_for_chain_scope(db, chain.id, "one" if scope == "one" else scope, req.workout_id)
+        workouts = _workouts_for_chain_scope(db, user.gym_id, chain.id, "one" if scope == "one" else scope, req.workout_id)
     updated = []
     for workout in workouts:
         if _apply_chain_to_workout(db, workout, chain.id, name, kind, req.members, exercises):
@@ -1191,7 +1270,7 @@ def edit_chain(db: Session, chain_id: int, req: ChainEditRequest) -> dict:
         raise HTTPException(status_code=400, detail="That day does not use this chain")
     db.commit()
     chain = db.query(ExerciseChain).filter(ExerciseChain.id == chain_id).first()
-    return {"chain": chain, "updated_workout_ids": updated}
+    return {"chain": present_chain(user, chain), "updated_workout_ids": updated}
 
 
 def set_chain_fold(db: Session, workout_id: int, instance: str, audience: str, expanded: bool):
@@ -3719,7 +3798,7 @@ def create_questionnaire(db: Session, viewer: User, body) -> Exercise:
     if db.query(Exercise).filter(Exercise.name.ilike(name)).first():
         raise HTTPException(status_code=400, detail="Something in the library already has that name.")
     ids = _questionnaire_questions(db, body.question_ids)
-    exercise = Exercise(name=name, category="Questionnaire", default_sets=1, default_reps="1", completion_only=False)
+    exercise = Exercise(name=name, category="Questionnaire", default_sets=1, default_reps="1", completion_only=False, created_by=viewer.id)
     db.add(exercise)
     db.flush()
     _set_questionnaire_items(db, exercise, ids)
@@ -3738,6 +3817,8 @@ def update_questionnaire(db: Session, viewer: User, exercise_id: int, body) -> E
         raise HTTPException(status_code=400, detail="Name the questionnaire.")
     if db.query(Exercise).filter(Exercise.name.ilike(name), Exercise.id != exercise.id).first():
         raise HTTPException(status_code=400, detail="Something in the library already has that name.")
+    if name != exercise.name:
+        library.require_identity_edit(viewer, exercise)
     ids = _questionnaire_questions(db, body.question_ids)
     exercise.name = name
     _set_questionnaire_items(db, exercise, ids)
@@ -3967,9 +4048,7 @@ def unhide_exercise_for_coach(db: Session, user: User, exercise_id: int) -> dict
 def hide_chain_for_coach(db: Session, user: User, chain_id: int) -> dict:
     """Hide a chain in this coach's library only. Days that already use it keep their block."""
     _require_library_coach(user)
-    chain = db.query(ExerciseChain).filter(ExerciseChain.id == chain_id).first()
-    if not chain:
-        raise HTTPException(status_code=404, detail="Chain not found.")
+    library.chain_in_gym(user, db.query(ExerciseChain).filter(ExerciseChain.id == chain_id).first())
     _hide_chain_row(db, user, chain_id)
     db.commit()
     return {"chain_id": chain_id}
@@ -4142,15 +4221,14 @@ def _chain_rows_filter(chain_id: int):
 
 def chain_programming_use(db: Session, coach: User, chain_id: int) -> dict:
     _require_library_coach(coach)
+    library.chain_in_gym(coach, db.query(ExerciseChain).filter(ExerciseChain.id == chain_id).first())
     return _programming_use(db, coach, _chain_rows_filter(chain_id))
 
 
 def remove_chain_from_programming(db: Session, coach: User, chain_id: int) -> dict:
     """Take a chain's blocks off every day in this coach's programming, and hide the chain for them."""
     _require_library_coach(coach)
-    chain = db.query(ExerciseChain).filter(ExerciseChain.id == chain_id).first()
-    if not chain:
-        raise HTTPException(status_code=404, detail="Chain not found.")
+    library.chain_in_gym(coach, db.query(ExerciseChain).filter(ExerciseChain.id == chain_id).first())
     result = _remove_from_programming(db, coach, _chain_rows_filter(chain_id))
     _hide_chain_row(db, coach, chain_id)
     db.commit()

@@ -17,4 +17,10 @@ class Settings:
     # renewed each time they open the app. Coaches and admins keep the shorter session.
     ATHLETE_SESSION_DAYS: int = int(os.getenv("ATHLETE_SESSION_DAYS", 90))
 
+    # The app owner: may rename any exercise or change its category, and edit the shared
+    # list's defaults. Comma-separated sign-in emails.
+    SUPER_ADMIN_EMAILS: frozenset = frozenset(
+        email.strip().lower() for email in os.getenv("SUPER_ADMIN_EMAILS", "").split(",") if email.strip()
+    )
+
 settings = Settings()
