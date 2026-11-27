@@ -30,7 +30,7 @@ import pypdf
 DAY_RE = re.compile(r"^(MONDAY|TUESDAY|WEDNESDAY|THURSDAY|FRIDAY|SATURDAY|SUNDAY)\s*-\s*([A-Z]{3,4})\.?\s+(\d{1,2}),\s*(\d{4})$")
 MONTHS = {m: i for i, m in enumerate(["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"], start=1)}
 MONTHS.update({"SEPT": 9, "JUNE": 6, "JULY": 7})
-HEADER_LABELS = {"Workout", "Max/PR", "Set 1", "Set 2", "Set 3", "Set 4", "Result", "Reps"}
+HEADER_LABELS = {"Workout", "Max/PR", "Result", "Reps"} | {f"Set {n}" for n in range(1, 11)}
 LETTERS = "ABCDEFGHIJ"
 LIST_ENTRY = re.compile(r"\s-\s*\d*\s*x\s*\d", re.I)  # "Cat Cow - x10", "Bicep Curl - 1x10"
 CIRCUIT_META = re.compile(r"^-?\s*completion circuit$", re.I)
@@ -47,11 +47,79 @@ def _clean(text: str) -> str:
     return text.replace("’", "'").replace("“", '"').replace("”", '"').replace("\xa0", " ").strip()
 
 
+# Some exports (Chromium's Skia printer) embed Open Sans as unnamed Type3 fonts whose ff/fi/fl
+# ligature glyphs have no text mapping, so "off" reads as "o\x00". The glyphs keep Open Sans's
+# own numbering, which names them.
+LIGATURE_GLYPHS = {"/gEC": "FB00", "/gED": "FB01", "/gEE": "FB02"}  # ff, fi, fl
+BOLD_STEM = 140  # FontDescriptor StemV: Open Sans Bold prints 172, Regular 94
+
+
+def _font_name(font) -> str:
+    return str((font or {}).get("/BaseFont", "") or "").lstrip("/")
+
+
+def _is_bold(font) -> bool:
+    name = _font_name(font)
+    if name:
+        return "bold" in name.lower()
+    try:
+        return float(font["/FontDescriptor"]["/StemV"]) >= BOLD_STEM
+    except Exception:
+        return False
+
+
+def _is_content_font(font) -> bool:
+    """TeamBuildr prints in Open Sans; the browser's own page header and footer do not. An unnamed
+    Type3 font is TeamBuildr's text printed by Chromium's Skia, which drops the font names."""
+    name = _font_name(font)
+    if name:
+        return "opensans" in name.lower().replace("-", "")
+    return str((font or {}).get("/Subtype", "")) == "/Type3"
+
+
+def _map_ligatures(page) -> None:
+    """Give unmapped Open Sans ligature glyphs their text by adding them to the font's ToUnicode map."""
+    try:
+        fonts = page["/Resources"]["/Font"]
+    except Exception:
+        return
+    for ref in fonts.values():
+        font = ref.get_object()
+        if str(font.get("/Subtype", "")) != "/Type3" or _font_name(font) or "/ToUnicode" not in font:
+            continue
+        codes, code = {}, 0
+        for entry in (font.get("/Encoding") or {}).get("/Differences", []):
+            if isinstance(entry, int):
+                code = entry
+            else:
+                if str(entry) in LIGATURE_GLYPHS:
+                    codes[code] = LIGATURE_GLYPHS[str(entry)]
+                code += 1
+        if not codes:
+            continue
+        stream = font["/ToUnicode"].get_object()
+        cmap = original = stream.get_data().decode("latin-1")
+        extra = []
+        for c, u in codes.items():
+            # Skia writes these glyphs as mapping to nothing (<EC> <0000>); fill that in, or add it.
+            empty = re.compile(rf"<{c:02X}>(\s*)<0+>", re.I)
+            if empty.search(cmap):
+                cmap = empty.sub(lambda m, u=u, c=c: f"<{c:02X}>{m.group(1)}<{u}>", cmap, count=1)
+            elif not re.search(rf"<{c:02X}>\s*<[0-9A-Fa-f]+>", cmap, re.I):
+                extra.append((c, u))
+        if extra and "endcmap" in cmap:
+            block = f"{len(extra)} beginbfchar\n" + "".join(f"<{c:02X}> <{u}>\n" for c, u in extra) + "endbfchar\n"
+            cmap = cmap.replace("endcmap", block + "endcmap", 1)
+        if cmap != original:
+            stream.set_data(cmap.encode("latin-1"))
+
+
 def _fragments(reader: pypdf.PdfReader) -> List[dict]:
     """Every piece of text with page, position (y grows downward across pages), font and size."""
     out = []
     for page_no, page in enumerate(reader.pages):
         height = float(page.mediabox.height)
+        _map_ligatures(page)
 
         def visit(text, cm, tm, font, size, page_no=page_no, height=height):
             text = _clean(text)
@@ -60,15 +128,14 @@ def _fragments(reader: pypdf.PdfReader) -> List[dict]:
             x = tm[4] * cm[0] + tm[5] * cm[2] + cm[4]
             y = tm[4] * cm[1] + tm[5] * cm[3] + cm[5]
             scale = abs(tm[3] or 1) * abs(cm[3] or 1)
-            base = str((font or {}).get("/BaseFont", ""))
             out.append({
                 "page": page_no,
                 "x": x,
                 "y": page_no * 10000 + (height - y),
                 "size": float(size or 0) * scale,
-                "bold": "bold" in base.lower(),
-                "opensans": "opensans" in base.lower().replace("-", ""),
-                "font": base,
+                "bold": _is_bold(font),
+                "opensans": _is_content_font(font),
+                "font": _font_name(font),
                 "text": text,
             })
 
@@ -110,18 +177,29 @@ def _date_of(match) -> str:
 
 
 class _Table:
-    """Column positions from one day's header row."""
+    """Column positions from one day's header row. Older exports have a Max/PR column between the
+    names and the sets; newer ones go straight to up to five sets, with notes and block text
+    starting at the first set's left edge (just left of its "Result" label)."""
 
     def __init__(self, labels: List[dict]):
         self.size = max((f["size"] for f in labels if f["text"] == "Workout"), default=11.0)
         maxpr = [f for f in labels if f["text"] == "Max/PR"]
         results = sorted(f["x"] for f in labels if f["text"] == "Result")
-        if not maxpr or not results:
-            raise TeamBuildrError("A day's table has no Max/PR or set columns")
-        self.maxpr_x = maxpr[0]["x"]
+        reps = sorted(f["x"] for f in labels if f["text"] == "Reps")
+        if not results:
+            raise TeamBuildrError("A day's table has no set columns")
         self.results = results
-        self.left_edge = self.maxpr_x - self.size * 1.1      # names and titles sit left of this
-        self.sets_edge = results[0] - self.size * 1.1         # set values start here
+        self.has_maxpr = bool(maxpr)
+        if maxpr:
+            self.left_edge = maxpr[0]["x"] - self.size * 1.1  # names and titles sit left of this
+            self.sets_edge = results[0] - self.size * 1.1     # set values start here
+        else:
+            # Notes and block text start at the first set's left edge, around its "Result" label.
+            # The Result cell is printed blank and values are centred under "Reps", so anything
+            # starting before halfway between the two labels is a note.
+            self.left_edge = results[0] - self.size * 1.1
+            first_reps = next((x for x in reps if x > results[0]), results[0] + self.size * 4)
+            self.sets_edge = (results[0] + first_reps) / 2
 
     def zone(self, f: dict) -> str:
         if f["x"] < self.left_edge:
@@ -174,7 +252,7 @@ def _summary_sets(text: str) -> Optional[int]:
 
 def _lift_from(row: dict, warnings: List[str], day: str) -> dict:
     cells = []
-    for index in range(4):
+    for index in sorted(row["cells"]):
         parts = row["cells"].get(index)
         if parts:
             cells.append(_cell(" ".join(p["text"] for p in sorted(parts, key=lambda p: (p["y"], p["x"])))))
@@ -389,14 +467,14 @@ def _build_day(day: dict, stream: List[dict], warnings: List[str]) -> None:
             elif a:
                 a["notes"].append(f)
             continue
-        if zone == "mid" and rel > 0.82 and not re.fullmatch(r"(N/A|\d+(\.\d+)?\s*R?)", text):
+        if zone == "mid" and rel > 0.82 and not (t.has_maxpr and re.fullmatch(r"(N/A|\d+(\.\d+)?\s*R?)", text)):
             # Mid-size text in the Max/PR column that is not a max: treat it as a note.
             a = anchor_above(f["y"])
             if a:
                 a["notes"].append(f)
                 continue
         if zone == "mid":
-            if re.fullmatch(r"(N/A|[\d.]+\s*R?|R)", text):
+            if t.has_maxpr and re.fullmatch(r"(N/A|[\d.]+\s*R?|R)", text):
                 continue  # the athlete's own max, not part of the prescription
             a = anchor_above(f["y"]) or nearest_anchor(f["y"], t.size)
             if a:

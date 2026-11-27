@@ -58,7 +58,7 @@ When running locally, access the app from any device on your Tailnet (e.g., iPho
 * **Imports (no AI involved):**
   * **Roster:** Manage Users → Upload athletes takes a CSV file, cells pasted from a spreadsheet, or one athlete per line. A heading row (First name, Last name, Email…) picks the columns, a preview shows what each row will do, and new athletes start on the calendar you pick. Invite emails go out as for a single athlete.
   * **Exercise library:** Import on the library page reads a spreadsheet of exercises (Name, Category, Sets, Reps, Load, Rest, Time, Distance, Notes, Video). Names already in the library are left alone or filled in from the file.
-  * **TeamBuildr:** Build → calendar menu → Import TeamBuildr PDF reads TeamBuildr's "Printable Workout" PDF (`app/teambuildr.py`): letters, sets, reps, per side, seconds, RPE, notes, circuits and warm-up/cooldown text. A review screen matches each exercise to the library (or creates it), and the days land from a start date you choose, keeping their spacing. Other programs' PDFs are not supported.
+  * **TeamBuildr:** Build → calendar menu → Import TeamBuildr PDF reads TeamBuildr's "Printable Workout" PDF (`app/teambuildr.py`): letters, sets, reps, per side, seconds, RPE, notes, circuits and warm-up/cooldown text. Both TeamBuildr's older layout (with a Max/PR column) and its current one (up to five sets, no Max/PR) are read. A review screen matches each exercise to the library (or creates it), and the days land from a start date you choose, keeping their spacing. Other programs' PDFs are not supported.
 
 ### 2. Athlete / Student Experience
 * **Focused Daily View:** Athletes exclusively see workouts prescribed to them or their training cohort for the selected date.
