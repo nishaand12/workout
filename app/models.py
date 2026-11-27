@@ -199,6 +199,8 @@ class Exercise(Base):
     default_stations = Column(Text, default="")
     # Athletes just tick this off. No weight or rep entry.
     completion_only = Column(Boolean, default=False, nullable=False)
+    # The coach who added it. Only they, or the app owner, rename it or change its category.
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     workout_links = relationship("WorkoutExercise", back_populates="exercise", cascade="all, delete-orphan")
@@ -244,6 +246,10 @@ class ExerciseChain(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), nullable=False, index=True)
     kind = Column(String(32), nullable=False, default="Warm up")
+    # Chains belong to one gym. Its coaches use them; the coach who made one and the gym's
+    # admins change it.
+    gym_id = Column(Integer, ForeignKey("gyms.id", ondelete="CASCADE"), nullable=True, index=True)
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     members = relationship(
@@ -319,6 +325,13 @@ class WorkoutExercise(Base):
     exercise = relationship("Exercise", back_populates="workout_links")
     chain = relationship("ExerciseChain")
     set_logs = relationship("SetLog", back_populates="workout_exercise", cascade="all, delete-orphan")
+
+    @property
+    def video_url(self) -> str:
+        """The exercise's video as the coach who programmed this day set it, else their gym's,
+        else the shared list's."""
+        from app.library import placed_video
+        return placed_video(self)
 
 class WorkoutSession(Base):
     __tablename__ = "workout_sessions"
@@ -432,3 +445,41 @@ class CoachHiddenChain(Base):
 
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
     chain_id = Column(Integer, ForeignKey("exercise_chains.id", ondelete="CASCADE"), primary_key=True)
+
+
+class _ExerciseDefaultColumns:
+    """Defaults a gym or a coach sets over the shared exercise list. NULL follows the layer below."""
+    video_url = Column(String(500), nullable=True)
+    default_notes = Column(Text, nullable=True)
+    default_sets = Column(Integer, nullable=True)
+    default_reps = Column(String(50), nullable=True)
+    default_load = Column(String(50), nullable=True)
+    default_rest = Column(String(50), nullable=True)
+    default_tempo = Column(String(50), nullable=True)
+    default_velocity = Column(String(50), nullable=True)
+    default_power = Column(String(50), nullable=True)
+    default_pct = Column(String(50), nullable=True)
+    default_rest_rep = Column(String(50), nullable=True)
+    default_distance = Column(String(50), nullable=True)
+    default_time = Column(String(50), nullable=True)
+    intensity_kind = Column(String(20), nullable=True)
+    intensity_value = Column(String(20), nullable=True)
+    default_stations = Column(Text, nullable=True)
+    completion_only = Column(Boolean, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class GymExerciseDefault(_ExerciseDefaultColumns, Base):
+    """A gym admin's defaults for one exercise, for every coach in that gym."""
+    __tablename__ = "gym_exercise_defaults"
+
+    gym_id = Column(Integer, ForeignKey("gyms.id", ondelete="CASCADE"), primary_key=True)
+    exercise_id = Column(Integer, ForeignKey("exercises.id", ondelete="CASCADE"), primary_key=True)
+
+
+class CoachExerciseDefault(_ExerciseDefaultColumns, Base):
+    """One coach's own defaults for one exercise. Other coaches never see them."""
+    __tablename__ = "coach_exercise_defaults"
+
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    exercise_id = Column(Integer, ForeignKey("exercises.id", ondelete="CASCADE"), primary_key=True)

@@ -32,7 +32,14 @@ When running locally, access the app from any device on your Tailnet (e.g., iPho
 * **Programming builder (phases):**
   * From the Build calendar's left rail, drag across a small calendar of empty day boxes to group days or weeks into a phase, then name it, colour it, and add notes.
   * A phase tints the week banners it covers and shows its notes above each of those weeks' own notes. Phases are per calendar and coaches only.
+* **Exercise library across gyms (`app/library.py`):**
+  * There is one shared list of exercises. A new exercise goes straight into it.
+  * Each default (sets, reps, time, load, rest, video, intensity…) is worked out on its own: the coach's own value, else their gym's, else the shared list's. A coach's edit saves only the values they changed, so it reaches no other coach and no other gym. The editor tags each value "Yours" or "Gym", with Reset.
+  * A gym admin switches the editor to **Gym defaults** to set values for every coach in the gym, and can **Apply to all coaches** to clear coaches' own values for that exercise.
+  * Only the coach who added an exercise, or the app owner, renames it or changes its category. The app owner is whoever signs in with an email listed in `SUPER_ADMIN_EMAILS` (comma-separated); they can also edit the shared list's defaults.
+  * Athletes see the video set by the coach who programmed the day (else the gym's, else the shared list's). Days already built keep the values they were built with.
 * **Chains:**
+  * Chains belong to one gym, and every coach in it can use them. The coach who made a chain and the gym's admins change it; other coaches change it on one day, or save their own copy under a new name. Chains made before this were given to the gym whose days use them (a copy for each other gym that uses them).
   * Clicking a chain on a day opens every exercise in it, with sets and reps, time, or distance editable in place for that day.
   * A saved chain can set reps, time, or distance per exercise.
 * **Questions and questionnaires:**
@@ -125,6 +132,8 @@ gcloud run deploy workout-app \
     --add-cloudsql-instances=YOUR_PROJECT_ID:us-central1:workout-db \
     --set-env-vars="DATABASE_URL=postgresql+psycopg2://workout_user:YOUR_SECURE_PASSWORD@/workout_db?host=/cloudsql/YOUR_PROJECT_ID:us-central1:workout-db"
 ```
+
+Set `SUPER_ADMIN_EMAILS` to the app owner's sign-in email (comma-separate several) so they can rename any exercise and edit the shared list's defaults.
 
 ---
 

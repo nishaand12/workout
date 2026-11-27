@@ -12,12 +12,13 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from sqlalchemy.orm import Session
-from sqlalchemy import inspect, text
+from sqlalchemy import func, inspect, text
 
 from app.config import settings
 from app.database import Base, engine, get_db, SessionLocal
 from app.models import Workout, Exercise
 from app import access
+from app import library
 from app.schemas import (
     ExerciseResponse, ExerciseCreate, ExerciseUpdate,
     WorkoutResponse, WorkoutDetailResponse, WorkoutCreate, WorkoutUpdate,
@@ -150,6 +151,8 @@ def ensure_schema_migrations():
             ("intensity_value", "VARCHAR(20) DEFAULT ''"),
             ("default_stations", "TEXT DEFAULT ''"),
             ("completion_only", "BOOLEAN DEFAULT FALSE"),
+            # Who added it: only they, or the app owner, rename it or change its category.
+            ("created_by", "INTEGER REFERENCES users(id) ON DELETE SET NULL"),
         )
         added_sets = "default_sets" not in ecols
         for name, ddl in exercise_additions:
@@ -181,6 +184,16 @@ def ensure_schema_migrations():
         for name, ddl in fold_columns:
             if name not in wecols:
                 statements.append(f"ALTER TABLE workout_exercises ADD COLUMN {name} {ddl}")
+
+    if "exercise_chains" in tables:
+        ccols = {c["name"] for c in inspector.get_columns("exercise_chains")}
+        # Chains belong to a gym. Older chains are given one at startup (library.assign_chains_to_gyms).
+        for name, ddl in (
+            ("gym_id", "INTEGER REFERENCES gyms(id) ON DELETE CASCADE"),
+            ("created_by", "INTEGER REFERENCES users(id) ON DELETE SET NULL"),
+        ):
+            if name not in ccols:
+                statements.append(f"ALTER TABLE exercise_chains ADD COLUMN {name} {ddl}")
 
     if "exercise_chain_members" in tables:
         mcols = {c["name"] for c in inspector.get_columns("exercise_chain_members")}
@@ -224,6 +237,7 @@ async def lifespan(app: FastAPI):
             crud.scrub_visible_brand(db)
             crud.migrate_to_calendars(db)
             crud.migrate_hidden_to_coaches(db)
+            library.assign_chains_to_gyms(db)
             crud.backfill_questionnaire_questions(db)
         finally:
             db.close()
@@ -358,21 +372,23 @@ def health_check():
     return {"status": "healthy", "service": "workout-replica"}
 
 # Exercise Endpoints
+# One shared list of exercises. Each coach sees its defaults through their gym's and their own.
 @app.get("/api/exercises", response_model=List[ExerciseResponse])
 def list_exercises(
     category: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: crud.User = Depends(require_auth),
 ):
-    return crud.get_exercises(db, category=category, search=search)
+    return library.resolve_for(db, current_user, crud.get_exercises(db, category=category, search=search))
 
 @app.post("/api/exercises", response_model=ExerciseResponse, status_code=status.HTTP_201_CREATED)
-def create_exercise(exercise_in: ExerciseCreate, db: Session = Depends(get_db)):
-    # Check if duplicate
-    existing = db.query(Exercise).filter(Exercise.name.ilike(exercise_in.name)).first()
+def create_exercise(exercise_in: ExerciseCreate, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    library.require_library_coach(current_user)
+    existing = db.query(Exercise).filter(func.lower(Exercise.name) == (exercise_in.name or "").strip().lower()).first()
     if existing:
         raise HTTPException(status_code=400, detail="Exercise with this name already exists")
-    return crud.create_exercise(db, exercise_in)
+    return library.resolve_one(db, current_user, crud.create_exercise(db, exercise_in, current_user))
 
 @app.post("/api/import/teambuildr")
 async def read_teambuildr_pdf(request: Request, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
@@ -401,11 +417,29 @@ def import_exercises(body: ExerciseImportRequest, db: Session = Depends(get_db),
     return crud.bulk_import_exercises(db, current_user, body.rows, body.on_existing)
 
 @app.put("/api/exercises/{exercise_id}", response_model=ExerciseResponse)
-def update_exercise(exercise_id: int, exercise_in: ExerciseUpdate, db: Session = Depends(get_db)):
-    updated = crud.update_exercise(db, exercise_id, exercise_in)
+def update_exercise(exercise_id: int, exercise_in: ExerciseUpdate, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    updated = crud.update_exercise(db, current_user, exercise_id, exercise_in)
     if not updated:
         raise HTTPException(status_code=404, detail="Exercise not found")
     return updated
+
+def _library_exercise(db: Session, exercise_id: int) -> Exercise:
+    exercise = db.query(Exercise).filter(Exercise.id == exercise_id).first()
+    if not exercise:
+        raise HTTPException(status_code=404, detail="Exercise not found")
+    return exercise
+
+@app.get("/api/exercises/{exercise_id}/layers")
+def exercise_layers(exercise_id: int, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    """The layers of defaults this person may change: their own, their gym's (admins), the shared list's (app owner)."""
+    return library.layers_payload(db, current_user, _library_exercise(db, exercise_id))
+
+@app.post("/api/exercises/{exercise_id}/apply-gym-defaults")
+def apply_gym_defaults(exercise_id: int, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    """A gym admin clears every coach's own values for this exercise, so the whole gym follows the gym's defaults."""
+    count = library.apply_gym_to_coaches(db, current_user, _library_exercise(db, exercise_id))
+    db.commit()
+    return {"coaches": count}
 
 # The exercise catalog is shared by every gym, so nobody deletes from it. A coach hides an
 # exercise in their own library, or strips it from their own programming.
@@ -466,12 +500,12 @@ def update_questionnaire(exercise_id: int, body: QuestionnaireWrite, db: Session
     return crud.update_questionnaire(db, current_user, exercise_id, body)
 
 @app.get("/api/chains", response_model=List[ChainResponse])
-def list_chains(db: Session = Depends(get_db)):
-    return crud.list_chains(db)
+def list_chains(db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    return crud.list_chains(db, current_user)
 
 @app.post("/api/chains", response_model=ChainResponse, status_code=status.HTTP_201_CREATED)
-def create_chain(chain_in: ChainWrite, db: Session = Depends(get_db)):
-    return crud.create_chain(db, chain_in)
+def create_chain(chain_in: ChainWrite, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    return crud.create_chain(db, current_user, chain_in)
 
 @app.get("/api/chains/{chain_id}/programming", response_model=ProgrammingUse)
 def chain_programming(
@@ -490,8 +524,8 @@ def remove_chain_from_programming(
     return crud.remove_chain_from_programming(db, current_user, chain_id)
 
 @app.post("/api/chains/{chain_id}/edit", response_model=ChainEditResponse)
-def edit_chain(chain_id: int, req: ChainEditRequest, db: Session = Depends(get_db)):
-    return crud.edit_chain(db, chain_id, req)
+def edit_chain(chain_id: int, req: ChainEditRequest, db: Session = Depends(get_db), current_user: crud.User = Depends(require_auth)):
+    return crud.edit_chain(db, current_user, chain_id, req)
 
 @app.post("/api/workouts/{workout_id}/chain-fold", response_model=WorkoutDetailResponse)
 def set_chain_fold(

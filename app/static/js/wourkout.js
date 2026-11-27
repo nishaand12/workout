@@ -1047,7 +1047,7 @@ function workoutToDayItems(workout) {
       completionOnly,
       textOnly: type === "lift" && completionOnly && (flags.indexOf("textOnly") >= 0 || isTextOnlyCategory(cat)),
       exerciseId: we.exercise_id,
-      videoUrl: (we.exercise && we.exercise.video_url) || "",
+      videoUrl: we.video_url || (we.exercise && we.exercise.video_url) || "",
       chainId: we.chain_id || null,
       chainInstance: we.chain_instance || "",
       chainName: we.chain_name || "",
@@ -4495,7 +4495,8 @@ function stampWorkoutExerciseIds(day, sentItems, workout) {
     if (!live) return;
     live.weId = we.id;
     live.exerciseId = we.exercise_id;
-    if (we.exercise && we.exercise.video_url) live.videoUrl = we.exercise.video_url;
+    const video = we.video_url || (we.exercise && we.exercise.video_url);
+    if (video) live.videoUrl = video;
   });
 }
 async function publishDay(date, opts = {}) {
@@ -8203,6 +8204,39 @@ function exerciseFields(row) {
   });
   return fields;
 }
+// One shared list of exercises. Each default comes from the coach's own value, else their
+// gym's (set by a gym admin), else the shared list's. The editor saves into one of those layers.
+const LAYER_NAMES = { coach: "My defaults", gym: "Gym defaults", shared: "Shared list" };
+const LAYER_TAGS = { coach: "Yours", gym: "Gym" };
+const LAYER_HINTS = {
+  coach: "Changes save as your own defaults. Other coaches and other gyms are not affected. Days already built do not change.",
+  gym: "Changes reach every coach in your gym who has not set their own value. Days already built do not change.",
+  shared: "Changes are the starting point for every gym. Gyms and coaches with their own values keep them."
+};
+const NAME_LOCK_HINT = "Only the coach who added it can rename it or change its category.";
+function layerSourceKey(key) {
+  return key === "add_intensity" || key === "remove_intensity" || key === "intensity_value" ? "intensity_kind" : key;
+}
+function annotateLayerFields(m) {
+  if (!m || !m.layer) return;
+  const own = m.scope === "gym" ? "gym" : (m.scope === "shared" ? "" : "coach");
+  (m.fields || []).forEach((f) => {
+    if (f.key === "name" || f.key === "category") {
+      f.disabled = !!m.lockName;
+      if (m.lockName && f.key === "name") f.hint = NAME_LOCK_HINT;
+      return;
+    }
+    if (f.key === "intensity_value" || f.key === "remove_intensity") return;
+    const source = m.scope === "shared" ? "" : (m.layer.sources[layerSourceKey(f.key)] || "");
+    f.layer = source;
+    f.resettable = !!source && source === own;
+  });
+}
+function editValues(m) {
+  const values = {};
+  (m.fields || []).forEach((f) => { if (!f.button) values[f.key] = f.value; });
+  return values;
+}
 function editExercise(id) {
   const row = state.serverExercises.find((e) => e.id === id);
   if (!row) return;
@@ -8210,20 +8244,128 @@ function editExercise(id) {
   const title = category === "Circuit" ? "Edit circuit" : category === "Notes" ? "Edit note" : "Edit exercise";
   openEdit({
     title,
+    hint: LAYER_HINTS.coach,
     liveCategory: true,
     fields: exerciseFields(row),
-    onSave: async (values) => {
-      const payload = libraryExercisePayload(values);
-      if (payload.error) { toast(payload.error); return; }
-      if (!payload.name) { toast("Name the exercise"); return; }
-      const previous = row.name;
-      Object.assign(row, payload);
-      const ok = await saveExerciseName(id, previous);
-      if (!ok) return;
-      state.modal = null;
+    onSave: (values) => saveLibraryEdit(id, values)
+  });
+  const m = state.modal;
+  m.exerciseId = id;
+  m.scope = "coach";
+  m.scopes = ["coach"];
+  m.lockName = row.can_edit_name === false;
+  m.layer = { sources: Object.assign({}, row.sources || {}), inherited: Object.assign({}, row.inherited || {}) };
+  m.resetKeys = [];
+  annotateLayerFields(m);
+  m.baseline = libraryExercisePayload(editValues(m));
+  render();
+  loadExerciseLayers(id);
+}
+async function loadExerciseLayers(id) {
+  try {
+    const layers = await api("GET", "/api/exercises/" + id + "/layers");
+    const m = state.modal;
+    if (!m || m.type !== "edit" || m.exerciseId !== id || !layers) return;
+    m.layers = layers;
+    m.scopes = (layers.scopes || ["coach"]).slice();
+    if (m.scopes.length > 1) render();
+  } catch (err) { console.error(err); }
+}
+function switchEditScope(scope) {
+  const m = state.modal;
+  if (!m || m.type !== "edit" || !m.layers || !m.layers[scope] || m.scope === scope) return;
+  const row = state.serverExercises.find((e) => e.id === m.exerciseId) || {};
+  const values = editValues(m);
+  const view = Object.assign({}, row, m.layers[scope].values, { name: values.name || row.name, category: values.category || row.category });
+  m.scope = scope;
+  m.hint = LAYER_HINTS[scope] || "";
+  m.layer = { sources: Object.assign({}, m.layers[scope].sources || {}), inherited: Object.assign({}, m.layers[scope].inherited || {}) };
+  m.resetKeys = [];
+  m.draft = null;
+  m.fields = mapEditFields(exerciseFields(view));
+  annotateLayerFields(m);
+  m.baseline = libraryExercisePayload(editValues(m));
+  render();
+}
+function resetEditField(key) {
+  const m = state.modal;
+  if (!m || m.type !== "edit" || !m.layer) return;
+  const source = layerSourceKey(key);
+  const keys = source === "intensity_kind" ? ["intensity_kind", "intensity_value"] : [source];
+  m.draft = Object.assign({}, m.draft || {}, editValues(m));
+  keys.forEach((k) => {
+    const inherited = m.layer.inherited[k];
+    m.draft[k] = inherited == null ? "" : (k === "completion_only" ? (inherited ? "1" : "") : String(inherited));
+    delete m.layer.sources[k];
+    if (m.resetKeys.indexOf(k) < 0) m.resetKeys.push(k);
+  });
+  m.fields = mapEditFields(exerciseFields(m.draft));
+  annotateLayerFields(m);
+  render();
+}
+function changedLibraryValues(payload, baseline, reset) {
+  // Only what the coach changed is sent, so untouched values keep following the gym.
+  const out = { name: payload.name, category: payload.category };
+  const before = baseline || {};
+  Object.keys(payload).forEach((key) => {
+    if (key === "name" || key === "category") return;
+    if (String(payload[key]) !== String(before[key]) || (reset || []).indexOf(key) >= 0) out[key] = payload[key];
+  });
+  if ("intensity_kind" in out || "intensity_value" in out) {
+    out.intensity_kind = payload.intensity_kind;
+    out.intensity_value = payload.intensity_value;
+  }
+  return out;
+}
+async function saveLibraryEdit(id, values) {
+  const m = state.modal;
+  const row = state.serverExercises.find((e) => e.id === id);
+  if (!row || !m) return;
+  const payload = libraryExercisePayload(values);
+  if (payload.error) { toast(payload.error); return; }
+  if (!payload.name) { toast("Name the exercise"); return; }
+  const body = changedLibraryValues(payload, m.baseline, m.resetKeys);
+  body.scope = m.scope || "coach";
+  if ((m.resetKeys || []).length) body.reset_fields = m.resetKeys.slice();
+  const previous = row.name;
+  try {
+    const updated = await api("PUT", "/api/exercises/" + id, body);
+    Object.assign(row, updated);
+    syncCatalogExercise(updated, previous || updated.name);
+    toast(body.scope === "gym" ? "Gym defaults saved" : body.scope === "shared" ? "Shared defaults saved" : "Exercise saved");
+  } catch (err) {
+    toast(err.message || "Could not save exercise");
+    console.error(err);
+    return;
+  }
+  state.modal = null;
+  render();
+}
+function applyGymDefaultsToCoaches() {
+  const parent = state.modal;
+  if (!parent || parent.type !== "edit" || !parent.layers) return;
+  const row = state.serverExercises.find((e) => e.id === parent.exerciseId) || {};
+  const n = parent.layers.coaches_with_own_values || 0;
+  state.modal = {
+    type: "confirm",
+    parent,
+    title: "Bring " + n + " coach" + (n === 1 ? "" : "es") + " back to the gym's defaults?",
+    body: "Their own values for " + (row.name || "this exercise") + " are cleared, and they follow the gym's defaults again. Days already built do not change.",
+    confirmLabel: "Apply to all coaches",
+    onConfirm: async () => {
+      try {
+        const res = await api("POST", "/api/exercises/" + parent.exerciseId + "/apply-gym-defaults");
+        parent.layers.coaches_with_own_values = 0;
+        toast(((res && res.coaches) || 0) + " coach" + (res && res.coaches === 1 ? "" : "es") + " now follow the gym's defaults");
+        await loadExercises();
+      } catch (err) {
+        toast(err.message || "Could not apply the gym's defaults");
+      }
+      state.modal = parent;
       render();
     }
-  });
+  };
+  render();
 }
 function exerciseRows() {
   const q = state.liftQ.toLowerCase();
@@ -8700,6 +8842,25 @@ function removeChainMember(index) {
   m.members.splice(index, 1);
   render();
 }
+// Chains belong to the gym. The coach who made one and the gym's admins change it; any other
+// coach can change it on one day, or save their own copy under a new name.
+function chainTemplate(chainId) {
+  return chainId ? (state.chains || []).find((row) => row.id === chainId) || null : null;
+}
+function chainEditable(chainId) {
+  const chain = chainTemplate(chainId);
+  return !chain || chain.can_edit !== false;
+}
+function chainCopyOnly(m) {
+  return !!(m && m.chainId && m.source === "library" && !chainEditable(m.chainId));
+}
+function chainLockHint(m) {
+  if (!m || !m.chainId || chainEditable(m.chainId)) return "";
+  const text = m.source === "library"
+    ? "Only the coach who made this chain, or a gym admin, can change it. Give it a new name to save your own copy."
+    : "Only the coach who made this chain, or a gym admin, can change the chain itself. You can change it on this day.";
+  return `<div class="sub">${esc(text)}</div>`;
+}
 function chainEditorCommit() {
   const m = state.modal;
   if (!m || m.type !== "chain") return;
@@ -8715,6 +8876,16 @@ function chainEditorCommit() {
     addToDate: m.source === "build" && m.date ? m.date : null,
     members: m.members.map((mem) => chainMemberPayload(mem))
   };
+  if (chainCopyOnly(m)) {
+    const original = chainTemplate(m.chainId);
+    if (original && name.toLowerCase() === String(original.name || "").toLowerCase()) {
+      toast("Give your copy a new name");
+      return;
+    }
+    draft.chainId = null;
+    createChain(draft);
+    return;
+  }
   if (!m.chainId) {
     createChain(draft);
     return;
@@ -8873,42 +9044,6 @@ async function loadExercises() {
 }
 function addExerciseRecord() {
   openNewLibraryExercise(null, (state.toolForm.exName || "").trim(), { libraryOnly: true });
-}
-async function saveExerciseName(id, previousName) {
-  const row = state.serverExercises.find((e) => e.id === id);
-  if (!row || !String(row.name || "").trim()) return false;
-  const payload = {
-    name: row.name.trim(),
-    category: row.category || "Strength",
-    video_url: row.video_url || "",
-    default_notes: row.default_notes || "",
-    default_sets: row.category === "Notes" ? 0 : Math.max(1, Math.min(10, parseInt(row.default_sets, 10) || 1)),
-    default_reps: row.default_reps != null ? String(row.default_reps) : "1",
-    default_load: row.default_load || "",
-    default_rest: row.default_rest || "",
-    default_rest_rep: row.default_rest_rep || "",
-    default_distance: row.default_distance || "",
-    default_time: row.default_time || "",
-    default_tempo: row.default_tempo || "",
-    default_velocity: row.default_velocity || "",
-    default_power: row.default_power || "",
-    default_pct: row.default_pct || "",
-    intensity_kind: row.intensity_kind || "",
-    intensity_value: row.intensity_value || "",
-    default_stations: row.default_stations || "",
-    completion_only: !!row.completion_only
-  };
-  try {
-    const updated = await api("PUT", "/api/exercises/" + id, payload);
-    Object.assign(row, updated);
-    syncCatalogExercise(updated, previousName || updated.name);
-    toast("Exercise saved");
-    return true;
-  } catch (err) {
-    toast("Could not save exercise");
-    console.error(err);
-    return false;
-  }
 }
 async function hideExercise(id) {
   const row = state.serverExercises.find((e) => e.id === id);
@@ -9894,7 +10029,10 @@ function mapEditFields(rows) {
     hint: f.hint || "",
     placeholder: f.placeholder || "",
     min: f.min,
-    max: f.max
+    max: f.max,
+    disabled: !!f.disabled,
+    layer: f.layer || "",
+    resettable: !!f.resettable
   }));
 }
 function openEdit(opts) {
@@ -9924,6 +10062,10 @@ function setEditField(key, value) {
   if (!m || m.type !== "edit" || !m.fields) return;
   const field = m.fields.find((f) => f.key === key);
   if (field && !field.button) field.value = value;
+  if (m.resetKeys && field && !field.button) {
+    const keys = layerSourceKey(key) === "intensity_kind" ? ["intensity_kind", "intensity_value"] : [key];
+    m.resetKeys = m.resetKeys.filter((k) => keys.indexOf(k) < 0);
+  }
   const rebuild = m.liveCategory && (key === "category" || key === "add_intensity" || key === "remove_intensity" || key === "intensity_kind");
   if (!rebuild) return;
   m.draft = Object.assign({}, m.draft || {});
@@ -9939,6 +10081,7 @@ function setEditField(key, value) {
   if (key === "intensity_kind") m.draft.intensity_kind = value;
   if (key === "category") m.draft.category = value;
   m.fields = mapEditFields(exerciseFields(m.draft));
+  annotateLayerFields(m);
   render();
 }
 function closeEdit() {
@@ -9959,6 +10102,21 @@ async function saveEdit() {
   await m.onSave(values);
 }
 const EDIT_FULL_WIDTH = ["name", "video_url"];
+function layerTagHtml(f) {
+  if (!f.layer) return "";
+  const tag = `<span class="layer-tag ${esc(f.layer)}">${esc(LAYER_TAGS[f.layer] || f.layer)}</span>`;
+  const reset = f.resettable ? `<button type="button" class="layer-reset" onclick="event.preventDefault();event.stopPropagation();resetEditField('${esc(f.key)}')">Reset</button>` : "";
+  return " " + tag + reset;
+}
+function layerBarHtml(m) {
+  if (!m.scopes || m.scopes.length < 2) return "";
+  const pills = m.scopes.map((scope) => `<button type="button" class="pill ${m.scope === scope ? "on" : ""}" onclick="switchEditScope('${esc(scope)}')">${esc(LAYER_NAMES[scope] || scope)}</button>`).join("");
+  const n = m.layers && m.layers.coaches_with_own_values;
+  const apply = m.scope === "gym" && n
+    ? `<button type="button" class="pill layer-apply" onclick="applyGymDefaultsToCoaches()">Apply to all coaches (${n} ${n === 1 ? "has" : "have"} their own values)</button>`
+    : "";
+  return `<div class="layer-bar"><div class="row">${pills}</div>${apply}</div>`;
+}
 function editModalHtml(m) {
   const hint = m.hint ? `<div class="sub">${esc(m.hint)}</div>` : "";
   const grid = (m.fields || []).length > 4;
@@ -9966,26 +10124,27 @@ function editModalHtml(m) {
     const span = !grid || f.multiline || f.checkbox || f.button || EDIT_FULL_WIDTH.indexOf(f.key) >= 0 ? " span" : "";
     const max = f.maxlength ? ` maxlength="${f.maxlength}"` : "";
     const key = esc(f.key);
+    const off = f.disabled ? " disabled" : "";
     let control;
     if (f.button) {
       control = `<button type="button" class="pill" onclick="setEditField('${key}', '1')">${esc(f.button)}</button>`;
     } else if (f.checkbox) {
-      return `<div class="edit-field${span}"><span class="edit-label">${esc(f.label)}</span><label class="chk edit-check"><input type="checkbox" data-edit-key="${key}" ${f.value ? "checked" : ""} onchange="setEditField('${key}', this.checked ? '1' : '')"> ${esc(f.checkbox)}</label>${f.hint ? `<div class="hint">${esc(f.hint)}</div>` : ""}</div>`;
+      return `<div class="edit-field${span}"><span class="edit-label">${esc(f.label)}${layerTagHtml(f)}</span><label class="chk edit-check"><input type="checkbox" data-edit-key="${key}" ${f.value ? "checked" : ""} onchange="setEditField('${key}', this.checked ? '1' : '')"> ${esc(f.checkbox)}</label>${f.hint ? `<div class="hint">${esc(f.hint)}</div>` : ""}</div>`;
     } else if (f.options) {
       const options = f.options.slice();
       if (f.value && options.indexOf(f.value) < 0) options.unshift(f.value);
-      control = `<select class="field" data-edit-key="${key}" data-focus="edit-${key}" onchange="setEditField('${key}', this.value)">${options.map((opt) => `<option value="${esc(opt)}" ${opt === f.value ? "selected" : ""}>${esc(opt)}</option>`).join("")}</select>`;
+      control = `<select class="field" data-edit-key="${key}" data-focus="edit-${key}"${off} onchange="setEditField('${key}', this.value)">${options.map((opt) => `<option value="${esc(opt)}" ${opt === f.value ? "selected" : ""}>${esc(opt)}</option>`).join("")}</select>`;
     } else if (f.multiline) {
       control = `<textarea data-edit-key="${key}" data-focus="edit-${key}"${max}${f.tall ? ' style="min-height:220px"' : ""} oninput="setEditField('${key}', this.value)">${esc(f.value)}</textarea>`;
     } else {
       const bounds = f.min != null ? ` min="${esc(f.min)}"` : "";
       const maxBound = f.max != null ? ` max="${esc(f.max)}"` : "";
       const placeholder = f.placeholder ? ` placeholder="${esc(f.placeholder)}"` : "";
-      control = `<input class="field" type="${esc(f.type || "text")}" data-edit-key="${key}" data-focus="edit-${key}" value="${esc(f.value)}"${max}${bounds}${maxBound}${placeholder}${(m.fields || []).length === 1 ? ` onkeydown="if(event.key==='Enter'){event.preventDefault();saveEdit()}"` : ""} oninput="setEditField('${key}', this.value)">`;
+      control = `<input class="field" type="${esc(f.type || "text")}" data-edit-key="${key}" data-focus="edit-${key}" value="${esc(f.value)}"${max}${bounds}${maxBound}${placeholder}${off}${(m.fields || []).length === 1 ? ` onkeydown="if(event.key==='Enter'){event.preventDefault();saveEdit()}"` : ""} oninput="setEditField('${key}', this.value)">`;
     }
-    return `<label class="edit-field${span}"><span>${esc(f.label)}</span>${control}${f.hint ? `<div class="hint">${esc(f.hint)}</div>` : ""}</label>`;
+    return `<label class="edit-field${span}"><span>${esc(f.label)}${layerTagHtml(f)}</span>${control}${f.hint ? `<div class="hint">${esc(f.hint)}</div>` : ""}</label>`;
   }).join("");
-  return `<div class="modal-back" onclick="if(event.target===this) closeEdit()"><div class="modal edit-modal${grid ? " wide" : ""}" onclick="event.stopPropagation()"><h3>${esc(m.title)}</h3>${hint}<div class="modal-body edit-fields${grid ? " grid" : ""}">${fields}</div><div class="modal-foot"><button class="full" type="button" onclick="closeEdit()">Cancel</button><button class="full save" type="button" onclick="saveEdit()">Save</button></div></div></div>`;
+  return `<div class="modal-back" onclick="if(event.target===this) closeEdit()"><div class="modal edit-modal${grid ? " wide" : ""}" onclick="event.stopPropagation()"><h3>${esc(m.title)}</h3>${layerBarHtml(m)}${hint}<div class="modal-body edit-fields${grid ? " grid" : ""}">${fields}</div><div class="modal-foot"><button class="full" type="button" onclick="closeEdit()">Cancel</button><button class="full save" type="button" onclick="saveEdit()">Save</button></div></div></div>`;
 }
 function chainMemberDraft(member) {
   const exercise = (member && member.exercise) || {};
@@ -10065,7 +10224,7 @@ function chainEditorHtml(m) {
   const rows = options.map((row) => `<button type="button" class="opt" onclick="addChainMember(${row.id})"><span class="opt-name">${esc(row.name)}</span>${videoMark(row.video_url)}<span class="tag">${esc(categoryLabel(row.category))}</span></button>`).join("");
   const more = matches.length > options.length ? `<div class="hint">${matches.length - options.length} more. Keep typing to narrow it down.</div>` : "";
   return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render()}"><div class="modal edit-modal chain-modal" onclick="event.stopPropagation()">
-    <h3>${m.chainId ? "Edit chain" : "New chain"}</h3>
+    <h3>${m.chainId ? "Edit chain" : "New chain"}</h3>${chainLockHint(m)}
     <div class="sub">A chain groups library exercises. It has its own name and no video. Saving an existing chain asks which days change.</div>
     <div class="hint">Fill in reps, time, or distance for an exercise and it tracks exactly the ones you fill. Leave all three blank to use the exercise's own defaults.</div>
     <label class="edit-field"><span>Name</span><input class="field" data-focus="chain-name" value="${esc(m.name || "")}" oninput="state.modal.name=this.value"></label>
@@ -10080,19 +10239,21 @@ function chainEditorHtml(m) {
         <button type="button" class="opt create-row" onclick="createExerciseForChain()">+ Create new exercise${q ? ` “${esc(String(m.pickQ).trim())}”` : ""}</button>
       </div>
     </div>
-    <button class="full save" type="button" onclick="chainEditorCommit()">${m.chainId ? "Continue" : "Save chain"}</button>
+    <button class="full save" type="button" onclick="chainEditorCommit()">${!m.chainId ? "Save chain" : chainCopyOnly(m) ? "Save as my copy" : "Continue"}</button>
     <button class="full" type="button" onclick="state.modal=null;render()">Cancel</button>
   </div></div>`;
 }
 function chainScopeHtml(m) {
   const library = m.source === "library";
-  const choices = [
+  const all = [
     ["one", "Only this one", library ? "Changes the chain template only." : "Changes this day only."],
     ["future", "Future workouts", library
       ? "Changes the template, and days dated today or later in Eastern Time. Past days stay as they are."
       : "Changes days dated today or later in Eastern Time. Past days stay as they are. The template stays as it is."],
     ["everywhere", "Change everywhere", "Changes the chain template and every day that uses it, including past days."]
   ];
+  // A coach who did not make the chain changes it on this day only.
+  const choices = chainEditable(m.draft.chainId) ? all : all.filter((choice) => !library && choice[0] === "one");
   return `<div class="modal-back" onclick="if(event.target===this){state.modal=null;render()}"><div class="modal" onclick="event.stopPropagation()">
     <h3>Update this chain</h3>
     <div class="sub">${esc(m.draft.name)} · ${esc(m.draft.kind)}</div>
@@ -10115,7 +10276,7 @@ function modalHtml() {
     return `<div class="modal-back"><div class="modal" onclick="event.stopPropagation()"><h3>Name this exercise</h3><input class="field" data-focus="editor-name" aria-label="Exercise name" value="${esc(m.name || "")}" oninput="state.modal.name=this.value"><button class="full save" type="button" onclick="acceptEditorName()">Save</button><button class="full" type="button" onclick="dismissEditorName()">Cancel</button></div></div>`;
   }
   if (m.type === "confirm") {
-    return `<div class="modal-back" onclick="state.modal=null;render()"><div class="modal" onclick="event.stopPropagation()"><h3>${esc(m.title)}</h3>${m.body ? `<div class="sub">${esc(m.body)}</div>` : ""}<button class="full red" type="button" onclick="state.modal.onConfirm()">${esc(m.confirmLabel || "Confirm")}</button><button class="full" type="button" onclick="state.modal=null;render()">Cancel</button></div></div>`;
+    return `<div class="modal-back" onclick="state.modal=(state.modal&&state.modal.parent)||null;render()"><div class="modal" onclick="event.stopPropagation()"><h3>${esc(m.title)}</h3>${m.body ? `<div class="sub">${esc(m.body)}</div>` : ""}<button class="full red" type="button" onclick="state.modal.onConfirm()">${esc(m.confirmLabel || "Confirm")}</button><button class="full" type="button" onclick="state.modal=(state.modal&&state.modal.parent)||null;render()">Cancel</button></div></div>`;
   }
   if (m.type === "delete") {
     return `<div class="modal-back" onclick="state.modal=null;render()"><div class="modal" onclick="event.stopPropagation()"><h3>${m.chainName ? `Delete the chain "${esc(m.chainName)}" and its ${m.ids.length} exercise${m.ids.length > 1 ? "s" : ""}?` : `You are about to delete (${m.ids.length}) workout item${m.ids.length > 1 ? "s" : ""}`}</h3><button class="full red" onclick="confirmDelete()">DELETE</button><button class="full" onclick="state.modal=null;render()">CANCEL</button></div></div>`;
@@ -10249,6 +10410,9 @@ window.openEdit = openEdit;
 window.saveEdit = saveEdit;
 window.closeEdit = closeEdit;
 window.setEditField = setEditField;
+window.switchEditScope = switchEditScope;
+window.resetEditField = resetEditField;
+window.applyGymDefaultsToCoaches = applyGymDefaultsToCoaches;
 window.switchAthlete = switchAthlete;
 window.shiftWeek = shiftWeek;
 window.loadEarlierWeeks = loadEarlierWeeks;

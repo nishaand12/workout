@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, ConfigDict
 
 # Exercise Schemas
@@ -68,6 +68,10 @@ class ExerciseUpdate(BaseModel):
     rpe: Optional[str] = None
     rir: Optional[str] = None
     pct_1rm: Optional[str] = None
+    # Which layer the defaults save to: "coach" (the default), "gym" (gym admins), "shared" (app owner).
+    scope: Optional[str] = None
+    # Fields that stop being this layer's own and follow the layer below again.
+    reset_fields: Optional[List[str]] = None
 
 class QuestionWrite(BaseModel):
     text: str
@@ -86,7 +90,14 @@ class QuestionnaireWrite(BaseModel):
 class ExerciseResponse(ExerciseBase):
     id: int
     created_at: datetime
+    created_by: Optional[int] = None
     questions: List[QuestionResponse] = []
+    # Where each default this coach sees comes from: "coach" (their own) or "gym". Absent = the shared list.
+    sources: Dict[str, str] = {}
+    # For a value the coach or gym set: what it would be without that.
+    inherited: Dict[str, Any] = {}
+    # Whether this person may rename it or change its category.
+    can_edit_name: bool = False
     model_config = ConfigDict(from_attributes=True)
 
 # Workout Exercise Schemas
@@ -116,6 +127,8 @@ class WorkoutExerciseCreate(WorkoutExerciseBase):
 class WorkoutExerciseResponse(WorkoutExerciseBase):
     id: int
     workout_id: int
+    # The video as the coach who programmed the day set it (or their gym, or the shared list).
+    video_url: Optional[str] = ""
     exercise: ExerciseResponse
     model_config = ConfigDict(from_attributes=True)
 
@@ -170,6 +183,9 @@ class ChainResponse(BaseModel):
     id: int
     name: str
     kind: str
+    created_by: Optional[int] = None
+    # The coach who made it and the gym's admins change it. Others can change it on one day only.
+    can_edit: bool = False
     created_at: datetime
     members: List[ChainMemberResponse] = []
     model_config = ConfigDict(from_attributes=True)

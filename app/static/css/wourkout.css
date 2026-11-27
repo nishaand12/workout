@@ -799,3 +799,19 @@ table.data tr:hover td { background: #fafafa; }
 .tb-sub { color: #999; font-size: 11px; font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tb-note { display: block; color: #d8cfae; font-style: italic; padding-left: 24px; }
 .tb-pick { display: inline-block; margin: 10px 0; }
+
+/* Exercise editor: which layer a default comes from (the coach's own, or their gym's). */
+.modal .layer-bar { margin: 0 0 8px; }
+.modal .layer-bar .row { display: flex; flex-wrap: wrap; gap: 6px; }
+.modal .layer-bar .layer-apply { margin-top: 8px; font-size: 12px; }
+.modal .edit-field span.layer-tag {
+  display: inline-block; margin: 0 0 0 6px; padding: 1px 6px; border-radius: 999px; font-size: 10px; font-weight: 700;
+  letter-spacing: .03em; text-transform: uppercase; vertical-align: 1px; border: 1px solid var(--line); color: var(--muted);
+}
+.modal .edit-field span.layer-tag.coach { border-color: var(--blue); color: #9dbcff; }
+.modal .edit-field span.layer-tag.gym { border-color: #8a6d1f; color: #e2c46d; }
+.modal .edit-field .layer-reset {
+  margin-left: 6px; padding: 0; background: none; border: 0; color: var(--muted); font-size: 11px; font-weight: 600;
+  text-decoration: underline; cursor: pointer;
+}
+.modal .edit-field input:disabled, .modal .edit-field select:disabled { opacity: .6; cursor: not-allowed; }
