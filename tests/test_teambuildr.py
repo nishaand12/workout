@@ -113,6 +113,44 @@ class ParserTests(unittest.TestCase):
         foot = [it["letter"] for it in items if it["kind"] == "lift"][-5:]
         self.assertEqual(foot, ["E", "F", "F", "F", "F"])
 
+    def test_chromium_skia_export(self):
+        # Exported Nov 2026 (the athlete's name is swapped for a made-up one). Chromium's Skia
+        # printer embeds Open Sans as unnamed Type3 fonts, the table has no Max/PR column, there are
+        # up to five sets, and the ff/fi/fl ligatures have no text of their own.
+        result = parsed("Nov Workout")
+        self.assertEqual([d["date"] for d in result["days"]], [
+            "2026-11-03", "2026-11-05", "2026-11-07", "2026-11-09", "2026-11-11",
+            "2026-11-13", "2026-11-16", "2026-11-18", "2026-11-20", "2026-11-23"])
+        self.assertEqual(result["warnings"], [])
+        self.assertEqual(result["athlete"], "Martina Van Mcintyre")
+        text = repr(result)
+        self.assertNotIn("\\x00", text)
+        # Ligatures read as letters.
+        self.assertTrue(any(it["name"] == "Bench Sit Up (flat bench)" for it in day("Nov Workout", "2026-11-03")["items"]))
+        self.assertIn("specified number of reps", find("Nov Workout", "2026-11-09", "For Time")["note"])
+        self.assertIn("90 seconds off for five rounds", find("Nov Workout", "2026-11-18", "Bike Intervals")["note"])
+        self.assertTrue(find("Nov Workout", "2026-11-03", "Cardio Warm Up")["note"].endswith("getting off."))
+        # A note starts just left of the first "Result" label; it stays a note, not a set value.
+        side = find("Nov Workout", "2026-11-05", "Side Squat")
+        self.assertEqual((side["reps"], side["times"], side["note"]), (["5", "5"], [], "Minute 1, 3, 5"))
+        swing = find("Nov Workout", "2026-11-05", "Dumbbell Swing")
+        self.assertEqual(swing["reps"], ["15"] * 4)
+        self.assertTrue(swing["note"].startswith("Try to go a little heavier"))
+        # A note that runs onto the next page stays with its exercise.
+        push = find("Nov Workout", "2026-11-05", "Push Up (Hands Elevated)")
+        self.assertTrue(push["note"].startswith("elevate your hands"))
+        plank = find("Nov Workout", "2026-11-05", "Side Plank on Elbow")
+        self.assertEqual((plank["times"], plank["note"]), (["20-30", "20-30"], ""))
+        # The fifth set column, and a set count printed under the name.
+        lunge = find("Nov Workout", "2026-11-23", "Reverse Lunge (hand assisted)")
+        self.assertEqual((lunge["letter"], lunge["sets"], lunge["reps"]), ("D", 5, ["5"] * 5))
+        self.assertEqual(find("Nov Workout", "2026-11-05", "Any Cardio")["sets"], 5)
+        letters = "".join(it["letter"] for it in day("Nov Workout", "2026-11-23")["items"] if it["kind"] == "lift")
+        self.assertEqual(letters, "AABBCDDEFF")
+        warm = find("Nov Workout", "2026-11-16", "Warm Up - Martina")
+        self.assertEqual((warm["kind"], warm["category"]), ("text", "Warm up"))
+        self.assertTrue(warm["note"].startswith("90/90 Hip Rotation - x8 ea.\nBW Squat - x10"))
+
     def test_not_a_teambuildr_pdf(self):
         for data in (b"", b"hello", b"%PDF-1.4 broken"):
             with self.assertRaises(teambuildr.TeamBuildrError):
